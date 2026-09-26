@@ -1937,7 +1937,9 @@ impl Ctx {
         scope: &Scope,
         lang: Lang,
     ) -> Option<(usize, Confidence)> {
-        if !matches!(e.kind, EdgeKind::Call | EdgeKind::Value) {
+        if e.kind != EdgeKind::Call {
+            // `f(x.Name)` is almost always a field read, not a method value; method values
+            // are resolved only through a known receiver type (resolve_typed).
             return None;
         }
         // Very common std method names: only with direct evidence, and never above name-only.
