@@ -188,6 +188,51 @@ pub(crate) fn clip(s: &str, max: usize) -> String {
 
 /// Parse `src` as `lang` and extract symbols, references and imports.
 pub fn extract(lang: Lang, src: &[u8]) -> Result<FileFacts> {
+    // TS: retry with signature separators when the grammar trips (see tsfix).
+    if matches!(lang, Lang::TypeScript | Lang::Tsx) {
+        if let Some(patched) = crate::tsfix::separate_signatures(src) {
+            let errs = |s: &[u8]| -> Result<Option<usize>> {
+                Ok(lang
+                    .with_parser(|p| p.parse(s, None))?
+                    .map(|t| count_errors(t.root_node())))
+            };
+            if let (Some(before), Some(after)) = (errs(src)?, errs(&patched)?) {
+                if after < before {
+                    return extract_inner(lang, &patched);
+                }
+            }
+        }
+    }
+    extract_inner(lang, src)
+}
+
+/// ERROR / MISSING nodes in a tree.
+fn count_errors(root: Node<'_>) -> usize {
+    if !root.has_error() {
+        return 0;
+    }
+    let mut n = 0;
+    let mut cur = root.walk();
+    loop {
+        let node = cur.node();
+        if node.is_error() || node.is_missing() {
+            n += 1;
+        }
+        if node.has_error() && cur.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cur.goto_next_sibling() {
+                break;
+            }
+            if !cur.goto_parent() {
+                return n;
+            }
+        }
+    }
+}
+
+fn extract_inner(lang: Lang, src: &[u8]) -> Result<FileFacts> {
     let query = lang.query()?;
     let Some(tree) = lang.with_parser(|p| p.parse(src, None))? else {
         return Ok(FileFacts::default());

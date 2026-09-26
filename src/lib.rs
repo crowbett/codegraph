@@ -20,6 +20,7 @@ pub mod query;
 pub mod render;
 pub mod resolve;
 pub mod store;
+pub(crate) mod tsfix;
 pub mod util;
 
 /// Crate version.
