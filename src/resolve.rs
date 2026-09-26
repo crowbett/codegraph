@@ -1126,7 +1126,10 @@ impl Ctx {
             } else {
                 self.root.join(&d).join("package.json")
             };
-            let Ok(text) = std::fs::read_to_string(&p) else {
+            // Repo-controlled: no symlinks/devices/UNC targets, bounded size.
+            let Some(text) =
+                crate::util::read_repo_file(&self.root, &p, crate::util::MAX_REPO_FILE_BYTES)
+            else {
                 continue;
             };
             let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
@@ -1203,7 +1206,12 @@ impl Ctx {
     }
 
     fn load_tsconfig(&mut self) {
-        let Ok(text) = std::fs::read_to_string(self.root.join("tsconfig.json")) else {
+        // Repo-controlled: no symlinks/devices/UNC targets, bounded size.
+        let Some(text) = crate::util::read_repo_file(
+            &self.root,
+            &self.root.join("tsconfig.json"),
+            crate::util::MAX_REPO_FILE_BYTES,
+        ) else {
             return;
         };
         // tsconfig allows comments and trailing commas: strip line comments, then try.
