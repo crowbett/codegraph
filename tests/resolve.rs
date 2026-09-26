@@ -50,3 +50,18 @@ fn rust_typed_receivers_and_trait_dispatch() {
     // `len()` on a Vec<String> is std: resolves to nothing rather than a guess.
     assert_eq!(edge(&ix.store, lib, 26, "len"), None);
 }
+
+#[test]
+fn ts_workspace_packages_and_typed_receivers() {
+    let ix = index_fixture("ts_infer");
+    let app = "packages/app/src/main.ts";
+    // `this.store` declared by a constructor parameter property.
+    assert_edge(&ix, app, 7, "get", "src.Store.get", "exact");
+    // `makeStore()` return type, imported from a sibling workspace package.
+    assert_edge(&ix, app, 13, "get", "src.Store.get", "exact");
+    // `new Map()` is a global type: no guess.
+    assert_eq!(edge(&ix.store, app, 15, "get"), None);
+    // `new Service(s).lookup(..)` and an interface-typed parameter.
+    assert_edge(&ix, app, 16, "lookup", "main.Service.lookup", "exact");
+    assert_edge(&ix, app, 17, "run", "src.Tool.run", "exact");
+}

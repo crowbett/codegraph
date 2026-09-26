@@ -560,7 +560,7 @@ impl Ctx {
                 let head = head.split('.').next().unwrap_or(head);
                 scope.modules.get(head).is_some_and(Vec::is_empty)
                     || scope.names.get(head).is_some_and(|(_, t)| t.is_empty())
-                    || (lang != Lang::Go
+                    || (lang == Lang::Rust
                         && head.chars().next().is_some_and(char::is_uppercase)
                         && !self.any_type_named(head))
                     || (lang == Lang::Rust && matches!(head, "std" | "core" | "alloc"))

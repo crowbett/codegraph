@@ -119,6 +119,8 @@ struct Ctx {
     rust_crates: HashSet<String>,
     py_mods: HashMap<String, Vec<usize>>,
     js_mods: HashMap<String, usize>,
+    /// Workspace packages (`package.json` `name` -> (package dir, entry path)).
+    js_pkgs: HashMap<String, (String, Option<String>)>,
     paths: HashMap<String, usize>,
     by_stem: HashMap<String, Vec<usize>>,
     mentioned: Vec<HashSet<String>>,
@@ -962,6 +964,7 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
         rust_crates: HashSet::new(),
         py_mods: HashMap::new(),
         js_mods: HashMap::new(),
+        js_pkgs: HashMap::new(),
         paths: HashMap::new(),
         by_stem: HashMap::new(),
         ts_paths: Vec::new(),
@@ -997,10 +1000,113 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
         }
     }
     ctx.load_tsconfig();
+    ctx.load_js_packages();
     Ok((ctx, edges))
 }
 
 impl Ctx {
+    /// `package.json` files of JS/TS packages inside the repo (monorepo workspaces), so a
+    /// bare import of a sibling package (`@scope/core`) resolves to its sources.
+    fn load_js_packages(&mut self) {
+        let mut dirs: HashSet<String> = HashSet::new();
+        for f in &self.files {
+            if !f.lang.is_js_family() {
+                continue;
+            }
+            let mut d = f.dir.as_str();
+            loop {
+                if !dirs.insert(d.to_string()) {
+                    break;
+                }
+                match d.rfind('/') {
+                    Some(i) => d = &d[..i],
+                    None if !d.is_empty() => d = "",
+                    None => break,
+                }
+            }
+        }
+        for d in dirs {
+            let p = if d.is_empty() {
+                self.root.join("package.json")
+            } else {
+                self.root.join(&d).join("package.json")
+            };
+            let Ok(text) = std::fs::read_to_string(&p) else {
+                continue;
+            };
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            let Some(name) = v["name"].as_str() else {
+                continue;
+            };
+            let exports = &v["exports"];
+            let dot = if exports.is_object() {
+                &exports["."]
+            } else {
+                exports
+            };
+            let entry = [
+                &v["types"],
+                &v["typings"],
+                &v["source"],
+                dot,
+                &dot["types"],
+                &dot["import"],
+                &dot["default"],
+                &v["module"],
+                &v["main"],
+            ]
+            .iter()
+            .find_map(|x| x.as_str())
+            .map(|e| e.trim_start_matches("./").to_string());
+            self.js_pkgs.insert(name.to_string(), (d, entry));
+        }
+    }
+
+    /// A bare specifier naming a workspace package (`@scope/pkg/sub`, `pkg`).
+    fn js_workspace(&self, path: &str) -> Option<usize> {
+        let mut segs = path.splitn(3, '/');
+        let first = segs.next()?;
+        let (name, sub) = if first.starts_with('@') {
+            let second = segs.next()?;
+            (format!("{first}/{second}"), segs.next())
+        } else {
+            let rest: Vec<&str> = path.splitn(2, '/').collect();
+            (first.to_string(), rest.get(1).copied())
+        };
+        let (dir, entry) = self.js_pkgs.get(&name)?;
+        let join = |p: &str| {
+            if dir.is_empty() {
+                p.to_string()
+            } else {
+                format!("{dir}/{p}")
+            }
+        };
+        if let Some(sub) = sub {
+            self.js_probe(&join(sub))
+                .or_else(|| self.js_probe(&join(&format!("src/{sub}"))))
+        } else {
+            // The declared entry often points at build output (`dist/index.js`):
+            // try it, then the same path under src/, then src/index and index.
+            let mut cands: Vec<String> = Vec::new();
+            if let Some(e) = entry {
+                cands.push(join(e));
+                for (from, to) in [("dist/", "src/"), ("lib/", "src/"), ("build/", "src/")] {
+                    if let Some(rest) = e.strip_prefix(from) {
+                        cands.push(join(&format!("{to}{rest}")));
+                    }
+                }
+            }
+            cands.push(join("src/index"));
+            cands.push(join("index"));
+            cands.iter().find_map(|c| {
+                let c = c.strip_suffix(".d.ts").unwrap_or(c);
+                self.js_probe(c)
+            })
+        }
+    }
+
     fn load_tsconfig(&mut self) {
         let Ok(text) = std::fs::read_to_string(self.root.join("tsconfig.json")) else {
             return;
@@ -1269,7 +1375,7 @@ impl Ctx {
                 return Some(i);
             }
         }
-        None
+        self.js_workspace(path)
     }
 
     fn c_include(&self, fi: usize, path: &str, system: bool) -> Option<usize> {
