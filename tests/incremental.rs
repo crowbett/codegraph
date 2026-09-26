@@ -22,6 +22,38 @@ fn count(store: &Store, sql: &str) -> i64 {
     store.conn().query_row(sql, [], |r| r.get(0)).unwrap()
 }
 
+/// The per-repo counts stored by each resolve (used by the index summary and `status`
+/// instead of scanning edges) match a real scan.
+#[track_caller]
+fn assert_counts(store: &Store, st: &index::IndexStats) {
+    let scan = |sql| count(store, sql);
+    assert_eq!(st.symbols, scan("SELECT count(*) FROM symbols"));
+    assert_eq!(
+        st.edges,
+        scan("SELECT count(*) FROM edges WHERE kind != 'import'")
+    );
+    assert_eq!(
+        st.resolved_edges,
+        scan("SELECT count(*) FROM edges WHERE kind != 'import' AND to_symbol IS NOT NULL")
+    );
+    let status = codegraph::query::status(store, &codegraph::query::Filter::default()).unwrap();
+    for c in ["exact", "likely", "name_only"] {
+        let real = store
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM edges WHERE confidence = ?1",
+                [c],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status.by_confidence.get(c).copied().unwrap_or(0),
+            real,
+            "{c}"
+        );
+    }
+}
+
 #[test]
 fn edit_touch_delete_and_full() {
     let src = copy_fixture("go");
@@ -31,6 +63,17 @@ fn edit_touch_delete_and_full() {
 
     let first = reindex(&mut store, root, false);
     assert_eq!((first.files, first.parsed), (3, 3));
+    assert_counts(&store, &first);
+    // A cold index drops every secondary index during the load; all are back after it.
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name IN (
+                'symbols_file', 'symbols_repo', 'edges_file', 'edges_repo', 'symbols_name',
+                'symbols_name_nocase', 'symbols_qkey', 'edges_to', 'edges_from', 'edges_to_file')"
+        ),
+        10
+    );
 
     let again = reindex(&mut store, root, false);
     assert_eq!((again.parsed, again.unchanged, again.removed), (0, 3, 0));
@@ -42,6 +85,7 @@ fn edit_touch_delete_and_full() {
     std::fs::write(&b, &text).unwrap();
     let edited = reindex(&mut store, root, false);
     assert_eq!((edited.parsed, edited.unchanged), (1, 2));
+    assert_counts(&store, &edited);
     assert_eq!(
         count(
             &store,
@@ -64,6 +108,7 @@ fn edit_touch_delete_and_full() {
     std::fs::remove_file(root.join("a/a.go")).unwrap();
     let deleted = reindex(&mut store, root, false);
     assert_eq!((deleted.removed, deleted.parsed), (1, 0));
+    assert_counts(&store, &deleted);
     assert_eq!(
         count(
             &store,
@@ -85,6 +130,7 @@ fn edit_touch_delete_and_full() {
     // --full re-parses everything that is left.
     let full = reindex(&mut store, root, true);
     assert_eq!(full.parsed, 2);
+    assert_counts(&store, &full);
 }
 
 #[test]

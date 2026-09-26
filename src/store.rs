@@ -16,7 +16,7 @@ use crate::layout::FileUnit;
 
 /// Bump when the schema or extraction output changes incompatibly; a mismatch
 /// wipes the graph so the next `index` rebuilds it.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -24,7 +24,14 @@ CREATE TABLE IF NOT EXISTS repos(
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     root TEXT NOT NULL UNIQUE,
-    indexed_at INTEGER NOT NULL DEFAULT 0
+    indexed_at INTEGER NOT NULL DEFAULT 0,
+    -- Written by each resolve, so status and index summaries never scan edges.
+    symbols INTEGER NOT NULL DEFAULT 0,
+    edges INTEGER NOT NULL DEFAULT 0,
+    resolved INTEGER NOT NULL DEFAULT 0,
+    exact INTEGER NOT NULL DEFAULT 0,
+    likely INTEGER NOT NULL DEFAULT 0,
+    name_only INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS files(
     id INTEGER PRIMARY KEY,
@@ -63,8 +70,6 @@ CREATE TABLE IF NOT EXISTS symbols(
     ret TEXT,
     fields TEXT
 );
-CREATE INDEX IF NOT EXISTS symbols_file ON symbols(file_id);
-CREATE INDEX IF NOT EXISTS symbols_repo ON symbols(repo_id);
 CREATE TABLE IF NOT EXISTS edges(
     id INTEGER PRIMARY KEY,
     repo_id INTEGER NOT NULL,
@@ -81,8 +86,6 @@ CREATE TABLE IF NOT EXISTS edges(
     confidence TEXT,
     extra TEXT
 );
-CREATE INDEX IF NOT EXISTS edges_file ON edges(file_id);
-CREATE INDEX IF NOT EXISTS edges_repo ON edges(repo_id);
 -- Substring search covers every symbol except C/C++ object-like `#define` constants: the
 -- Linux kernel has 2.0 M of them (2/3 of its symbols). They stay symbols (def, refs, exact
 -- and prefix find); only substring/fuzzy-doc search skips them.
@@ -94,15 +97,21 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
 );
 ";
 
-/// Query-side edge indexes and the triggers keeping `symbols_fts` in sync row by row;
-/// both are dropped during bulk loads and rebuilt once at the end.
+/// Secondary indexes and the triggers keeping `symbols_fts` in sync row by row; dropped
+/// during bulk loads (the per-file/per-repo ones only when the graph was empty, since a
+/// `--full` run still deletes old files by id) and rebuilt once at the end.
 const FTS_TRIGGERS: &str = r"
+CREATE INDEX IF NOT EXISTS symbols_file ON symbols(file_id);
+CREATE INDEX IF NOT EXISTS symbols_repo ON symbols(repo_id);
+CREATE INDEX IF NOT EXISTS edges_file ON edges(file_id);
+CREATE INDEX IF NOT EXISTS edges_repo ON edges(repo_id);
 CREATE INDEX IF NOT EXISTS symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS symbols_name_nocase ON symbols(name COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS symbols_qkey ON symbols(qkey);
 CREATE INDEX IF NOT EXISTS edges_to ON edges(to_symbol);
 CREATE INDEX IF NOT EXISTS edges_from ON edges(from_symbol);
-CREATE INDEX IF NOT EXISTS edges_to_file ON edges(to_file);
+-- Only import edges are looked up by target file (who imports this file).
+CREATE INDEX IF NOT EXISTS edges_to_file ON edges(to_file) WHERE kind = 'import';
 CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols
 WHEN NOT (new.kind = 'const' AND new.signature LIKE '#define%') BEGIN
     INSERT INTO symbols_fts(rowid, name, qname, doc) VALUES (new.id, new.name, new.qname, new.doc);
@@ -143,6 +152,9 @@ pub struct RepoRow {
     pub root: PathBuf,
     /// Last index time (unix seconds).
     pub indexed_at: i64,
+    /// Counts from the last resolve: symbols, non-import edges, resolved, exact, likely,
+    /// name-only.
+    pub counts: [i64; 6],
 }
 
 /// A file to (re)insert.
@@ -264,28 +276,39 @@ impl Store {
 
     /// Stop maintaining the symbol search index row by row (bulk loads); marks it dirty
     /// until [`Store::resume_fts`] rebuilds it in one pass (about 5x cheaper).
-    pub fn suspend_fts(&self) -> Result<()> {
-        self.conn.execute_batch(
+    /// `cold` (the graph is empty): also drop the per-file/per-repo indexes, so the load
+    /// is append-only.
+    pub fn suspend_fts(&self, cold: bool) -> Result<()> {
+        // One transaction with the dirty mark, so a crash never leaves indexes missing
+        // without the mark that makes the next writer rebuild them.
+        let base = if cold {
+            "DROP INDEX IF EXISTS symbols_file; DROP INDEX IF EXISTS symbols_repo;
+             DROP INDEX IF EXISTS edges_file; DROP INDEX IF EXISTS edges_repo;"
+        } else {
+            ""
+        };
+        self.conn.execute_batch(&format!(
             "BEGIN;
+             {base}
              DROP TRIGGER IF EXISTS symbols_ai; DROP TRIGGER IF EXISTS symbols_ad;
              DROP INDEX IF EXISTS edges_to; DROP INDEX IF EXISTS edges_from;
              DROP INDEX IF EXISTS edges_to_file; DROP INDEX IF EXISTS symbols_name;
              DROP INDEX IF EXISTS symbols_name_nocase; DROP INDEX IF EXISTS symbols_qkey;
              INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_dirty', CAST(unixepoch() AS TEXT));
-             COMMIT;",
-        )?;
+             COMMIT;"
+        ))?;
         Ok(())
     }
 
     /// Rebuild the symbol search index from `symbols` and restore the row triggers.
     pub fn resume_fts(&self) -> Result<()> {
-        self.conn.execute_batch(&format!(
-            "BEGIN;
-             INSERT INTO symbols_fts(symbols_fts) VALUES ('rebuild');
-             {FTS_TRIGGERS}
-             DELETE FROM meta WHERE key = 'fts_dirty';
-             COMMIT;"
-        ))?;
+        let t0 = std::time::Instant::now();
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch("INSERT INTO symbols_fts(symbols_fts) VALUES ('rebuild');")?;
+        crate::util::trace("index.fts_rebuild", t0);
+        tx.execute_batch(FTS_TRIGGERS)?;
+        tx.execute("DELETE FROM meta WHERE key = 'fts_dirty'", [])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -321,15 +344,24 @@ impl Store {
 
     /// All repos.
     pub fn repos(&self) -> Result<Vec<RepoRow>> {
-        let mut st = self
-            .conn
-            .prepare_cached("SELECT id, name, root, indexed_at FROM repos ORDER BY name")?;
+        let mut st = self.conn.prepare_cached(
+            "SELECT id, name, root, indexed_at, symbols, edges, resolved, exact, likely,
+                    name_only FROM repos ORDER BY name",
+        )?;
         let rows = st.query_map([], |r| {
             Ok(RepoRow {
                 id: r.get(0)?,
                 name: r.get(1)?,
                 root: PathBuf::from(r.get::<_, String>(2)?),
                 indexed_at: r.get(3)?,
+                counts: [
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                    r.get(9)?,
+                ],
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -593,7 +625,7 @@ mod tests {
                         module, package) VALUES (1, 1, 'a.go', 'go', 'h', 0, 0, 1, '', '');",
                 )
                 .unwrap();
-            s.suspend_fts().unwrap();
+            s.suspend_fts(false).unwrap();
             add_symbol(&s, "NeedleOne");
             assert_eq!(fts_hits(&s, "edleOn"), 0, "suspended: not indexed yet");
             // No resume_fts: simulated crash.
@@ -610,7 +642,7 @@ mod tests {
         assert_eq!(fts_hits(&s, "edleOn"), 1, "the next writer rebuilds");
         add_symbol(&s, "HaystackTwo");
         assert_eq!(fts_hits(&s, "ystackTw"), 1, "row triggers restored");
-        s.suspend_fts().unwrap();
+        s.suspend_fts(false).unwrap();
         add_symbol(&s, "ThirdThing");
         s.resume_fts().unwrap();
         assert_eq!(fts_hits(&s, "irdThin"), 1);

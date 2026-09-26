@@ -87,6 +87,9 @@ task eval:agent        # fake LLM, no API key, no spend, rewrites docs/AGENT-EVA
 task eval:agent:real   # needs ANTHROPIC_API_KEY; estimate then a $5-capped real run
 ```
 
+Profiling a big index: `CODEGRAPH_TRACE=1` prints phase timings (resolve load/passes/write,
+index and FTS rebuild) to stderr.
+
 Smoke against a throwaway data dir (never the real `~/.config/kit`):
 
 ```powershell
@@ -100,7 +103,7 @@ $env:KIT_DATA_DIR = "$env:TEMP\cg" ; .\target\release\codegraph.exe index C:\Use
 - Adding a language: grammar crate in Cargo.toml, `Lang` variant + extension, a
   `queries/<lang>/tags.scm`, binding parser in `extract::parse_import`, a unit rule in
   `layout.rs`, a fixture + snapshot + resolution assertions in `tests/lang.rs`.
-- Changing extraction output or the schema: bump `store::SCHEMA_VERSION` (currently **4**;
+- Changing extraction output or the schema: bump `store::SCHEMA_VERSION` (currently **5**;
   old graphs are wiped and rebuilt on next `index`) and re-record snapshots.
 - **Any resolver change (`src/resolve.rs`, `src/resolve_types.rs`, `src/infer.rs`) must be
   measured with `task bench:accuracy` before it's kept.** Compare against

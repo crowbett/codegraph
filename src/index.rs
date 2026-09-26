@@ -315,7 +315,7 @@ pub fn index_roots(
         == 0;
     let bulk = opts.full || empty;
     if bulk {
-        store.suspend_fts()?;
+        store.suspend_fts(empty)?;
     } else {
         store.recover_fts(true)?;
     }
@@ -323,7 +323,9 @@ pub fn index_roots(
     if bulk {
         // Keep the indexing error if both fail; a failed rebuild stays marked dirty and is
         // repaired by the next writer.
+        let t0 = Instant::now();
         let resumed = store.resume_fts();
+        util::trace("index.rebuild_indexes", t0);
         result?;
         resumed?;
     } else {
@@ -413,18 +415,16 @@ pub fn refresh_repo(
 }
 
 fn finish(store: &Store, stats: &mut IndexStats, start: Instant) -> Result<()> {
-    let conn = store.conn();
-    stats.symbols = conn.query_row("SELECT count(*) FROM symbols", [], |r| r.get(0))?;
-    stats.edges = conn.query_row(
-        "SELECT count(*) FROM edges WHERE kind != 'import'",
-        [],
-        |r| r.get(0),
-    )?;
-    stats.resolved_edges = conn.query_row(
-        "SELECT count(*) FROM edges WHERE kind != 'import' AND to_symbol IS NOT NULL",
-        [],
-        |r| r.get(0),
-    )?;
+    // Per-repo counts written by each resolve: no scan of millions of edges.
+    let (mut symbols, mut edges, mut resolved) = (0, 0, 0);
+    for r in store.repos()? {
+        symbols += r.counts[0];
+        edges += r.counts[1];
+        resolved += r.counts[2];
+    }
+    stats.symbols = symbols;
+    stats.edges = edges;
+    stats.resolved_edges = resolved;
     stats.elapsed_ms = start.elapsed().as_millis();
     Ok(())
 }

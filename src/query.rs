@@ -1909,34 +1909,15 @@ pub struct Status {
 pub fn status(store: &Store, filter: &Filter) -> Result<Status> {
     let conn = store.conn();
     let mut repo_list = Vec::new();
-    let mut per: HashMap<i64, (i64, i64, i64, i64)> = HashMap::new();
+    let mut per: HashMap<i64, i64> = HashMap::new();
     {
         let mut st = conn.prepare("SELECT repo_id, count(*) FROM files GROUP BY repo_id")?;
         for r in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
             let (id, n) = r?;
-            per.entry(id).or_default().0 = n;
-        }
-        let mut st = conn.prepare("SELECT repo_id, count(*) FROM symbols GROUP BY repo_id")?;
-        for r in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
-            let (id, n) = r?;
-            per.entry(id).or_default().1 = n;
-        }
-        let mut st = conn.prepare(
-            "SELECT repo_id, count(*), count(to_symbol) FROM edges WHERE kind != 'import' GROUP BY repo_id",
-        )?;
-        for r in st.query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, i64>(2)?,
-            ))
-        })? {
-            let (id, n, res) = r?;
-            let e = per.entry(id).or_default();
-            e.2 = n;
-            e.3 = res;
+            per.insert(id, n);
         }
     }
+    let mut by_confidence: HashMap<String, i64> = HashMap::new();
     let (mut files, mut symbols, mut edges, mut resolved) = (0, 0, 0, 0);
     for r in store.repos()? {
         if filter
@@ -1946,7 +1927,18 @@ pub fn status(store: &Store, filter: &Filter) -> Result<Status> {
         {
             continue;
         }
-        let (f, s, e, res) = per.get(&r.id).copied().unwrap_or_default();
+        let f = per.get(&r.id).copied().unwrap_or(0);
+        // Symbol and edge counts are stored by each resolve (no scan of the edges).
+        let [s, e, res, exact, likely, name_only] = r.counts;
+        for (k, n) in [
+            ("exact", exact),
+            ("likely", likely),
+            ("name_only", name_only),
+        ] {
+            if n > 0 {
+                *by_confidence.entry(k.to_string()).or_insert(0) += n;
+            }
+        }
         files += f;
         symbols += s;
         edges += e;
@@ -1962,16 +1954,6 @@ pub fn status(store: &Store, filter: &Filter) -> Result<Status> {
         });
     }
     let rc = repo_clause(filter, "repo_id");
-    let mut by_confidence = HashMap::new();
-    {
-        let mut st = conn.prepare(&format!(
-            "SELECT confidence, count(*) FROM edges WHERE confidence IS NOT NULL {rc} GROUP BY confidence"
-        ))?;
-        for r in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
-            let (c, n) = r?;
-            by_confidence.insert(c, n);
-        }
-    }
     let mut languages = Vec::new();
     {
         let mut st = conn.prepare(&format!(

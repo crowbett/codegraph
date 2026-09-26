@@ -225,6 +225,14 @@ pub fn format_unix(ts: i64) -> String {
     format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02}:{s:02}Z")
 }
 
+/// `CODEGRAPH_TRACE=1`: print phase timings to stderr (profiling large indexes).
+pub fn trace(what: &str, since: std::time::Instant) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ON.get_or_init(|| std::env::var_os("CODEGRAPH_TRACE").is_some()) {
+        eprintln!("[trace] {what}: {:.2?}", since.elapsed());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

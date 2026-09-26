@@ -24,6 +24,11 @@ use codegraph::store::Store;
 use codegraph::watch::{self, WatchEvent, WatchOptions};
 use codegraph::{render, util};
 
+/// Indexing allocates tens of millions of small strings from every core; the Windows
+/// system heap serializes them (measured: see docs/SCALE.md).
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Output context for one invocation.
 struct App {
     json: bool,

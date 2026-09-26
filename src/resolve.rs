@@ -709,7 +709,9 @@ const IMPLICIT: &str = r#"{"implicit":true}"#;
 
 /// Resolve every edge of a repo and write the results.
 pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<ResolveStats> {
+    let t0 = std::time::Instant::now();
     let ctx_and_edges = load(store, repo_id, root)?;
+    crate::util::trace("resolve.load", t0);
     let (ctx, edges) = ctx_and_edges;
     let scopes: Vec<Scope> = (0..ctx.files.len()).map(|_| Scope::default()).collect();
     let mut ctx = ctx;
@@ -760,6 +762,7 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
         ctx.path_mods.insert(key, t);
     }
 
+    crate::util::trace("resolve.pathmods", t0);
     // Pass 1: imports build per-file scopes.
     for e in edges.iter().filter(|e| e.kind == EdgeKind::Import) {
         stats.imports += 1;
@@ -803,6 +806,7 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
         scope.includes.sort_unstable();
         scope.includes.dedup();
     }
+    crate::util::trace("resolve.pass1", t0);
     ctx.fill_mentions(&edges);
     for (fi, scope) in scopes.iter().enumerate() {
         for (orig, _) in scope.names.values() {
@@ -814,6 +818,7 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
 
     // Pass 2: symbol edges, resolved in parallel (the context is read-only apart from
     // its memo tables), then counted and diffed in order.
+    crate::util::trace("resolve.mentions", t0);
     let pass2: Vec<&E> = edges
         .iter()
         .filter(|e| e.kind != EdgeKind::Import)
@@ -869,6 +874,7 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
         }
     }
 
+    crate::util::trace("resolve.pass2", t0);
     let tx = store.conn_mut().transaction()?;
     {
         let mut st = tx.prepare_cached(
@@ -903,7 +909,23 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
             stats.implicit_impls += 1;
         }
     }
+    tx.execute(
+        "UPDATE repos SET symbols = ?2, edges = ?3, resolved = ?4, exact = ?5, likely = ?6,
+            name_only = ?7 WHERE id = ?1",
+        params![
+            repo_id,
+            ctx.syms.len() as i64,
+            (stats.edges + stats.implicit_impls) as i64,
+            (stats.resolved + stats.implicit_impls) as i64,
+            stats.exact as i64,
+            (stats.likely + stats.implicit_impls) as i64,
+            stats.name_only as i64,
+        ],
+    )?;
     tx.commit()?;
+    crate::util::trace("resolve.write", t0);
+    // Freeing millions of symbols and edges takes seconds; the caller doesn't wait for it.
+    std::thread::spawn(move || drop((ctx, edges)));
     Ok(stats)
 }
 
@@ -947,7 +969,76 @@ fn ref_hint(extra: Option<&str>) -> (Option<String>, bool) {
     )
 }
 
+/// Rows of one repo in `table`, read on parallel read-only connections, each scanning a
+/// slice of the repo's rowid range (`sql` binds ?1 repo, ?2..?3 the slice). One
+/// connection steps ~1M rows/s, and a large repo has millions of edges. Results are in
+/// no particular order. Falls back to the store's own connection for in-memory stores.
+fn par_rows<T, F>(
+    store: &Store,
+    path: &Path,
+    table: &str,
+    repo_id: i64,
+    sql: &str,
+    map: F,
+) -> Result<Vec<T>>
+where
+    T: Send,
+    F: Fn(&rusqlite::Row<'_>) -> rusqlite::Result<Option<T>> + Sync,
+{
+    let (lo, hi): (Option<i64>, Option<i64>) = store.conn().query_row(
+        &format!("SELECT min(id), max(id) FROM {table} WHERE repo_id = ?1"),
+        [repo_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let (Some(lo), Some(hi)) = (lo, hi) else {
+        return Ok(Vec::new());
+    };
+    let read = |conn: &rusqlite::Connection, a: i64, b: i64| -> Result<Vec<T>> {
+        let mut st = conn.prepare_cached(sql)?;
+        let mut rows = st.query(params![repo_id, a, b])?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next()? {
+            if let Some(t) = map(r)? {
+                out.push(t);
+            }
+        }
+        Ok(out)
+    };
+    let span = hi - lo + 1;
+    let chunks = if path.is_file() && span > PAR_ROWS_MIN {
+        (rayon::current_num_threads() as i64 * 2).clamp(1, span / (PAR_ROWS_MIN / 4))
+    } else {
+        1
+    };
+    if chunks <= 1 {
+        return read(store.conn(), lo, hi);
+    }
+    let step = (span + chunks - 1) / chunks;
+    let parts: Vec<Result<Vec<T>>> = (0..chunks)
+        .into_par_iter()
+        .map(|i| {
+            let a = lo + i * step;
+            let b = (a + step - 1).min(hi);
+            let conn = rusqlite::Connection::open_with_flags(
+                path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )?;
+            read(&conn, a, b)
+        })
+        .collect();
+    let mut out = Vec::new();
+    for p in parts {
+        out.append(&mut p?);
+    }
+    Ok(out)
+}
+
+/// Below this many rowids a repo is read on one connection.
+const PAR_ROWS_MIN: i64 = 200_000;
+
 fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
+    let t0 = std::time::Instant::now();
     let conn = store.conn();
     let mut files = Vec::new();
     let mut file_idx: HashMap<i64, usize> = HashMap::new();
@@ -983,135 +1074,93 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
             });
         }
     }
-    let mut syms = Vec::new();
-    {
-        let mut st = conn.prepare(
-            // Path order, not row order: files are written as parsers finish, and ties
-            // below are broken by position, so resolution must not depend on write order.
-            "SELECT s.id, s.file_id, s.parent_id, s.name, s.kind, s.container, s.exported,
-                    s.is_default, s.recv, s.end_line - s.start_line, s.qkey, s.ret, s.fields,
-                    s.signature, s.start_line
-             FROM symbols s JOIN files f ON f.id = s.file_id
-             WHERE s.repo_id = ?1 ORDER BY f.path, s.id",
-        )?;
-        let rows = st.query_map([repo_id], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, Option<i64>>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, Option<String>>(5)?,
-                r.get::<_, bool>(6)?,
-                r.get::<_, bool>(7)?,
-                r.get::<_, Option<String>>(8)?,
-                r.get::<_, i64>(9)?,
-                r.get::<_, String>(10)?,
-                r.get::<_, Option<String>>(11)?,
-                r.get::<_, Option<String>>(12)?,
-                r.get::<_, String>(13)?,
-                r.get::<_, u32>(14)?,
-            ))
-        })?;
-        for row in rows {
-            let (
-                id,
-                fid,
-                parent,
-                name,
-                kind,
-                container,
-                exported,
-                is_default,
-                recv,
-                span,
-                qkey,
-                ret,
-                fields,
-                sig,
-                line,
-            ) = row?;
+    crate::util::trace("resolve.load.files", t0);
+    let path = store.path().to_path_buf();
+    // Path order, not row order: files are written as parsers finish, and ties in
+    // resolution are broken by position, so it must not depend on write order.
+    let mut syms: Vec<S> = par_rows(
+        store,
+        &path,
+        "symbols",
+        repo_id,
+        "SELECT id, file_id, parent_id, name, kind, container, exported, is_default, recv,
+                end_line - start_line, qkey, ret, fields, signature, start_line
+         FROM symbols WHERE +repo_id = ?1 AND id BETWEEN ?2 AND ?3",
+        |r| {
+            let fid: i64 = r.get(1)?;
+            let kind: String = r.get(4)?;
             let (Some(&file), Some(kind)) = (file_idx.get(&fid), SymKind::parse(&kind)) else {
-                continue;
+                return Ok(None);
             };
-            syms.push(S {
-                id,
+            let fields: Option<String> = r.get(12)?;
+            Ok(Some(S {
+                id: r.get(0)?,
                 file,
-                parent,
-                name,
+                parent: r.get(2)?,
+                name: r.get(3)?,
                 kind,
-                container,
-                exported,
-                is_default,
-                recv,
-                span: span.max(0) as u32,
-                qkey,
-                ret,
+                container: r.get(5)?,
+                exported: r.get(6)?,
+                is_default: r.get(7)?,
+                recv: r.get(8)?,
+                span: r.get::<_, i64>(9)?.max(0) as u32,
+                qkey: r.get(10)?,
+                ret: r.get(11)?,
                 fields: fields
                     .and_then(|f| serde_json::from_str(&f).ok())
                     .unwrap_or_default(),
-                sig,
-                line,
-            });
-        }
-    }
-    let mut edges = Vec::new();
-    {
-        let mut st = conn.prepare(
-            "SELECT id, file_id, from_symbol, from_name, name, qualifier, kind, extra,
-                    to_symbol, confidence, to_file, line
-             FROM edges WHERE repo_id = ?1",
-        )?;
-        let rows = st.query_map([repo_id], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, Option<i64>>(2)?,
-                r.get::<_, Option<String>>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, Option<String>>(5)?,
-                r.get::<_, String>(6)?,
-                r.get::<_, Option<String>>(7)?,
-                r.get::<_, Option<i64>>(8)?,
-                r.get::<_, Option<String>>(9)?,
-                r.get::<_, Option<i64>>(10)?,
-                r.get::<_, u32>(11)?,
-            ))
-        })?;
-        for row in rows {
-            let (id, fid, from_symbol, from_name, name, qualifier, kind, extra, to, conf, tf, line) =
-                row?;
+                sig: r.get(13)?,
+                line: r.get(14)?,
+            }))
+        },
+    )?;
+    // `files` is in path order, so (file index, id) is (path, id).
+    syms.par_sort_unstable_by_key(|s| (s.file, s.id));
+    crate::util::trace("resolve.load.syms", t0);
+    let mut edges: Vec<E> = par_rows(
+        store,
+        &path,
+        "edges",
+        repo_id,
+        "SELECT id, file_id, from_symbol, from_name, name, qualifier, kind, extra,
+                to_symbol, confidence, to_file, line
+         FROM edges WHERE +repo_id = ?1 AND id BETWEEN ?2 AND ?3",
+        |r| {
+            let fid: i64 = r.get(1)?;
+            let kind: String = r.get(6)?;
             let (Some(&file), Some(kind)) = (file_idx.get(&fid), EdgeKind::parse(&kind)) else {
-                continue;
+                return Ok(None);
             };
+            let extra: Option<String> = r.get(7)?;
             if extra.as_deref() == Some(IMPLICIT) {
                 // Derived by the previous resolve; rebuilt below.
-                continue;
+                return Ok(None);
             }
             let (hint, dot) = if kind == EdgeKind::Import {
                 (None, false)
             } else {
                 ref_hint(extra.as_deref())
             };
-            edges.push(E {
-                id,
+            Ok(Some(E {
+                id: r.get(0)?,
                 file,
-                from_symbol,
-                from_name,
-                name,
-                qualifier,
+                from_symbol: r.get(2)?,
+                from_name: r.get(3)?,
+                name: r.get(4)?,
+                qualifier: r.get(5)?,
                 kind,
                 extra,
-                old_to: to,
-                old_conf: conf,
-                old_to_file: tf,
+                old_to: r.get(8)?,
+                old_conf: r.get(9)?,
+                old_to_file: r.get(10)?,
                 hint,
                 dot,
-                line,
-            });
-        }
-    }
-
+                line: r.get(11)?,
+            }))
+        },
+    )?;
+    edges.par_sort_unstable_by_key(|e| e.id);
+    crate::util::trace("resolve.load.edges", t0);
     let mut ctx = Ctx {
         root: root.to_path_buf(),
         by_file: vec![Vec::new(); files.len()],
@@ -1176,6 +1225,7 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
     }
     ctx.load_tsconfig();
     ctx.load_js_packages();
+    crate::util::trace("resolve.load.ctx", t0);
     Ok((ctx, edges))
 }
 
