@@ -146,3 +146,42 @@ Packaging prepared, not published: `packaging/install.sh` / `install.ps1` (verif
 never touch PATH), npm package set (`packaging/npm`, esbuild-style per-platform packages),
 Homebrew formula, `docs/INSTALL.md`. One portability fix: macOS `/var` → `/private/var`
 symlinked roots (`query::repo_containing`).
+
+## Round 2 — wider corpus, review, security (after the user's "fanout the next batch")
+
+Four parallel streams: security audit, Rust review, docs rewrite (merged 7489c63), corpus
+widening (merged 3b7c07e, +7 public repos: urfave/cli, labstack/echo, tokio-rs/bytes,
+serde-rs/json, mobx, zustand, pallets/click; 3 more harness scoring fixes, see d59284a).
+
+**The wider corpus changed the verdict.** v0.1.1 → now, callers recall / false call edges on
+all 16 repos (baseline re-scored with the same harness, bench/baseline/accuracy.json):
+
+| language | v0.1.1 | after M2 (9-repo winners) | now |
+|---|---|---|---|
+| Go | 92.0% / 15.9% | 98.2% / 1.1% | **98.9% / 1.1%** ✔ |
+| Python | 56.2% / 5.9% | 94.4% / 2.0% | **96.0% / 1.9%** ✔ |
+| Rust | 63.0% / 17.4% | 85.1% / 3.9% | **85.1% / 2.7%** ✖ recall |
+| TypeScript/JS | 88.1% / 8.7% | 90.5% / 6.7% | **91.2% / 1.7%** ✖ recall |
+
+Round-2 resolver commits: review fixes H1–H4/M1/M3 (1f03b2f), Rust trait-overload `from` and
+generic-looking names (25c…), Python subscripted bases + `import a.b` binds `a` (4908f0d),
+nearest-preceding same-file definition (2c92719: TS false edges 6.7 → 1.7%), type aliases
+(1cc3bb6). Dead end: a `Foreign(type)` evaluation for Rust extension traits on std types
+(+0.2 recall / −0.3 precision, reverted).
+
+What still blocks Rust/TS (both need extraction changes, queued behind the SEC-1 stream that
+owns extract.rs/infer.rs): Rust generic-bounded fields (`self.read.peek()` with `R: Read`),
+turbofish calls inside macros (`from_str::<T>(..)` in `assert!`), serde's macro-generated
+code; TS: a tree-sitter-typescript grammar bug (two call signatures in an interface without a
+separator swallow the rest of the file — mobx `action.ts`), `??`/narrowed receivers, scope
+spans for anonymous callbacks.
+
+Security audit (no critical/high; cargo audit clean): SEC-3/4/9/10 fixed and merged (f44394b,
+e6d9d40): repo marker files read without following links, 1 MiB cap; def/refs verify the
+indexed file (hash) before printing source; paths sanitized (ESC/OSC/bidi); MCP line cap +
+per-call refresh budget. SEC-1 (quadratic extraction on long method chains) and
+SEC-2/5/6/7/8 (eval proxy grep secrets, actions pinning, installer token handling, ledger) are
+in flight.
+
+Perf since M2: bulk FTS/index rebuild, include index, streaming writer, parallel pass 2,
+path-ordered determinism: ~/dev cold index 7.0 s (v0.1.1) → ~4.4 s.
