@@ -256,29 +256,36 @@ threads = 0                       # parser threads (0 = one per core)
 codegraph is a heuristic graph, not a type checker. [docs/ACCURACY.md](docs/ACCURACY.md)
 measures how right it is against **compiler-grade ground truth**: SCIP indexes built by
 each language's own semantic indexer (scip-go, rust-analyzer, scip-typescript, scip-python)
-on 9 real repos (3 public, 6 of the author's own kit tools), scored site by site.
+on 16 real repos (10 public: go-chi/chi, urfave/cli, labstack/echo, sharkdp/fd, tokio-rs/bytes,
+serde-rs/json, sindresorhus/ky, mobx, zustand, pallets/click; 6 of the author's own tools),
+scored site by site.
 
-| language | files | defs found | callers recall | callers precision | false call edges | refs recall | refs precision | impl recall | impl precision |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Go | 192 | 100.0% | 99.9% | 99.3% | 0.7% | 99.3% | 99.6% | 100.0% | 94.4% |
-| Python | 45 | 100.0% | 100.0% | 99.7% | 0.3% | 79.8% | 99.8% | 100.0% | 100.0% |
-| Rust | 90 | 92.8% | 95.6% | 98.6% | 1.4% | 68.1% | 98.8% | – | – |
-| TypeScript/JS | 150 | 100.0% | 99.8% | 99.8% | 0.2% | 81.0% | 99.9% | 100.0% | 83.3% |
-| **all** | 477 | 97.4% | 98.4% | 99.2% | 0.8% | 83.3% | 99.4% | 100.0% | 93.8% |
+| language | files | callers recall | false call edges | refs recall | refs precision | impl recall / precision |
+|---|---:|---:|---:|---:|---:|---:|
+| Go | 364 | 98.9% | 1.1% | 98.6% | 99.4% | 87.5% / 79.5% |
+| Python | 124 | 96.0% | 1.9% | 76.4% | 98.3% | 100% / 91.4% |
+| TypeScript/JS | 396 | 94.3% | 1.6% | 72.9% | 98.2% | 50.0% / 28.6% |
+| Rust | 195 | 85.1% | 2.7% | 64.6% | 92.7% | – |
+| **all** | 1079 | 94.2% | 1.7% | 81.9% | 97.5% | 87.5% / 74.8% |
+
+The same harness scores the v0.1.1 resolver at 78.7% callers recall with 14.0% false call edges.
+Where it still falls short, honestly: Rust generic- and macro-heavy code (serde-json 71%,
+bytes 82% callers recall; the author's own Rust tools are 94–97%), and TS narrowing through
+exported factory objects (mobx 86%, zustand 97%). Per-repo numbers are in
+[docs/ACCURACY.md](docs/ACCURACY.md).
 
 Confidence calibration (share of judged edges that are actually correct):
 
 | language | exact | likely | name_only |
 |---|---:|---:|---:|
-| Go | 100.0% (5960/5960) | 75.9% (22/29) | 50.0% (18/36) |
-| Python | 100.0% (1167/1167) | 0.0% (0/2) | 97.8% (44/45) |
-| Rust | 99.8% (3674/3683) | 88.0% (249/283) | 0.0% (0/6) |
-| TypeScript/JS | 100.0% (1427/1427) | 60.0% (3/5) | 100.0% (1/1) |
-| **all** | 99.9% (12228/12237) | 85.9% (274/319) | 71.6% (63/88) |
+| Go | 100.0% | 67.7% | 49.1% |
+| Python | 99.7% | 97.9% | 69.8% |
+| TypeScript/JS | 98.9% | 96.1% | 87.6% |
+| Rust | 94.9% | 89.4% | 7.7% |
+| **all** | 98.7% (35,515 / 35,998) | 91.5% | 60.0% |
 
 Rust has no `impl`/`inherit` score: rust-analyzer's SCIP output emits no implementation
-relationships to compare against. Rust-analyzer also has no ground truth for Rust so its
-refs recall (68.1%) is real, not a scoring gap — see [Limitations](#limitations-honest).
+relationships to compare against.
 
 Reproduce with:
 
