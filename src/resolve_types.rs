@@ -846,6 +846,7 @@ impl Ctx {
             old_to_file: None,
             hint: None,
             dot: false,
+            line: 0,
         };
         if let Some((s, _)) = self.resolve_edge(&fake, &self.scopes[fi]) {
             let sym = &self.syms[s];

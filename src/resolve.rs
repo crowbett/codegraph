@@ -100,6 +100,8 @@ struct S {
     fields: Vec<(String, String)>,
     /// First line of the definition (Go method shapes for interface satisfaction).
     sig: String,
+    /// 1-based start line.
+    line: u32,
 }
 
 struct E {
@@ -118,6 +120,8 @@ struct E {
     hint: Option<String>,
     /// Rust method-call syntax.
     dot: bool,
+    /// 1-based line of the reference.
+    line: u32,
 }
 
 /// Local names an import introduces into a file.
@@ -774,6 +778,7 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
                     old_to_file: None,
                     hint: None,
                     dot: false,
+                    line: e.line,
                 };
                 ctx.resolve_edge(&fake, &ctx.scopes[e.file])
                     .map(|(s, _)| ctx.syms[s].id)
@@ -918,7 +923,7 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
             // below are broken by position, so resolution must not depend on write order.
             "SELECT s.id, s.file_id, s.parent_id, s.name, s.kind, s.container, s.exported,
                     s.is_default, s.recv, s.end_line - s.start_line, s.qkey, s.ret, s.fields,
-                    s.signature
+                    s.signature, s.start_line
              FROM symbols s JOIN files f ON f.id = s.file_id
              WHERE s.repo_id = ?1 ORDER BY f.path, s.id",
         )?;
@@ -938,6 +943,7 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
                 r.get::<_, Option<String>>(11)?,
                 r.get::<_, Option<String>>(12)?,
                 r.get::<_, String>(13)?,
+                r.get::<_, u32>(14)?,
             ))
         })?;
         for row in rows {
@@ -956,6 +962,7 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
                 ret,
                 fields,
                 sig,
+                line,
             ) = row?;
             let (Some(&file), Some(kind)) = (file_idx.get(&fid), SymKind::parse(&kind)) else {
                 continue;
@@ -977,6 +984,7 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
                     .and_then(|f| serde_json::from_str(&f).ok())
                     .unwrap_or_default(),
                 sig,
+                line,
             });
         }
     }
@@ -984,7 +992,7 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
     {
         let mut st = conn.prepare(
             "SELECT id, file_id, from_symbol, from_name, name, qualifier, kind, extra,
-                    to_symbol, confidence, to_file
+                    to_symbol, confidence, to_file, line
              FROM edges WHERE repo_id = ?1",
         )?;
         let rows = st.query_map([repo_id], |r| {
@@ -1000,10 +1008,11 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
                 r.get::<_, Option<i64>>(8)?,
                 r.get::<_, Option<String>>(9)?,
                 r.get::<_, Option<i64>>(10)?,
+                r.get::<_, u32>(11)?,
             ))
         })?;
         for row in rows {
-            let (id, fid, from_symbol, from_name, name, qualifier, kind, extra, to, conf, tf) =
+            let (id, fid, from_symbol, from_name, name, qualifier, kind, extra, to, conf, tf, line) =
                 row?;
             let (Some(&file), Some(kind)) = (file_idx.get(&fid), EdgeKind::parse(&kind)) else {
                 continue;
@@ -1027,6 +1036,7 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
                 old_to_file: tf,
                 hint,
                 dot,
+                line,
             });
         }
     }
@@ -1724,7 +1734,9 @@ impl Ctx {
     /// Same-file candidates ranked by lexical visibility from the symbol enclosing the
     /// reference: defined in the innermost enclosing scope first, then outer scopes, then
     /// top level; a definition nested in some other function is a last resort.
-    fn lexical_best(&self, from: Option<i64>, cands: &[usize]) -> Option<usize> {
+    /// Among equally visible candidates, the definition closest before `line` wins
+    /// (sibling test callbacks each declaring their own `class A`), then the closest after.
+    fn lexical_best(&self, from: Option<i64>, line: u32, cands: &[usize]) -> Option<usize> {
         let mut chain: Vec<i64> = Vec::new();
         let mut cur = from;
         while let Some(id) = cur {
@@ -1737,7 +1749,12 @@ impl Ctx {
                 None => chain.len(),
                 Some(p) => chain.iter().position(|&c| c == p).unwrap_or(usize::MAX),
             };
-            (rank, u32::MAX - sym.span, s)
+            let dist = if sym.line <= line {
+                (0, line - sym.line)
+            } else {
+                (1, sym.line - line)
+            };
+            (rank, dist, u32::MAX - sym.span, s)
         })
     }
 
@@ -2118,7 +2135,7 @@ impl Ctx {
             .collect();
         if !local.is_empty() {
             return self
-                .lexical_best(e.from_symbol, &local)
+                .lexical_best(e.from_symbol, e.line, &local)
                 .map(|s| (s, Confidence::Exact));
         }
         // 2. Explicit import bindings.
