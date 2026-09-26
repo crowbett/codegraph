@@ -27,6 +27,18 @@ local = "~/dev/go/keep"
 rev = "0d743de1dc96ed4f3583cae3944fc1d94cd8ab8d"
 
 [[repo]]
+name = "urfave-cli"
+lang = "go"
+url = "https://github.com/urfave/cli"
+rev = "ae1fde92d52c18cb0e713172915a0b94f1c5daa3"   # v3.13.0 (generic flag types)
+
+[[repo]]
+name = "echo"
+lang = "go"
+url = "https://github.com/labstack/echo"
+rev = "ed8bbe4b6cbf519766c99e492b9cc427404b3719"   # v5.3.1 (interfaces, middleware)
+
+[[repo]]
 name = "fd"
 lang = "rust"
 url = "https://github.com/sharkdp/fd"
@@ -45,6 +57,18 @@ local = "~/dev/rust/recall"
 rev = "7f913bdda58e2a3079ff78a25b3f33b4d1530971"
 
 [[repo]]
+name = "bytes"
+lang = "rust"
+url = "https://github.com/tokio-rs/bytes"
+rev = "76c0fbb54ed4336caf9d2311658a2f4a5627c21d"   # v1.12.1 (Buf/BufMut traits)
+
+[[repo]]
+name = "serde-json"
+lang = "rust"
+url = "https://github.com/serde-rs/json"
+rev = "de8500740cdcabffb9734f503e4889def823cf10"   # v1.0.151 (macro/generic-heavy)
+
+[[repo]]
 name = "ky"
 lang = "typescript"
 url = "https://github.com/sindresorhus/ky"
@@ -58,8 +82,27 @@ rev = "0995e63fe8197a0dce11d4fd17c214560bc71b30"
 ts_projects = ["packages/core", "packages/cli", "apps/web"]
 
 [[repo]]
+name = "mobx"
+lang = "typescript"
+url = "https://github.com/mobxjs/mobx"
+rev = "404c6e08f3ed38fefdd5b37a0ba21d31cb2bf479"   # mobx@7.0.5 (npm-workspaces monorepo, classes)
+
+[[repo]]
+name = "zustand"
+lang = "typescript"
+url = "https://github.com/pmndrs/zustand"
+rev = "2115efb9e270e73ad1d3472dfe0e0c7b8c6abcd4"   # v5.0.15 (functional, hooks, generics)
+
+[[repo]]
 name = "ledger"
 lang = "python"
 local = "~/dev/py/ledger"
 rev = "a90d437d57ef21eaad5ab4ae2b88d61198fe5cd2"
 py_extra_paths = ["src"]   # src layout: without it tests' imports resolve as locals
+
+[[repo]]
+name = "click"
+lang = "python"
+url = "https://github.com/pallets/click"
+rev = "8b19813f2bfca99f1018a587a8cf54fc959f2e5d"   # 8.5.0
+py_extra_paths = ["src"]

@@ -15,10 +15,23 @@ language's semantic indexer, which resolves every reference the way the compiler
 | TypeScript/JS | scip-typescript 0.4.0 | `npm install` runs in the clone first so types resolve |
 | Python | scip-python 0.6.6 | patched locally for a Windows `path.sep` regex crash; `src/` layout passed via `pyrightconfig.json` `extraPaths` |
 
-**Corpus** (`bench/corpus.toml`): 9 repos pinned to commits, cloned into the gitignored
-`.cache/bench/` so the originals are never touched. Three public (go-chi/chi, sharkdp/fd,
-sindresorhus/ky) and six of the author's kit tools (pulse, keep, stash, recall, devkit,
-ledger). The private ones are skipped on machines that don't have them.
+**Corpus** (`bench/corpus.toml`): 16 repos pinned to commits, cloned into the gitignored
+`.cache/bench/` so the originals are never touched. Ten public and six of the author's kit
+tools (pulse, keep, stash, recall, devkit, ledger); the private ones are skipped on machines
+that don't have them. Public repos, pinned to release-tag commits:
+
+| repo | lang | tag | commit | files | why |
+|---|---|---|---|---:|---|
+| go-chi/chi | Go | – | `3d1777a` | 84 | router, middleware |
+| urfave/cli | Go | v3.13.0 | `ae1fde9` | 70 | CLI framework, generic flag types |
+| labstack/echo | Go | v5.3.1 | `ed8bbe4` | 102 | server lib, interfaces, generic binders |
+| sharkdp/fd | Rust | – | `ce97e47` | 24 | CLI binary |
+| tokio-rs/bytes | Rust | v1.12.1 | `76c0fbb` | 34 | `Buf`/`BufMut` traits, macro-forwarded impls |
+| serde-rs/json | Rust | v1.0.151 | `de85007` | 71 | generics, macros, `#[cfg]` twins |
+| sindresorhus/ky | TS | – | `0d59458` | 87 | small functional lib |
+| mobxjs/mobx | TS | mobx@7.0.5 | `404c6e0` | 195 | npm-workspaces monorepo, classes |
+| pmndrs/zustand | TS | v5.0.15 | `2115efb` | 51 | hooks, middleware generics |
+| pallets/click | Python | 8.5.0 | `8b19813` | 79 | classes, decorators, `@overload` |
 
 **Scoring** is site by site (`bench/src/accuracy.rs`):
 
