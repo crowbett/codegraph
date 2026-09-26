@@ -104,6 +104,73 @@ pub fn confine(path: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
     }
 }
 
+/// Default cap for repo-controlled marker files (go.mod, Cargo.toml, package.json,
+/// tsconfig.json): 1 MiB.
+pub const MAX_REPO_FILE_BYTES: u64 = 1024 * 1024;
+
+/// Read a repo-controlled file as bytes, defensively. `None` unless all hold:
+///
+/// - neither `root` nor `path` looks like a UNC/device path (checked lexically, before
+///   any filesystem call, so a hostile link target can never start SMB auth);
+/// - `path` itself is a regular file, not a symlink/junction, FIFO or device
+///   (`symlink_metadata`);
+/// - its canonical path sits under the canonical `root` (no escape through a
+///   symlinked parent directory);
+/// - it is at most `max_bytes` long, both by metadata and by what is actually read
+///   (the read is bounded, so a file growing underneath us cannot exhaust memory).
+pub fn read_repo_bytes(root: &Path, path: &Path, max_bytes: u64) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    if is_remote_path(&root.to_string_lossy()) || is_remote_path(&path.to_string_lossy()) {
+        return None;
+    }
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.file_type().is_file() || meta.len() > max_bytes {
+        return None;
+    }
+    let croot = std::fs::canonicalize(root).ok().map(strip_verbatim)?;
+    let cpath = std::fs::canonicalize(path).ok().map(strip_verbatim)?;
+    if is_remote_path(&croot.to_string_lossy())
+        || is_remote_path(&cpath.to_string_lossy())
+        || rel_under(&croot, &cpath).is_none()
+    {
+        return None;
+    }
+    let file = std::fs::File::open(&cpath).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut buf = Vec::with_capacity(meta.len().min(max_bytes) as usize);
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut buf)
+        .ok()?;
+    if buf.len() as u64 > max_bytes {
+        return None;
+    }
+    Some(buf)
+}
+
+/// [`read_repo_bytes`] decoded as UTF-8 (`None` if it is not valid UTF-8).
+pub fn read_repo_file(root: &Path, path: &Path, max_bytes: u64) -> Option<String> {
+    String::from_utf8(read_repo_bytes(root, path, max_bytes)?).ok()
+}
+
+/// Test helper: create a file symlink, or return `false` when the platform/user may
+/// not (Windows without Developer Mode or admin) so the caller can skip.
+#[cfg(test)]
+pub(crate) fn try_symlink(target: &Path, link: &Path) -> bool {
+    #[cfg(unix)]
+    let r = std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    let r = std::os::windows::fs::symlink_file(target, link);
+    match r {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("skipping symlink case: {e}");
+            false
+        }
+    }
+}
+
 /// Files that must never be read or indexed (credentials and secrets), by name.
 pub fn is_secret_file(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
@@ -221,6 +288,95 @@ mod tests {
         );
         assert!(confine(&sneaky.join("b.go").to_string_lossy(), &roots).is_err());
         assert!(confine("does/not/exist.go", &roots).is_err());
+    }
+
+    #[test]
+    fn read_repo_file_accepts_regular_files_under_root() {
+        let root = tempfile::tempdir().unwrap();
+        let p = root.path().join("go.mod");
+        std::fs::write(&p, "module a/b\n").unwrap();
+        assert_eq!(
+            read_repo_file(root.path(), &p, MAX_REPO_FILE_BYTES).as_deref(),
+            Some("module a/b\n")
+        );
+        // Exactly at the cap is fine, one byte over is not.
+        assert!(read_repo_file(root.path(), &p, 11).is_some());
+        assert!(read_repo_file(root.path(), &p, 10).is_none());
+        // Missing files, directories and non-UTF-8 content.
+        assert!(read_repo_file(root.path(), &root.path().join("nope"), 100).is_none());
+        assert!(read_repo_file(root.path(), root.path(), 100).is_none());
+        std::fs::write(root.path().join("bin"), [0xff, 0xfe]).unwrap();
+        assert!(read_repo_file(root.path(), &root.path().join("bin"), 100).is_none());
+        assert!(read_repo_bytes(root.path(), &root.path().join("bin"), 100).is_some());
+    }
+
+    #[test]
+    fn read_repo_file_rejects_oversize_and_outside_root() {
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let big = root.path().join("package.json");
+        std::fs::write(&big, vec![b' '; (MAX_REPO_FILE_BYTES + 1) as usize]).unwrap();
+        assert!(read_repo_file(root.path(), &big, MAX_REPO_FILE_BYTES).is_none());
+        let out = other.path().join("tsconfig.json");
+        std::fs::write(&out, "{}").unwrap();
+        assert!(read_repo_file(root.path(), &out, MAX_REPO_FILE_BYTES).is_none());
+        // `..` that lands outside the root.
+        let sneaky = root
+            .path()
+            .join("..")
+            .join(other.path().file_name().unwrap())
+            .join("tsconfig.json");
+        assert!(read_repo_file(root.path(), &sneaky, MAX_REPO_FILE_BYTES).is_none());
+    }
+
+    #[test]
+    fn read_repo_file_rejects_unc_lexically() {
+        let root = tempfile::tempdir().unwrap();
+        for p in [r"\\attacker\share\x", "//attacker/share/x", r"\\.\pipe\x"] {
+            assert!(
+                read_repo_file(root.path(), Path::new(p), 100).is_none(),
+                "{p}"
+            );
+            assert!(
+                read_repo_file(Path::new(p), Path::new(p), 100).is_none(),
+                "{p}"
+            );
+        }
+    }
+
+    #[test]
+    fn read_repo_file_rejects_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let secret = other.path().join("secret.txt");
+        std::fs::write(&secret, "TOP SECRET").unwrap();
+        let inside = root.path().join("real.json");
+        std::fs::write(&inside, "{}").unwrap();
+        // A link to a file outside the root, and even one to a file inside it.
+        let l1 = root.path().join("tsconfig.json");
+        let l2 = root.path().join("package.json");
+        if !try_symlink(&secret, &l1) || !try_symlink(&inside, &l2) {
+            return;
+        }
+        assert!(read_repo_file(root.path(), &l1, MAX_REPO_FILE_BYTES).is_none());
+        assert!(read_repo_file(root.path(), &l2, MAX_REPO_FILE_BYTES).is_none());
+        #[cfg(unix)]
+        {
+            let z = root.path().join("go.mod");
+            std::os::unix::fs::symlink("/dev/zero", &z).unwrap();
+            assert!(read_repo_file(root.path(), &z, MAX_REPO_FILE_BYTES).is_none());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_repo_file_rejects_symlinked_parent_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(other.path().join("Cargo.toml"), "[package]").unwrap();
+        std::os::unix::fs::symlink(other.path(), root.path().join("sub")).unwrap();
+        let p = root.path().join("sub").join("Cargo.toml");
+        assert!(read_repo_file(root.path(), &p, MAX_REPO_FILE_BYTES).is_none());
     }
 
     #[test]
