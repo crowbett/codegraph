@@ -749,6 +749,10 @@ pub struct CallNode {
     /// Referenced as a value (callback / handler registration), not called.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub as_value: bool,
+    /// Reaches the symbol by dynamic dispatch: the call site resolves to this
+    /// interface/trait/base method, which the symbol implements.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
     /// Already on the path from the root (recursion).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cycle: bool,
@@ -801,9 +805,43 @@ struct Step {
     line: u32,
     confidence: Option<String>,
     value: bool,
+    via: Option<String>,
+}
+
+/// Interface / trait / base-class methods that method `id` implements or overrides:
+/// same name, declared in a type its container implements or extends (`impl` /
+/// `inherit` edges, including derived Go interface satisfaction). Returns (id, qname).
+pub fn dispatch_parents(conn: &Connection, id: i64) -> Result<Vec<(i64, String)>> {
+    let mut st = conn.prepare_cached(
+        "SELECT DISTINCT am.id, am.qname FROM symbols m
+         JOIN symbols t ON t.repo_id = m.repo_id AND t.name = m.container
+              AND t.kind IN ('struct', 'class', 'type', 'enum')
+         JOIN edges ie ON ie.from_symbol = t.id AND ie.kind IN ('impl', 'inherit')
+         JOIN symbols i ON i.id = ie.to_symbol
+         JOIN symbols am ON am.parent_id = i.id AND am.name = m.name AND am.kind = 'method'
+         WHERE m.id = ?1 AND m.kind = 'method' AND am.id != m.id",
+    )?;
+    let rows = st.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 fn steps(conn: &Connection, id: i64, dir: Dir, externals: bool) -> Result<Vec<Step>> {
+    let mut out = steps_of(conn, id, dir, externals, None)?;
+    if dir == Dir::Callers {
+        for (p, qname) in dispatch_parents(conn, id)? {
+            out.extend(steps_of(conn, p, dir, externals, Some(&qname))?);
+        }
+    }
+    Ok(out)
+}
+
+fn steps_of(
+    conn: &Connection,
+    id: i64,
+    dir: Dir,
+    externals: bool,
+    via: Option<&str>,
+) -> Result<Vec<Step>> {
     let sql = match dir {
         Dir::Callers => {
             "SELECT e.from_symbol, NULL, NULL, r.root, f.path, e.line, e.confidence, e.kind
@@ -837,6 +875,7 @@ fn steps(conn: &Connection, id: i64, dir: Dir, externals: bool) -> Result<Vec<St
             line: r.get(5)?,
             confidence: r.get(6)?,
             value: r.get::<_, String>(7)? == "value",
+            via: via.map(str::to_string),
         })
     })?;
     // Unresolved value references (`f(x.Field)`) are just data flow, not calls.
@@ -885,6 +924,7 @@ impl Walker<'_> {
         let mut groups: HashMap<String, (Step, u32)> = HashMap::new();
         for s in steps {
             let key = match (s.other, &s.external) {
+                (Some(o), _) if s.via.is_some() => format!("#{o}~"),
                 (Some(o), _) => format!("#{o}"),
                 (None, Some(x)) if x == "<file level>" => format!("file:{}", s.path),
                 (None, Some(x)) => format!("x:{x}"),
@@ -917,6 +957,7 @@ impl Walker<'_> {
                 sites: count,
                 confidence: s.confidence.clone(),
                 as_value: s.value,
+                via: s.via.clone(),
                 cycle: false,
                 seen: false,
                 more: 0,
@@ -987,6 +1028,7 @@ pub fn call_tree(
             sites: 1,
             confidence: None,
             as_value: false,
+            via: None,
             cycle: false,
             seen: false,
             more,
@@ -1446,7 +1488,17 @@ pub fn impact(
     let mut total = 0usize;
     for d in 1..=depth {
         let mut next = Vec::new();
+        // A method is also reached through the interface / trait methods it implements.
+        let mut expanded: Vec<i64> = Vec::new();
         for id in &frontier {
+            expanded.push(*id);
+            for (p, _) in dispatch_parents(conn, *id)? {
+                if seen.insert(p) {
+                    expanded.push(p);
+                }
+            }
+        }
+        for id in &expanded {
             let rows = st.query_map([id], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,

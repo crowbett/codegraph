@@ -124,3 +124,40 @@ fn rust_receivers_inside_macros_and_smart_pointers() {
     // Arc::new(r) derefs to Repo.
     assert_edge(&ix, f, 8, "count", "repo::Repo::count", "exact");
 }
+
+#[test]
+fn callers_include_dynamic_dispatch() {
+    use codegraph::query::{call_tree, Dir, Filter};
+    let ix = index_fixture("rust_infer");
+    let t = call_tree(
+        &ix.store,
+        "MemBackend::list",
+        &Filter::default(),
+        Dir::Callers,
+        1,
+        false,
+    )
+    .unwrap();
+    let kids = &t.roots[0].children;
+    let direct: Vec<&str> = kids
+        .iter()
+        .filter(|c| c.via.is_none())
+        .filter_map(|c| c.site.as_deref())
+        .collect();
+    let via: Vec<&str> = kids
+        .iter()
+        .filter(|c| c.via.is_some())
+        .filter_map(|c| c.site.as_deref())
+        .collect();
+    // `mem.list()` on the concrete type; `b.list()` on `&dyn Backend` etc. via the trait.
+    assert!(
+        direct.iter().any(|s| s.ends_with("src/lib.rs:19")),
+        "{direct:?}"
+    );
+    assert!(via.iter().any(|s| s.ends_with("src/lib.rs:21")), "{via:?}");
+    assert!(via.iter().any(|s| s.ends_with("src/repo.rs:14")), "{via:?}");
+    assert_eq!(
+        kids.iter().find_map(|c| c.via.clone()).as_deref(),
+        Some("backend::Backend::list")
+    );
+}

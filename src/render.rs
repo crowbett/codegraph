@@ -208,6 +208,9 @@ fn node_label(n: &CallNode, callers: bool, root: &str, s: Style) -> String {
     if n.sites > 1 {
         let _ = write!(line, " {}", s.dim(&format!("×{}", n.sites)));
     }
+    if let Some(v) = &n.via {
+        line.push_str(&format!(" {}", s.dim(&format!("[via {v}]"))));
+    }
     if n.as_value {
         line.push_str(&format!(" {}", s.dim("[as value]")));
     }
