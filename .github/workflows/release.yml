@@ -49,13 +49,14 @@ jobs:
             arch: amd64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable (branch)
+        with:
+          toolchain: stable
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
+      # No build cache: release builds are hermetic (a poisoned cache must not reach a release).
 
       - name: install musl toolchain
         if: matrix.target == 'x86_64-unknown-linux-musl'
@@ -93,8 +94,10 @@ jobs:
       - name: package (zip)
         if: matrix.os == 'windows'
         shell: pwsh
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          $name = "codegraph-${{ steps.ver.outputs.version }}-windows-amd64.zip"
+          $name = "codegraph-${env:VERSION}-windows-amd64.zip"
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/${{ matrix.target }}/release/codegraph.exe .
           Compress-Archive -Force -Path codegraph.exe, README.md, LICENSE -DestinationPath "dist/$name"
@@ -103,8 +106,10 @@ jobs:
       - name: package (tar.gz)
         if: matrix.os != 'windows'
         shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          name="codegraph-${{ steps.ver.outputs.version }}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
+          name="codegraph-${VERSION}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
           mkdir -p dist stage
           cp "target/${{ matrix.target }}/release/codegraph" README.md LICENSE stage/
           tar -C stage -czf "dist/$name" codegraph README.md LICENSE
@@ -112,7 +117,7 @@ jobs:
           # Run it where the host can (x86_64 macOS runs under Rosetta on arm64 runners).
           if [ "${{ matrix.target }}" != "aarch64-unknown-linux-gnu" ]; then stage/codegraph version; fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: codegraph-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/*
@@ -121,10 +126,16 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    # Write scopes live on this job only (top-level stays contents: read):
+    # contents for the draft release, id-token + attestations for build provenance.
     permissions:
       contents: write
+      id-token: write
+      attestations: write
+    env:
+      PUBLISH: ${{ github.ref_type == 'tag' && !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           pattern: codegraph-*
@@ -134,13 +145,24 @@ jobs:
         run: |
           sha256sum codegraph-* > SHA256SUMS
           cat SHA256SUMS
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: SHA256SUMS
           path: dist/SHA256SUMS
+      # SLSA build provenance for every archive (verify: gh attestation verify <file> -R <owner>/codegraph,
+      # see docs/INSTALL.md). GitHub only offers attestations on public repos (or Enterprise Cloud),
+      # so a release cut while the repo is still private skips it with a warning instead of failing.
+      - name: build provenance attestation
+        if: env.PUBLISH == 'true' && github.event.repository.visibility == 'public'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/codegraph-*
+      - name: provenance unavailable
+        if: env.PUBLISH == 'true' && github.event.repository.visibility != 'public'
+        run: echo "::warning::repository is not public; build provenance attestation skipped (not supported on private repos without Enterprise Cloud)"
       - name: draft GitHub release
-        if: github.ref_type == 'tag' && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
-        uses: softprops/action-gh-release@v2
+        if: env.PUBLISH == 'true'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           draft: true
           files: |
