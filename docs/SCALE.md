@@ -59,6 +59,24 @@ runs (total CPU 80–95 % while the bench's own single-threaded resolve ran), so
 phases vary by up to ~2x between iterations (resolve 213–357 s on the same input). The
 ranking below held in every run.
 
+## Results after the fixes (commit `9f5bf03`, 2026-09-26)
+
+Two iterations per run (the table's "median of 2" is the slower one); raw numbers in
+`.cache/bench/scale-9f5bf03.json`. Noisy: accuracy benches and cargo builds shared the machine
+during both iterations, so the fast iteration is listed too.
+
+| run | files | symbols | edges (resolved) | cold (slow / fast) | parse / write / resolve / other (slow) | no-op | 1 file touched | peak WS | DB |
+|---|---:|---:|---:|---:|---|---:|---:|---:|---:|
+| linux | 60,094 | 3,011,164 | 8,458,788 (7,899,926) | **219.5 s / 152.6 s** (was 542.7) | 57.5 / 8.4 / 74.6 / 79.1 s | 4.2 s | **37.1 / 32.1 s** (was 198.8) | 5,171 MB | 2,073 MB |
+| combined | 102,358 | 3,369,149 | 10,799,807 (9,255,569) | **265.0 s / 249.0 s** (was 1,054–1,129) | 83.0 / 8.3 / 96.8 / 79.9 s | 6.6 s | **34.0 / 32.8 s** (was 288–362) | 5,198 MB | 2,605 MB |
+
+The write phase went from 273–428 s to ~8 s (bulk FTS + deferred indexes); "other" (~80 s)
+is now mostly the index/FTS rebuild after the bulk load. Combined cold is **4.1–4.5x faster**
+but still ~4x the 60 s bar; the 1-file touch is still dominated by a whole-repo re-resolve
+(~28 s). Peak working set rose ~0.9 GB (4.3 → 5.2 GB): the streaming writer and parallel
+pass 2 hold more in memory at once. Edge counts match the baseline to within 0.002% (Linux
++157 edges: SEC-1-era extraction changes, not measured separately).
+
 ## Profile of the cold Linux index (baseline)
 
 Phase/sub-phase timers in a scratch copy of the crate (never committed); two runs: as-is,
