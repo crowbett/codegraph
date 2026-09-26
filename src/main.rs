@@ -2,7 +2,11 @@
 
 use std::fmt::Write as _;
 use std::io::{IsTerminal, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context as _;
 use clap::Parser;
@@ -17,6 +21,7 @@ use codegraph::model::SymKind;
 use codegraph::output::{self, Style};
 use codegraph::query::{self, Dir, Filter, GraphFormat};
 use codegraph::store::Store;
+use codegraph::watch::{self, WatchEvent, WatchOptions};
 use codegraph::{render, util};
 
 /// Output context for one invocation.
@@ -156,15 +161,85 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
         }
-        Command::Mcp => {
+        Command::Mcp(a) => {
             let store = app.open_store()?;
+            let watcher = if a.watch {
+                Some(spawn_mcp_watcher(&app.cfg, store.path())?)
+            } else {
+                None
+            };
             let cwd = std::env::current_dir().context("current directory")?;
             let mut server = Server::new(store, app.cfg.clone(), util::absolute(&cwd));
             let stdin = std::io::stdin();
             let stdout = std::io::stdout();
-            server
+            let served = server
                 .serve(stdin.lock(), stdout.lock())
-                .context("mcp stdio")?;
+                .context("mcp stdio");
+            if let Some((stop, handle)) = watcher {
+                stop.store(true, Ordering::SeqCst);
+                let _ = handle.join();
+            }
+            served?;
+        }
+        Command::Watch(a) => {
+            let mut store = app.open_store()?;
+            let roots: Vec<PathBuf> = if a.paths.is_empty() {
+                app.cfg.roots.clone()
+            } else {
+                a.paths.iter().map(|p| util::absolute(p)).collect()
+            };
+            let stop = Arc::new(AtomicBool::new(false));
+            {
+                let stop = Arc::clone(&stop);
+                // First Ctrl-C: finish the current batch and exit 0. Second: exit now
+                // (SQLite rolls back an interrupted write transaction).
+                ctrlc::set_handler(move || {
+                    if stop.swap(true, Ordering::SeqCst) {
+                        std::process::exit(130);
+                    }
+                })
+                .context("install Ctrl-C handler")?;
+            }
+            let debounce = Duration::from_millis(a.debounce_ms.max(10));
+            let opts = WatchOptions {
+                debounce,
+                max_latency: debounce.max(Duration::from_secs(2)),
+                initial_index: !a.no_initial,
+                add_repos: true,
+            };
+            let mut emit = |e: &WatchEvent| {
+                let res = if app.json {
+                    serde_json::to_string(e)
+                        .map_err(anyhow::Error::from)
+                        .and_then(|l| {
+                            app.print(&format!(
+                                "{l}
+"
+                            ))
+                        })
+                } else {
+                    match render::watch_event(e, app.verbose, app.style) {
+                        Some(l) if matches!(e, WatchEvent::Error { .. }) => {
+                            eprintln!("{l}");
+                            Ok(())
+                        }
+                        Some(l) if !app.quiet || matches!(e, WatchEvent::Ready { .. }) => app
+                            .print(&format!(
+                                "{l}
+"
+                            )),
+                        _ => Ok(()),
+                    }
+                };
+                // stdout gone (pipe closed): stop watching.
+                if res.is_err() {
+                    stop.store(true, Ordering::SeqCst);
+                }
+            };
+            watch::watch(&mut store, &app.cfg, &roots, &opts, &stop, &mut emit)?;
+            if !app.json && !app.quiet {
+                eprintln!("codegraph watch: stopped");
+            }
         }
         Command::Index(a) => {
             let mut store = app.open_store()?;
@@ -314,6 +389,42 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// `mcp --watch`: a watcher thread with its own connection to the graph. It keeps repos
+/// already in the graph fresh (it never adds repos, like the per-call refresh).
+fn spawn_mcp_watcher(
+    cfg: &Config,
+    db: &Path,
+) -> anyhow::Result<(Arc<AtomicBool>, std::thread::JoinHandle<()>)> {
+    let mut store = Store::open(db)?;
+    let cfg = cfg.clone();
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    let handle = std::thread::Builder::new()
+        .name("codegraph-watch".into())
+        .spawn(move || {
+            let roots: Vec<PathBuf> = cfg.roots.iter().filter(|r| r.is_dir()).cloned().collect();
+            if roots.is_empty() {
+                eprintln!("codegraph mcp: watch: no configured root exists; not watching");
+                return;
+            }
+            let opts = WatchOptions {
+                initial_index: false,
+                add_repos: false,
+                ..WatchOptions::default()
+            };
+            let mut emit = |e: &WatchEvent| {
+                if let Some(l) = render::watch_event(e, false, Style::plain()) {
+                    eprintln!("codegraph mcp: watch: {l}");
+                }
+            };
+            if let Err(e) = watch::watch(&mut store, &cfg, &roots, &opts, &flag, &mut emit) {
+                eprintln!("codegraph mcp: watch stopped: {e}");
+            }
+        })
+        .context("spawn watcher thread")?;
+    Ok((stop, handle))
 }
 
 /// One item per line.

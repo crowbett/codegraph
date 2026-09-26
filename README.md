@@ -60,7 +60,8 @@ codegraph path <from> <to>              shortest call path
 codegraph impact <file|symbol> [-d N]   what transitively depends on this
 codegraph hotspots [--repo x]           most referenced, largest fan-out, dead-code candidates
 codegraph dot <symbol> [--format dot|mermaid]
-codegraph status | config path|show | version | mcp
+codegraph watch [PATH...]               keep the graph fresh as files change (Ctrl-C stops)
+codegraph status | config path|show | version | mcp [--watch]
 ```
 
 A `<symbol>` can be a simple name (`Evaluate`), a qualified name (`rules.Engine.Evaluate`,
@@ -91,6 +92,34 @@ depth 2
 In trees, `~` marks a `likely` edge and `?` marks `name_only`. `[as value]` means the
 function is passed as a callback or handler, not called. `[cycle]` and `[seen above]` mark
 recursion and repeated subtrees.
+
+### `watch`
+
+`codegraph watch` indexes the configured roots once (incrementally), then watches them and
+re-indexes a repo shortly after its files change: events are batched per repo and flushed
+after 300 ms of quiet (`--debounce-ms`), at most 2 s after the first change. It applies the
+same filters as `index` (`.gitignore`, `skip_dirs`, languages, `max_file_kb`, credential
+files) and ignores `.git/`, `target/`, `node_modules/` and other skipped or hidden
+directories, so builds do not trigger re-index storms. A new repo under a root (a `.git`
+directory appears) is picked up, a deleted one is dropped. Symlinks and junctions are never
+followed. Human lines by default; with `--json` one NDJSON object per line with a `type`:
+`ready`, `reindex` (`repo`, `files`, `changed`, `ms`, `stats`), `rescan` (a whole root after
+a repo appeared or vanished) and `error`. Ctrl-C exits 0.
+
+```text
+$ codegraph watch C:/tmp/root      # smoke run: one repo, edits, then a second repo appears
+indexed 1 repos · 18 files (18 parsed, 0 unchanged, 0 removed) · 496 symbols · 5,387 edges (25% resolved) · 0.14s
+05:51:11 watching C:/tmp/root (1 repos) — Ctrl-C to stop
+05:51:15 reindex demo: 2 parsed, 0 removed · 497 symbols · 30 ms (src/lib.rs, src/util.rs)
+05:51:18 rescan C:/tmp/root: 1 parsed, 1 removed · 2 repos · 34 ms (repo boundary changed: second/.git)
+```
+
+`codegraph mcp --watch` runs the same watcher in a background thread of the MCP server,
+for repos already in the graph (the per-call refresh stays on). The graph is SQLite in WAL
+mode: readers never block, and concurrent writers (`watch`, `index`, MCP refresh) wait on a
+busy timeout; a batch that still finds the database busy is retried. Re-indexing a repo
+re-resolves all of its edges, which is fast for normal repos but takes minutes for a
+kernel-sized one (see `docs/SCALE.md`).
 
 ### `--json`
 

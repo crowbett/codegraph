@@ -20,6 +20,7 @@ pub mod render;
 pub mod resolve;
 pub mod store;
 pub mod util;
+pub mod watch;
 
 /// Crate version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

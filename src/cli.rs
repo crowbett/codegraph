@@ -17,6 +17,7 @@ Examples:
                                         what transitively depends on this file
   codegraph path main Store.Get         shortest call path
   codegraph dot Evaluate --format mermaid | clip
+  codegraph watch                       keep the graph fresh as files change (Ctrl-C stops)
   codegraph mcp                         stdio MCP server for Claude Code
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 permission denied.";
@@ -97,8 +98,10 @@ pub enum Command {
     Config(ConfigArgs),
     /// Print version.
     Version,
+    /// Watch the configured roots (or the given paths) and re-index repos as files change.
+    Watch(WatchArgs),
     /// Run the MCP server on stdio (read-only tools, auto-refreshing).
-    Mcp,
+    Mcp(McpArgs),
 }
 
 /// `--repo` filter.
@@ -118,6 +121,29 @@ pub struct IndexArgs {
     /// Index these directories instead of the configured roots.
     #[arg(value_name = "PATH")]
     pub paths: Vec<PathBuf>,
+}
+
+/// `watch`.
+#[derive(Debug, Args)]
+pub struct WatchArgs {
+    /// Watch these directories instead of the configured roots.
+    #[arg(value_name = "PATH")]
+    pub paths: Vec<PathBuf>,
+    /// Quiet window (ms) before a batch of changes is re-indexed (max latency 2 s).
+    #[arg(long, value_name = "MS", default_value_t = 300)]
+    pub debounce_ms: u64,
+    /// Skip the initial incremental index of the roots.
+    #[arg(long)]
+    pub no_initial: bool,
+}
+
+/// `mcp`.
+#[derive(Debug, Args, Default)]
+pub struct McpArgs {
+    /// Also watch the configured roots in a background thread and re-index repos already
+    /// in the graph as their files change (the per-call refresh stays on).
+    #[arg(long)]
+    pub watch: bool,
 }
 
 /// `find`.
