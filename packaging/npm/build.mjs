@@ -90,15 +90,23 @@ function readSums(dir) {
   return sums;
 }
 
+// On Windows use the bundled bsdtar: a GNU tar earlier on PATH (Git Bash, MSYS2) reads
+// `C:\...` as a remote `host:path` and fails.
+const TAR = (() => {
+  if (process.platform !== "win32") return "tar";
+  const sys = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe");
+  return fs.existsSync(sys) ? sys : "tar";
+})();
+
 function extract(archive, ext, dest) {
   fs.mkdirSync(dest, { recursive: true });
   if (ext === "tar.gz") {
-    execFileSync("tar", ["-xzf", archive, "-C", dest], { stdio: "inherit" });
+    execFileSync(TAR, ["-xzf", archive, "-C", dest], { stdio: "inherit" });
     return;
   }
   // bsdtar (Windows 10+, macOS) reads zip files; GNU tar does not.
   try {
-    execFileSync("tar", ["-xf", archive, "-C", dest], { stdio: "pipe" });
+    execFileSync(TAR, ["-xf", archive, "-C", dest], { stdio: "pipe" });
   } catch {
     execFileSync("unzip", ["-o", "-q", archive, "-d", dest], { stdio: "inherit" });
   }
@@ -183,3 +191,9 @@ if (built.length === 0) die("no platform package was assembled");
 const missing = PLATFORMS.filter((p) => !built.includes(p.key)).map((p) => p.key);
 process.stdout.write(`staged codegraph ${version} in ${opts.out}\n  platforms: ${built.join(", ")}\n`);
 if (missing.length) process.stdout.write(`  missing:   ${missing.join(", ")} (do not publish a partial set)\n`);
+if (process.platform === "win32" && built.some((k) => !k.startsWith("win32"))) {
+  process.stdout.write(
+    "  note: npm pack/publish on Windows drops the executable bit of the unix binaries;\n" +
+      "        pack and publish from Linux/macOS (the shim chmods as a fallback).\n",
+  );
+}

@@ -45,6 +45,19 @@ try {
   process.exit(1);
 }
 
+// A platform package packed on Windows loses the executable bit; restore it once.
+if (process.platform !== "win32") {
+  try {
+    fs.accessSync(bin, fs.constants.X_OK);
+  } catch {
+    try {
+      fs.chmodSync(bin, 0o755);
+    } catch {
+      // Fall through: spawn reports EACCES with the path below.
+    }
+  }
+}
+
 const res = spawnSync(bin, process.argv.slice(2), { stdio: "inherit", windowsHide: true });
 if (res.error) {
   process.stderr.write(`codegraph: failed to run ${bin}: ${res.error.message}\n`);
