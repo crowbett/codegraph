@@ -137,8 +137,9 @@ else
         VERSION=${VERSION#v}
     fi
 fi
-[ -n "$VERSION" ] && [ "$VERSION" != latest ] ||
+if [ -z "$VERSION" ] || [ "$VERSION" = latest ]; then
     die "could not determine the latest version (private repo? set GH_TOKEN), or pass --version"
+fi
 
 ASSET="codegraph-$VERSION-$OS-$ARCH.tar.gz"
 say "installing codegraph $VERSION ($OS/$ARCH) into $INSTALL_DIR"
