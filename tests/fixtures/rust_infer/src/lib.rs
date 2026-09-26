@@ -33,3 +33,13 @@ pub fn by_impl(b: impl Backend) -> usize {
 pub mod store;
 pub mod walk;
 pub mod shared;
+
+pub fn parse<T: Default>(_s: &str) -> T {
+    T::default()
+}
+
+pub fn turbofish() {
+    assert_eq!(parse::<u32>("1"), 0);
+    let r = Repo::open(Box::new(MemBackend::default())).unwrap();
+    assert!(r.name().is_empty() && r.cast::<u8>() == 0);
+}

@@ -22,3 +22,9 @@ impl Repo {
         &self.title
     }
 }
+
+impl Repo {
+    pub fn cast<T: Default>(&self) -> T {
+        T::default()
+    }
+}

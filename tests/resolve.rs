@@ -21,6 +21,9 @@ fn rust_calls_inside_macro_arguments() {
     // assert_eq!(short(n as u32), "0") / vec![short(1), short(2)]
     assert_edge(&ix, "src/lib.rs", 15, "short", "short", "exact");
     assert_edge(&ix, "src/lib.rs", 16, "short", "short", "exact");
+    // Turbofish inside macro tokens: `parse::<u32>(..)` and `r.cast::<u8>()`.
+    assert_edge(&ix, "src/lib.rs", 42, "parse", "parse", "exact");
+    assert_edge(&ix, "src/lib.rs", 44, "cast", "repo::Repo::cast", "exact");
 }
 
 #[test]
