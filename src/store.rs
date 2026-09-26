@@ -16,7 +16,7 @@ use crate::layout::FileUnit;
 
 /// Bump when the schema or extraction output changes incompatibly; a mismatch
 /// wipes the graph so the next `index` rebuilds it.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -83,8 +83,14 @@ CREATE TABLE IF NOT EXISTS edges(
 );
 CREATE INDEX IF NOT EXISTS edges_file ON edges(file_id);
 CREATE INDEX IF NOT EXISTS edges_repo ON edges(repo_id);
+-- Substring search covers every symbol except C/C++ object-like `#define` constants: the
+-- Linux kernel has 2.0 M of them (2/3 of its symbols). They stay symbols (def, refs, exact
+-- and prefix find); only substring/fuzzy-doc search skips them.
+CREATE VIEW IF NOT EXISTS symbols_fts_src AS
+    SELECT id, name, qname, doc FROM symbols
+    WHERE NOT (kind = 'const' AND signature LIKE '#define%');
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
-    name, qname, doc, content='symbols', content_rowid='id', tokenize='trigram'
+    name, qname, doc, content='symbols_fts_src', content_rowid='id', tokenize='trigram'
 );
 ";
 
@@ -97,10 +103,12 @@ CREATE INDEX IF NOT EXISTS symbols_qkey ON symbols(qkey);
 CREATE INDEX IF NOT EXISTS edges_to ON edges(to_symbol);
 CREATE INDEX IF NOT EXISTS edges_from ON edges(from_symbol);
 CREATE INDEX IF NOT EXISTS edges_to_file ON edges(to_file);
-CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
+CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols
+WHEN NOT (new.kind = 'const' AND new.signature LIKE '#define%') BEGIN
     INSERT INTO symbols_fts(rowid, name, qname, doc) VALUES (new.id, new.name, new.qname, new.doc);
 END;
-CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
+CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols
+WHEN NOT (old.kind = 'const' AND old.signature LIKE '#define%') BEGIN
     INSERT INTO symbols_fts(symbols_fts, rowid, name, qname, doc)
     VALUES ('delete', old.id, old.name, old.qname, old.doc);
 END;
@@ -207,7 +215,8 @@ impl Store {
                 .optional()?;
             if v.as_deref() != Some(&SCHEMA_VERSION.to_string()) {
                 self.conn.execute_batch(
-                    "DROP TABLE IF EXISTS symbols_fts; DROP TABLE IF EXISTS edges;
+                    "DROP TABLE IF EXISTS symbols_fts; DROP VIEW IF EXISTS symbols_fts_src;
+                     DROP TABLE IF EXISTS edges;
                      DROP TABLE IF EXISTS symbols; DROP TABLE IF EXISTS files;
                      DROP TABLE IF EXISTS repos; DROP TABLE IF EXISTS meta;",
                 )?;
@@ -531,6 +540,40 @@ mod tests {
                 [name],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn define_constants_skip_substring_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("g.db")).unwrap();
+        s.conn()
+            .execute_batch(
+                "INSERT INTO repos(id, name, root) VALUES (1, 'r', 'C:/r');
+                 INSERT INTO files(id, repo_id, path, lang, hash, mtime, size, lines,
+                    module, package) VALUES (1, 1, 'a.h', 'c', 'h', 0, 0, 1, '', '');
+                 INSERT INTO symbols(file_id, repo_id, name, kind, qname, qkey, start_line,
+                    start_col, end_line, end_col, signature, exported, is_default)
+                 VALUES (1, 1, 'MAX_WIDGETS', 'const', 'MAX_WIDGETS', 'MAX_WIDGETS', 1, 1, 1, 1,
+                    '#define MAX_WIDGETS 8', 1, 0),
+                        (1, 1, 'widget_init', 'function', 'widget_init', 'widget_init', 2, 1, 2,
+                    1, 'int widget_init(void)', 1, 0);",
+            )
+            .unwrap();
+        assert_eq!(
+            fts_hits(&s, "AX_WID"),
+            0,
+            "no #define constants in substring search"
+        );
+        assert_eq!(fts_hits(&s, "dget_in"), 1);
+        // Deleting both keeps the index consistent (the trigger skips the constant too).
+        s.conn().execute("DELETE FROM symbols", []).unwrap();
+        s.conn()
+            .execute(
+                "INSERT INTO symbols_fts(symbols_fts) VALUES ('integrity-check')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(fts_hits(&s, "dget_in"), 0);
     }
 
     #[test]
