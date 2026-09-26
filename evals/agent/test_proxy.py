@@ -7,7 +7,9 @@ budget cap and the loopback guard. No network beyond 127.0.0.1, no codegraph bin
 
 from __future__ import annotations
 
+import contextlib
 import http.client
+import io
 import json
 import os
 import shutil
@@ -31,7 +33,14 @@ def make_corpus(root: Path) -> None:
     repo = root / "alpha"
     (repo / "src").mkdir(parents=True)
     (repo / ".git").mkdir()
-    (repo / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+    (repo / ".git" / "config").write_text(
+        '[core]\n[remote "origin"]\n\turl = https://x:needle-gittoken@example.invalid/r.git\n', encoding="utf-8"
+    )
+    (repo / "credentials.json").write_text('{"needle-creds": 1}\n', encoding="utf-8")
+    (repo / "Secrets.yaml").write_text("needle-secretsyaml: 1\n", encoding="utf-8")
+    (repo / "server.pem").write_text("needle-pem\n", encoding="utf-8")
+    (repo / "config").mkdir()
+    (repo / "config" / ".npmrc").write_text("//r/:_authToken=needle-npm\n", encoding="utf-8")
     (repo / "src" / "main.go").write_text(
         "package main\n\nfunc helper() int { return 1 }\n\nfunc main() { helper() }\n", encoding="utf-8"
     )
@@ -178,8 +187,140 @@ class ToolTest(unittest.TestCase):
     def test_list_files_hides_secrets(self) -> None:
         out = proxy.tool_list_files(self.s, {"repo": "alpha"})
         self.assertIn("alpha/src/main.go", out)
-        self.assertNotIn(".env", out)
-        self.assertNotIn("id_ed25519", out)
+        for leak in (".env", "id_ed25519", "credentials.json", "Secrets.yaml", "server.pem", ".npmrc", ".git/"):
+            self.assertNotIn(leak, out)
+        with self.assertRaises(proxy.ToolError):
+            proxy.tool_list_files(self.s, {"repo": "alpha", "glob": ".env"})
+        with self.assertRaises(proxy.ToolError):
+            proxy.tool_list_files(self.s, {"repo": "alpha", "glob": "{.git,.git/*}"})
+
+
+# --------------------------------------------------------------------------- SEC-2: grep secret bypasses
+
+SECRET_MARKERS = (
+    "needle-secret",
+    "needle-private-key",
+    "needle-gittoken",
+    "needle-creds",
+    "needle-secretsyaml",
+    "needle-pem",
+    "needle-npm",
+)
+
+
+class GrepSecretTest(unittest.TestCase):
+    """Each case was a working bypass: a model-supplied glob appended after the
+    excludes (last-match-wins, whitelist overrides hidden-file skipping) or a secret
+    name the old exclude list did not cover."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.root = self.tmp / "corpus"
+        self.root.mkdir()
+        make_corpus(self.root)
+        self.s = proxy.Settings(corpus=proxy.Corpus(self.root), max_tool_chars=20000)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def assert_clean(self, out: str) -> None:
+        for marker in SECRET_MARKERS:
+            self.assertNotIn(marker, out)
+
+    def test_secret_globs_refused(self) -> None:
+        for glob in (
+            ".env",
+            ".env*",
+            "*.pem",
+            "**/*.pem",
+            "*.{pem,go}",
+            "{.git,.git/*}",
+            ".git/**",
+            "**/.git/config",
+            ".gi?/*",
+            "credentials.json",
+            "secrets.yaml",
+            "SECRETS.YML",
+            "id_rsa",
+            "*/.npmrc",
+            "!*.go",
+            " !src/**",
+        ):
+            with self.subTest(glob=glob), self.assertRaises(proxy.ToolError):
+                proxy._glob_arg(glob)
+
+    def test_ordinary_globs_allowed(self) -> None:
+        for glob in ("*", "**/*", "*.go", "src/**", "src/*.go", "**/*.{rs,go}", "*.gitignore", "docs/*.md"):
+            with self.subTest(glob=glob):
+                self.assertEqual(proxy._glob_arg(glob), f"--glob={glob}")
+
+    @unittest.skipUnless(HAS_RG, "ripgrep not on PATH")
+    def test_no_glob_hides_all_secret_names(self) -> None:
+        out = proxy.tool_grep(self.s, {"pattern": "needle", "repo": "alpha"})
+        self.assertIn("alpha/src/big.txt", out)
+        self.assert_clean(out)
+        self.assert_clean(proxy.tool_grep(self.s, {"pattern": "needle"}))  # corpus-wide too
+
+    @unittest.skipUnless(HAS_RG, "ripgrep not on PATH")
+    def test_audit_bypasses_via_tool_grep(self) -> None:
+        for glob in (".env", "*.pem", "{.git,.git/*}", "credentials.json", "!src/**"):
+            with self.subTest(glob=glob), self.assertRaises(proxy.ToolError):
+                proxy.tool_grep(self.s, {"pattern": "needle", "repo": "alpha", "glob": glob})
+
+    @unittest.skipUnless(HAS_RG, "ripgrep not on PATH")
+    def test_broad_globs_still_hide_secrets(self) -> None:
+        for glob in ("*", "**/*", "**"):
+            with self.subTest(glob=glob):
+                out = proxy.tool_grep(self.s, {"pattern": "needle", "repo": "alpha", "glob": glob})
+                self.assertIn("alpha/src/big.txt", out)
+                self.assert_clean(out)
+
+    @unittest.skipUnless(HAS_RG, "ripgrep not on PATH")
+    def test_excludes_come_after_user_glob(self) -> None:
+        # Even a glob that slipped past the name check cannot re-include a secret: the
+        # excludes are last on the command line, so they win.
+        cmd: list[list[str]] = []
+        real_run = proxy.subprocess.run
+
+        def spy(c: list[str], **kw: object) -> object:
+            cmd.append(c)
+            return real_run(c, **kw)  # type: ignore[arg-type]
+
+        proxy.subprocess.run = spy  # type: ignore[assignment]
+        try:
+            proxy.tool_grep(self.s, {"pattern": "needle", "repo": "alpha", "glob": "*.txt"})
+        finally:
+            proxy.subprocess.run = real_run  # type: ignore[assignment]
+        argv = cmd[0]
+        user = argv.index("--glob=*.txt")
+        for g in proxy.SECRET_GLOBS:
+            self.assertGreater(argv.index(g), user)
+        self.assertIn("--iglob=!.git", argv)
+        self.assertIn("--iglob=!**/.git/**", argv)
+
+    @unittest.skipUnless(HAS_RG, "ripgrep not on PATH")
+    def test_context_lines_filtered_and_formatted(self) -> None:
+        out = proxy.tool_grep(self.s, {"pattern": "func helper", "repo": "alpha", "context": 1})
+        self.assertIn("alpha/src/main.go:3:func helper()", out)
+        self.assertIn("alpha/src/main.go-2-", out)
+        self.assert_clean(out)
+
+    def test_hidden_path_post_filter(self) -> None:
+        for path in (
+            "./.env",
+            "alpha/.env.local",
+            "alpha/credentials.json",
+            "alpha/deep/Secrets.YAML",
+            "alpha/.git/config",
+            "./.GIT/HEAD",
+            "alpha/sub/.git/objects/ab",
+            "alpha/tls/server.key",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(proxy.is_hidden_path(path))
+        for path in ("alpha/src/main.go", "alpha/.gitignore", "alpha/.github/workflows/ci.yml", "./credentials.go"):
+            with self.subTest(path=path):
+                self.assertFalse(proxy.is_hidden_path(path))
 
 
 # --------------------------------------------------------------------------- stub upstreams
@@ -322,6 +463,31 @@ class LoopTest(unittest.TestCase):
         with self.assertRaises(proxy.BudgetExceeded):
             again.check()
 
+    def test_in_flight_reservation_blocks_other_requests(self) -> None:
+        # Another request holds a reservation that fills the budget: this one must be
+        # refused before it reaches the upstream, not after.
+        stub = self.stub([oa_answer("x", 10, 1)])
+        agent = self.agent(stub, budget=0.05)
+        held = agent.ledger.reserve(proxy.Usage(input=49_900, output=0))  # $0.0499 of $0.05
+        rec = agent.run("grep", "[Q1] q")
+        self.assertEqual(rec["stop"], "budget")
+        self.assertEqual(stub.bodies, [])
+        agent.ledger.release(held)
+        self.assertEqual(agent.run("grep", "[Q1] q")["stop"], "answer")
+        self.assertEqual(agent.ledger.reserved, 0.0)
+
+    def test_upstream_error_releases_reservation(self) -> None:
+        up = proxy.Upstream("http://127.0.0.1:9/v1", "openai", "m-{arm}", None, 2, 256)
+        up.retries = 0
+        ledger = proxy.Ledger(self.tmp / "spend.json", 1.0, proxy.Prices())
+        agent = proxy.Agent(
+            self.settings, up, proxy.build_arms(self.settings, None), ledger, proxy.Tracer(self.tmp / "t.jsonl")
+        )
+        rec = agent.run("grep", "[Q1] q")
+        self.assertEqual(rec["stop"], "upstream_error")
+        self.assertEqual(ledger.reserved, 0.0)
+        self.assertEqual(ledger.spent, 0.0)
+
     def test_anthropic_wire_format(self) -> None:
         stub = self.stub(
             [
@@ -354,6 +520,132 @@ class LoopTest(unittest.TestCase):
         self.assertEqual([b["type"] for b in msgs[1]["content"]], ["text", "tool_use", "tool_use"])
         results = msgs[2]["content"]  # parallel results share one user turn
         self.assertEqual([b["tool_use_id"] for b in results], ["tu_1", "tu_2"])
+
+
+class LedgerTest(unittest.TestCase):
+    """SEC-8: the budget ledger must fail closed."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.path = self.tmp / "agent" / "spend.json"
+        self.path.parent.mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_unreadable_ledger_refuses_to_load(self) -> None:
+        for content in (
+            "",
+            "{",
+            '{"spent_usd": 1.5',  # truncated
+            "[1]",
+            "{}",
+            '{"spent_usd": "3"}',
+            '{"spent_usd": NaN}',
+            '{"spent_usd": Infinity}',
+            '{"spent_usd": -1}',
+            '{"spent_usd": true}',
+        ):
+            with self.subTest(content=content):
+                self.path.write_text(content, encoding="utf-8")
+                with self.assertRaises(proxy.LedgerError) as cm:
+                    proxy.Ledger(self.path, 5.0, proxy.Prices())
+                self.assertIn("reset", str(cm.exception))
+        self.path.write_bytes(b"\xff\xfe\x00garbage")
+        with self.assertRaises(proxy.LedgerError):
+            proxy.Ledger(self.path, 5.0, proxy.Prices())
+
+    def test_non_finite_budget_or_price_refused(self) -> None:
+        for budget in (float("nan"), float("inf"), -1.0):
+            with self.subTest(budget=budget), self.assertRaises(proxy.LedgerError):
+                proxy.Ledger(self.path, budget, proxy.Prices())
+        with self.assertRaises(proxy.LedgerError):
+            proxy.Ledger(self.path, 5.0, proxy.Prices(input=float("nan")))
+        with self.assertRaises(proxy.LedgerError):
+            proxy.Ledger(self.path, 5.0, proxy.Prices(output=-5.0))
+
+    def test_valid_ledger_loads(self) -> None:
+        self.path.write_text('{"spent_usd": 2.25}', encoding="utf-8")
+        self.assertEqual(proxy.Ledger(self.path, 5.0, proxy.Prices()).spent, 2.25)
+
+    def test_write_is_atomic(self) -> None:
+        ledger = proxy.Ledger(self.path, None, proxy.Prices())
+        ledger.charge(proxy.Usage(input=1_000_000))
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), {"spent_usd": 1.0})
+        real_replace = proxy.os.replace
+
+        def boom(src: str, dst: object) -> None:
+            raise OSError("disk full")
+
+        proxy.os.replace = boom  # type: ignore[assignment]
+        try:
+            with self.assertRaises(OSError):
+                ledger.charge(proxy.Usage(input=1_000_000))
+        finally:
+            proxy.os.replace = real_replace  # type: ignore[assignment]
+        # the old file is intact (never truncated) and no temp file is left behind
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), {"spent_usd": 1.0})
+        self.assertEqual(sorted(p.name for p in self.path.parent.iterdir()), ["spend.json"])
+
+    def test_concurrent_reservations_never_overshoot(self) -> None:
+        ledger = proxy.Ledger(self.path, 1.0, proxy.Prices())
+        turn = proxy.Usage(input=100_000)  # $0.10 each: exactly 10 fit
+        ok: list[float] = []
+        refused = 0
+        lock = threading.Lock()
+        start = threading.Barrier(32)
+
+        def worker() -> None:
+            nonlocal refused
+            start.wait()
+            try:
+                held = ledger.reserve(turn)
+            except proxy.BudgetExceeded:
+                with lock:
+                    refused += 1
+                return
+            with lock:
+                ok.append(held)
+
+        threads = [threading.Thread(target=worker) for _ in range(32)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(len(ok), 10)
+        self.assertEqual(refused, 22)
+        # the persisted value counts in-flight reservations (a crash over-counts)
+        self.assertAlmostEqual(json.loads(self.path.read_text(encoding="utf-8"))["spent_usd"], 1.0)
+        for held in ok:
+            ledger.settle(held, proxy.Usage(input=50_000))
+        self.assertAlmostEqual(ledger.spent, 0.5)
+        self.assertAlmostEqual(ledger.reserved, 0.0)
+        self.assertAlmostEqual(proxy.Ledger(self.path, 1.0, proxy.Prices()).spent, 0.5)
+
+    def test_main_refuses_corrupt_ledger(self) -> None:
+        corpus = self.tmp / "corpus"
+        corpus.mkdir()
+        make_corpus(corpus)
+        self.path.write_text('{"spent_usd": 4.9', encoding="utf-8")
+        env = {"CGAGENT_LEDGER": str(self.path), "CGAGENT_BUDGET_USD": "5"}
+        old = {k: os.environ.get(k) for k in env}
+        os.environ.update(env)
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                rc = proxy.main(
+                    ["--corpus", str(corpus), "--no-codegraph", "--port", "0", "--state-dir", str(self.tmp / "st")]
+                )
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.assertEqual(rc, 2)
+        self.assertIn("refusing to start", err.getvalue())
+        self.assertIn(str(self.path), err.getvalue())
+        self.assertEqual(self.path.read_text(encoding="utf-8"), '{"spent_usd": 4.9')  # untouched
 
 
 class HttpTest(unittest.TestCase):

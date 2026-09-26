@@ -23,13 +23,17 @@ Stdlib only. Loopback only (Host allowlist, browser Origin refused).
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fnmatch
 import json
+import math
 import os
 import queue
 import re
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -226,13 +230,90 @@ def rg_env() -> dict[str, str]:
     return env
 
 
+# Exclude globs mirroring SECRET_NAME (case-insensitive, like the regex) plus .git
+# internals. ripgrep globs are last-match-wins and a whitelist glob overrides its
+# hidden-file skipping, so these MUST come after any caller-supplied glob.
 SECRET_GLOBS = [
-    "--glob=!.env*",
-    "--glob=!*.pem",
-    "--glob=!*.key",
-    "--glob=!id_*",
-    "--glob=!**/node_modules/**",
+    f"--iglob=!{g}"
+    for g in (
+        ".env",
+        ".env.*",
+        "*.{pem,key,p12,pfx,jks,keystore,kdbx,ppk,asc,gpg}",
+        "id_{rsa,dsa,ecdsa,ed25519}",
+        "id_{rsa,dsa,ecdsa,ed25519}.pub",
+        "{.netrc,_netrc,.npmrc,.pypirc,.git-credentials}",
+        "{credentials,credentials.json}",
+        "{secret,secrets}.{json,toml,yaml,yml}",
+        ".git",
+        "**/.git/**",
+        "**/node_modules/**",
+    )
 ]
+
+# A glob is refused when it targets a secret/.git name without also matching an
+# ordinary source file (so "*" and "src/**" stay allowed; the trailing excludes and
+# the output post-filter still hide secrets from those).
+_SECRET_SAMPLES = (
+    ".env",
+    ".env.local",
+    "server.pem",
+    "tls.key",
+    "store.p12",
+    "id_rsa",
+    "id_ed25519.pub",
+    ".netrc",
+    ".npmrc",
+    ".git-credentials",
+    "credentials",
+    "credentials.json",
+    "secrets.yaml",
+    "secret.json",
+    ".git",
+)
+_BENIGN_SAMPLES = ("main.go", "src", "README.md", "lib.rs", "index.ts")
+
+
+def _expand_braces(glob: str, depth: int = 0) -> list[str]:
+    """`a{b,c}d` -> [abd, acd] (nested, bounded). Unbalanced braces stay literal."""
+    start = glob.find("{")
+    if start < 0 or depth > 4:
+        return [glob]
+    level = 0
+    for i in range(start, len(glob)):
+        if glob[i] == "{":
+            level += 1
+        elif glob[i] == "}":
+            level -= 1
+            if level == 0:
+                inner, parts, lv, last = glob[start + 1 : i], [], 0, 0
+                for j, ch in enumerate(inner):
+                    lv += ch == "{"
+                    lv -= ch == "}"
+                    if ch == "," and lv == 0:
+                        parts.append(inner[last:j])
+                        last = j + 1
+                parts.append(inner[last:])
+                out: list[str] = []
+                for p in parts:
+                    out += _expand_braces(glob[:start] + p + glob[i + 1 :], depth + 1)
+                    if len(out) > 256:
+                        raise ToolError("glob has too many alternatives")
+                return out
+    return [glob]
+
+
+def _glob_targets_secret(glob: str) -> bool:
+    for alt in _expand_braces(glob):
+        for comp in alt.replace("\\", "/").split("/"):
+            if not comp or comp == "**":
+                continue
+            c = comp.lower()
+            if is_secret_name(comp) or c == ".git":
+                return True
+            hits_secret = any(fnmatch.fnmatchcase(s, c) for s in _SECRET_SAMPLES)
+            if hits_secret and not any(fnmatch.fnmatchcase(b.lower(), c) for b in _BENIGN_SAMPLES):
+                return True
+    return False
 
 
 def _glob_arg(glob: object) -> str | None:
@@ -240,7 +321,19 @@ def _glob_arg(glob: object) -> str | None:
         return None
     if not isinstance(glob, str) or len(glob) > 200 or "\x00" in glob:
         raise ToolError("glob must be a short string")
+    if glob.lstrip().startswith("!"):
+        raise ToolError("negated globs ('!...') are not allowed; use a positive filter")
+    if _glob_targets_secret(glob):
+        raise ToolError(f"refused glob {glob!r}: credential/secret files and .git internals are never searched")
     return f"--glob={glob}"
+
+
+def is_hidden_path(path: str) -> bool:
+    """True if a tool output path names a secret file or sits inside .git."""
+    parts = [p for p in path.replace("\\", "/").split("/") if p not in ("", ".")]
+    if not parts:
+        return False
+    return is_secret_name(parts[-1]) or any(p.lower() == ".git" for p in parts)
 
 
 def _prefix(line: str, prefix: str) -> str:
@@ -265,7 +358,7 @@ def tool_grep(s: Settings, args: JSON) -> str:
         "--max-columns-preview",
         f"--max-count={MAX_MATCHES_PER_FILE}",
         "--max-filesize=1M",
-        *SECRET_GLOBS,
+        "--null",  # path\0rest: lets the post-filter find the path unambiguously
     ]
     if args.get("ignore_case"):
         cmd.append("--ignore-case")
@@ -275,6 +368,7 @@ def tool_grep(s: Settings, args: JSON) -> str:
     g = _glob_arg(args.get("glob"))
     if g:
         cmd.append(g)
+    cmd += SECRET_GLOBS  # last: ripgrep globs are last-match-wins
     # Search from inside the repo so globs like "src/**" are repo-relative, then prefix
     # the repo name back onto every path.
     cmd += ["--regexp", pattern, "--", "."]
@@ -296,7 +390,21 @@ def tool_grep(s: Settings, args: JSON) -> str:
         return "no matches"
     if res.returncode != 0:
         raise ToolError(f"grep failed: {res.stderr.strip()[:300]}")
-    lines = [_prefix(line, prefix) for line in res.stdout.splitlines()]
+    lines: list[str] = []
+    for raw in res.stdout.splitlines():
+        path, nul, rest = raw.partition("\x00")
+        if not nul:  # `--` context separator (the only line without a path)
+            if raw == "--" and lines and lines[-1] != "--":
+                lines.append(raw)
+            continue
+        if is_hidden_path(path):
+            continue
+        sep = ":" if re.match(r"\d+:", rest) else "-"
+        lines.append(_prefix(path, prefix) + sep + rest)
+    while lines and lines[-1] == "--":
+        lines.pop()
+    if not lines:
+        return "no matches"
     per_file: dict[str, int] = {}
     for line in lines:
         m = re.match(r"^(.+?):\d+:", line)
@@ -336,11 +444,11 @@ def tool_read_file(s: Settings, args: JSON) -> str:
 
 def tool_list_files(s: Settings, args: JSON) -> str:
     target = s.corpus.repo_dir(args.get("repo"))
-    cmd = [s.rg, "--no-config", "--files", "--color=never", "--path-separator=/", *SECRET_GLOBS]
+    cmd = [s.rg, "--no-config", "--files", "--color=never", "--path-separator=/"]
     g = _glob_arg(args.get("glob"))
     if g:
         cmd.append(g)
-    cmd += ["--", "."]
+    cmd += [*SECRET_GLOBS, "--", "."]  # excludes last: ripgrep globs are last-match-wins
     prefix = "" if target == s.corpus.root else s.corpus.rel(target) + "/"
     res = subprocess.run(
         cmd,
@@ -355,7 +463,7 @@ def tool_list_files(s: Settings, args: JSON) -> str:
     if res.returncode not in (0, 1):
         raise ToolError(f"list_files failed: {res.stderr.strip()[:300]}")
     files = sorted(_prefix(line, prefix) for line in res.stdout.splitlines())
-    files = [f for f in files if not is_secret_name(f.rsplit("/", 1)[-1])]
+    files = [f for f in files if not is_hidden_path(f)]
     if not files:
         return "no files"
     text, _ = cap("\n".join(files), s.max_tool_chars, "use a narrower glob")
@@ -714,32 +822,110 @@ class Upstream:
 # --------------------------------------------------------------------------- budget + traces
 
 
+class LedgerError(Exception):
+    """The spend ledger (or the budget) is unusable; the proxy refuses to start."""
+
+
+def _finite_usd(v: object, what: str) -> float:
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        raise LedgerError(f"{what} must be a number, got {v!r}")
+    f = float(v)
+    if not math.isfinite(f) or f < 0:
+        raise LedgerError(f"{what} must be a finite, non-negative number, got {v!r}")
+    return f
+
+
 class Ledger:
-    """Cumulative upstream spend, persisted so restarts cannot reset the cap."""
+    """Cumulative upstream spend, persisted so restarts cannot reset the cap.
+
+    Fails closed: an unreadable/corrupt ledger or a non-finite value refuses to load
+    (never silently resets to 0). Each upstream turn first reserves an estimated cost
+    under the lock (so concurrent requests cannot all pass the check and overshoot),
+    then settles to the actual cost. The file is rewritten atomically (temp file +
+    os.replace) and records spent + outstanding reservations, so a crash mid-turn
+    over-counts rather than under-counts."""
 
     def __init__(self, path: Path, budget_usd: float | None, prices: Prices) -> None:
         self.path = path
-        self.budget = budget_usd
+        self.budget = None if budget_usd is None else _finite_usd(budget_usd, "budget (CGAGENT_BUDGET_USD)")
+        for name in ("input", "output", "cache_read"):
+            _finite_usd(getattr(prices, name), f"price {name}")
         self.prices = prices
         self.lock = threading.Lock()
         self.spent = 0.0
+        self.reserved = 0.0
         if path.exists():
-            try:
-                self.spent = float(json.loads(path.read_text(encoding="utf-8")).get("spent_usd", 0))
-            except (ValueError, OSError):
-                self.spent = 0.0
+            self.spent = self._load(path)
+
+    @staticmethod
+    def _load(path: Path) -> float:
+        reset = (
+            f"inspect it, or if you are sure of the real spend, delete {path} "
+            "(or point CGAGENT_LEDGER at a new file) to reset the ledger to $0"
+        )
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            raise LedgerError(f"spend ledger {path} is unreadable ({exc}); {reset}") from None
+        if not isinstance(data, dict) or "spent_usd" not in data:
+            raise LedgerError(f"spend ledger {path} has no spent_usd field; {reset}")
+        try:
+            return _finite_usd(data["spent_usd"], f"spend ledger {path} spent_usd")
+        except LedgerError as exc:
+            raise LedgerError(f"{exc}; {reset}") from None
+
+    def _persist(self) -> None:
+        """Atomic write of spent + outstanding reservations. Caller holds the lock."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".spend-", suffix=".tmp", dir=self.path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({"spent_usd": self.spent + self.reserved}, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self.path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+
+    def _refuse(self, extra: float) -> None:
+        if self.budget is not None and self.spent + self.reserved + extra > self.budget:
+            raise BudgetExceeded(
+                f"budget exhausted: spent ${self.spent:.4f} (+${self.reserved:.4f} in flight, "
+                f"next turn est. ${extra:.4f}) of ${self.budget:.2f}"
+            )
 
     def check(self) -> None:
-        if self.budget is not None and self.spent >= self.budget:
-            raise BudgetExceeded(f"budget exhausted: spent ${self.spent:.4f} of ${self.budget:.2f}")
+        with self.lock:
+            if self.budget is not None and self.spent + self.reserved >= self.budget:
+                raise BudgetExceeded(f"budget exhausted: spent ${self.spent:.4f} of ${self.budget:.2f}")
+
+    def reserve(self, estimate: Usage) -> float:
+        """Reserve the estimated cost of one upstream turn; BudgetExceeded if it would
+        not fit. Returns the reserved amount, to pass to settle()/release()."""
+        est = _finite_usd(self.prices.cost(estimate), "estimated turn cost")
+        with self.lock:
+            self._refuse(est)
+            self.reserved += est
+            self._persist()
+        return est
+
+    def release(self, reserved: float) -> None:
+        with self.lock:
+            self.reserved = max(0.0, self.reserved - reserved)
+            self._persist()
+
+    def settle(self, reserved: float, u: Usage) -> float:
+        c = _finite_usd(self.prices.cost(u), "turn cost")
+        with self.lock:
+            self.reserved = max(0.0, self.reserved - reserved)
+            self.spent += c
+            self._persist()
+        return c
 
     def charge(self, u: Usage) -> float:
-        c = self.prices.cost(u)
-        with self.lock:
-            self.spent += c
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(json.dumps({"spent_usd": self.spent}), encoding="utf-8")
-        return c
+        return self.settle(0.0, u)
 
 
 class BudgetExceeded(Exception):
@@ -774,6 +960,14 @@ class Agent:
     max_turns: int = 12
     served: int = field(default=0)
 
+    def estimate(self, arm: Arm, messages: list[JSON], with_tools: bool) -> Usage:
+        """Upper-ish bound on one turn's usage for the budget reservation: ~3 chars per
+        input token (tokenizers average ~4), all uncached, plus the full max_tokens."""
+        chars = len(arm.system) + len(json.dumps(messages))
+        if with_tools:
+            chars += len(json.dumps(arm.tools))
+        return Usage(input=chars // 3 + 1, output=self.upstream.max_tokens)
+
     def run(self, arm_name: str, question: str) -> JSON:
         arm = self.arms.get(arm_name)
         if arm is None:
@@ -793,14 +987,18 @@ class Agent:
         started = time.monotonic()
         try:
             for turn in range(self.max_turns):
-                self.ledger.check()
                 last = turn == self.max_turns - 1
                 if last:
                     messages.append({"role": "user", "content": "Turn limit reached. Give your final answer now."})
-                t = self.upstream.chat(arm, messages, with_tools=not last)
+                held = self.ledger.reserve(self.estimate(arm, messages, with_tools=not last))
+                try:
+                    t = self.upstream.chat(arm, messages, with_tools=not last)
+                except BaseException:
+                    self.ledger.release(held)
+                    raise
+                self.ledger.settle(held, t.usage)
                 rec["turns"] = turn + 1
                 total.add(t.usage)
-                self.ledger.charge(t.usage)
                 if not t.calls:
                     final, stop = t.text, "answer"
                     break
@@ -1033,14 +1231,20 @@ def main(argv: list[str] | None = None) -> int:
         timeout_s=float(os.environ.get("CGAGENT_UPSTREAM_TIMEOUT_S", "120")),
         max_tokens=int(os.environ.get("CGAGENT_MAX_TOKENS", "2048")),
     )
-    budget = os.environ.get("CGAGENT_BUDGET_USD")
-    prices = Prices(
-        float(os.environ.get("CGAGENT_PRICE_IN", "1.0")),
-        float(os.environ.get("CGAGENT_PRICE_OUT", "5.0")),
-        float(os.environ.get("CGAGENT_PRICE_CACHE_READ", "0.1")),
-    )
     ledger_path = Path(os.environ.get("CGAGENT_LEDGER", str(state / "agent" / "spend.json")))
-    ledger = Ledger(ledger_path, float(budget) if budget else None, prices)
+    try:
+        budget = os.environ.get("CGAGENT_BUDGET_USD")
+        prices = Prices(
+            float(os.environ.get("CGAGENT_PRICE_IN", "1.0")),
+            float(os.environ.get("CGAGENT_PRICE_OUT", "5.0")),
+            float(os.environ.get("CGAGENT_PRICE_CACHE_READ", "0.1")),
+        )
+        ledger = Ledger(ledger_path, float(budget) if budget else None, prices)
+    except (LedgerError, ValueError) as exc:
+        print(f"cgagent: refusing to start: {exc}", file=sys.stderr)
+        if mcp:
+            mcp.close()
+        return 2
     trace = Path(args.trace) if args.trace else state / "traces" / f"{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
     arms = build_arms(settings, mcp)
     state.mkdir(parents=True, exist_ok=True)
