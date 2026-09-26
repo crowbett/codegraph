@@ -126,6 +126,10 @@ struct Ctx {
     /// Workspace packages (`package.json` `name` -> (package dir, entry path)).
     js_pkgs: HashMap<String, (String, Option<String>)>,
     paths: HashMap<String, usize>,
+    /// File name (`util.h`) -> files, for `#include` suffix matching.
+    by_basename: HashMap<String, Vec<usize>>,
+    /// (including dir, include path, system) -> target: kernels repeat includes heavily.
+    include_memo: RefCell<HashMap<(String, String, bool), Option<usize>>>,
     by_stem: HashMap<String, Vec<usize>>,
     mentioned: Vec<HashSet<String>>,
     bases: HashMap<String, Vec<String>>,
@@ -999,6 +1003,8 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
         js_mods: HashMap::new(),
         js_pkgs: HashMap::new(),
         paths: HashMap::new(),
+        by_basename: HashMap::new(),
+        include_memo: RefCell::new(HashMap::new()),
         by_stem: HashMap::new(),
         ts_paths: Vec::new(),
         ts_base: None,
@@ -1012,6 +1018,8 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
     }
     for (i, f) in ctx.files.iter().enumerate() {
         ctx.paths.insert(f.path.clone(), i);
+        let base = f.path.rsplit('/').next().unwrap_or(&f.path).to_string();
+        ctx.by_basename.entry(base).or_default().push(i);
         ctx.by_stem
             .entry(stem_of(&f.path).to_string())
             .or_default()
@@ -1453,6 +1461,17 @@ impl Ctx {
 
     fn c_include(&self, fi: usize, path: &str, system: bool) -> Option<usize> {
         let f = &self.files[fi];
+        let key = (f.dir.clone(), path.to_string(), system);
+        if let Some(&hit) = self.include_memo.borrow().get(&key) {
+            return hit;
+        }
+        let hit = self.c_include_uncached(fi, path, system);
+        self.include_memo.borrow_mut().insert(key, hit);
+        hit
+    }
+
+    fn c_include_uncached(&self, fi: usize, path: &str, system: bool) -> Option<usize> {
+        let f = &self.files[fi];
         if !system {
             let joined = if f.dir.is_empty() {
                 norm_rel(path)
@@ -1463,24 +1482,28 @@ impl Ctx {
                 return Some(i);
             }
         }
+        // Suffix match among files with the same name (not every path in the repo).
+        let base = path.rsplit('/').next().unwrap_or(path);
         let suffix = format!("/{path}");
-        let mut hits: Vec<usize> = self
-            .paths
+        let cands = self.by_basename.get(base)?;
+        cands
             .iter()
-            .filter(|(p, _)| p.ends_with(&suffix) || p.as_str() == path)
-            .map(|(_, &i)| i)
-            .collect();
-        hits.sort_by_key(|&i| {
-            // Prefer the candidate sharing the longest directory prefix.
-            let common = self.files[i]
-                .path
-                .chars()
-                .zip(f.path.chars())
-                .take_while(|(a, b)| a == b)
-                .count();
-            (usize::MAX - common, self.files[i].path.len())
-        });
-        hits.first().copied()
+            .copied()
+            .filter(|&i| {
+                let p = &self.files[i].path;
+                p.ends_with(&suffix) || p.as_str() == path
+            })
+            // Prefer the candidate sharing the longest directory prefix, then the shortest
+            // path, then the path itself (deterministic ties).
+            .min_by_key(|&i| {
+                let p = &self.files[i].path;
+                let common = p
+                    .bytes()
+                    .zip(f.path.bytes())
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                (usize::MAX - common, p.len(), p.as_str())
+            })
     }
 
     /// Record the bindings an import introduces.
