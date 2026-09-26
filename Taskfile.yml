@@ -71,6 +71,12 @@ tasks:
       - task: bench:prepare
       - cargo run --release -q -- accuracy --report --baseline baseline/accuracy.json --out ../.cache/bench/results.json
 
+  bench:scale:
+    desc: Cold / no-op / 1-file index timings on Linux (+ rust-lang/rust combined); JSON in .cache/bench/scale.json
+    dir: bench
+    cmds:
+      - cargo run --release -q -- scale {{.CLI_ARGS}}
+
   bench:record:
     desc: Record the current accuracy run in bench/results/accuracy.json and docs/ACCURACY.md
     dir: bench
