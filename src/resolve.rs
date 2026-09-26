@@ -12,7 +12,9 @@
 //! 5. receiver-expression method calls (`x.foo()`) -> methods named `foo` (likely when the
 //!    owning type is mentioned in the file, else name-only); common std method names skipped.
 
-use std::cell::RefCell;
+use std::sync::{Mutex, PoisonError};
+
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -129,7 +131,7 @@ struct Ctx {
     /// File name (`util.h`) -> files, for `#include` suffix matching.
     by_basename: HashMap<String, Vec<usize>>,
     /// (including dir, include path, system) -> target: kernels repeat includes heavily.
-    include_memo: RefCell<HashMap<(String, String, bool), Option<usize>>>,
+    include_memo: Mutex<HashMap<(String, String, bool), Option<usize>>>,
     by_stem: HashMap<String, Vec<usize>>,
     mentioned: Vec<HashSet<String>>,
     bases: HashMap<String, Vec<String>>,
@@ -141,7 +143,7 @@ struct Ctx {
 }
 
 /// Evaluated receiver hints keyed by (file, enclosing symbol, hint).
-type Memo = RefCell<HashMap<(usize, Option<i64>, String), types::Ty>>;
+type Memo = Mutex<HashMap<(usize, Option<i64>, String), types::Ty>>;
 
 fn dir_of(p: &str) -> &str {
     p.rfind('/').map_or("", |i| &p[..i])
@@ -723,29 +725,40 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
     ctx.scopes = scopes;
     let ctx = ctx;
 
-    // Pass 2: symbol edges.
-    for e in edges.iter().filter(|e| e.kind != EdgeKind::Import) {
+    // Pass 2: symbol edges, resolved in parallel (the context is read-only apart from
+    // its memo tables), then counted and diffed in order.
+    let pass2: Vec<&E> = edges
+        .iter()
+        .filter(|e| e.kind != EdgeKind::Import)
+        .collect();
+    let results: Vec<Resolved> = pass2
+        .par_iter()
+        .map(|e| {
+            let res = ctx.resolve_edge(e, &ctx.scopes[e.file]);
+            let from_override = e.from_name.as_ref().and_then(|n| {
+                let fake = E {
+                    id: 0,
+                    file: e.file,
+                    from_symbol: None,
+                    from_name: None,
+                    name: n.clone(),
+                    qualifier: None,
+                    kind: EdgeKind::Ref,
+                    extra: None,
+                    old_to: None,
+                    old_conf: None,
+                    old_to_file: None,
+                    hint: None,
+                    dot: false,
+                };
+                ctx.resolve_edge(&fake, &ctx.scopes[e.file])
+                    .map(|(s, _)| ctx.syms[s].id)
+            });
+            (res, from_override)
+        })
+        .collect();
+    for (e, (res, from_override)) in pass2.iter().zip(results) {
         stats.edges += 1;
-        let res = ctx.resolve_edge(e, &ctx.scopes[e.file]);
-        let from_override = e.from_name.as_ref().and_then(|n| {
-            let fake = E {
-                id: 0,
-                file: e.file,
-                from_symbol: None,
-                from_name: None,
-                name: n.clone(),
-                qualifier: None,
-                kind: EdgeKind::Ref,
-                extra: None,
-                old_to: None,
-                old_conf: None,
-                old_to_file: None,
-                hint: None,
-                dot: false,
-            };
-            ctx.resolve_edge(&fake, &ctx.scopes[e.file])
-                .map(|(s, _)| ctx.syms[s].id)
-        });
         let (to, conf) = match res {
             Some((s, c)) => {
                 stats.resolved += 1;
@@ -801,6 +814,9 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
     Ok(stats)
 }
 
+/// Pass-2 result for one edge: (target, confidence) and the from-symbol override.
+type Resolved = (Option<(usize, Confidence)>, Option<i64>);
+
 /// (edge id, to_symbol, confidence, to_file, from_symbol override).
 type Update = (
     i64,
@@ -841,7 +857,7 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
     let mut file_idx: HashMap<i64, usize> = HashMap::new();
     {
         let mut st = conn.prepare(
-            "SELECT id, path, lang, module, package, pkgname FROM files WHERE repo_id = ?1 ORDER BY id",
+            "SELECT id, path, lang, module, package, pkgname FROM files WHERE repo_id = ?1 ORDER BY path",
         )?;
         let rows = st.query_map([repo_id], |r| {
             Ok((
@@ -874,9 +890,13 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
     let mut syms = Vec::new();
     {
         let mut st = conn.prepare(
-            "SELECT id, file_id, parent_id, name, kind, container, exported, is_default, recv,
-                    end_line - start_line, qkey, ret, fields, signature
-             FROM symbols WHERE repo_id = ?1 ORDER BY id",
+            // Path order, not row order: files are written as parsers finish, and ties
+            // below are broken by position, so resolution must not depend on write order.
+            "SELECT s.id, s.file_id, s.parent_id, s.name, s.kind, s.container, s.exported,
+                    s.is_default, s.recv, s.end_line - s.start_line, s.qkey, s.ret, s.fields,
+                    s.signature
+             FROM symbols s JOIN files f ON f.id = s.file_id
+             WHERE s.repo_id = ?1 ORDER BY f.path, s.id",
         )?;
         let rows = st.query_map([repo_id], |r| {
             Ok((
@@ -1004,12 +1024,12 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
         js_pkgs: HashMap::new(),
         paths: HashMap::new(),
         by_basename: HashMap::new(),
-        include_memo: RefCell::new(HashMap::new()),
+        include_memo: Mutex::new(HashMap::new()),
         by_stem: HashMap::new(),
         ts_paths: Vec::new(),
         ts_base: None,
         scopes: Vec::new(),
-        memo: RefCell::new(HashMap::new()),
+        memo: Mutex::new(HashMap::new()),
     };
     for (i, s) in ctx.syms.iter().enumerate() {
         ctx.by_name.entry(s.name.clone()).or_default().push(i);
@@ -1462,11 +1482,19 @@ impl Ctx {
     fn c_include(&self, fi: usize, path: &str, system: bool) -> Option<usize> {
         let f = &self.files[fi];
         let key = (f.dir.clone(), path.to_string(), system);
-        if let Some(&hit) = self.include_memo.borrow().get(&key) {
+        if let Some(&hit) = self
+            .include_memo
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&key)
+        {
             return hit;
         }
         let hit = self.c_include_uncached(fi, path, system);
-        self.include_memo.borrow_mut().insert(key, hit);
+        self.include_memo
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key, hit);
         hit
     }
 
@@ -1658,7 +1686,7 @@ impl Ctx {
         } else {
             4
         };
-        (tier, u32::MAX - self.syms[s].span, self.syms[s].id)
+        (tier, u32::MAX - self.syms[s].span, s as i64)
     }
 
     /// Same-file candidates ranked by lexical visibility from the symbol enclosing the
@@ -1677,7 +1705,7 @@ impl Ctx {
                 None => chain.len(),
                 Some(p) => chain.iter().position(|&c| c == p).unwrap_or(usize::MAX),
             };
-            (rank, u32::MAX - sym.span, sym.id)
+            (rank, u32::MAX - sym.span, s)
         })
     }
 

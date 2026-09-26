@@ -635,12 +635,20 @@ impl Ctx {
     /// Evaluate a receiver hint in file `fi` (reference inside symbol `from`).
     pub(super) fn eval_hint(&self, fi: usize, from: Option<i64>, hint: &str) -> Ty {
         let key = (fi, from, hint.to_string());
-        if let Some(&t) = self.memo.borrow().get(&key) {
+        if let Some(&t) = self
+            .memo
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+        {
             return t;
         }
         let v = self.eval_val(fi, from, hint, 0);
         let t = self.bind_val(&v, 0);
-        self.memo.borrow_mut().insert(key, t);
+        self.memo
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, t);
         t
     }
 
