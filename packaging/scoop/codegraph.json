@@ -6,7 +6,7 @@
     "architecture": {
         "64bit": {
             "url": "https://github.com/crowbett/codegraph/releases/download/v0.1.1/codegraph-0.1.1-windows-amd64.zip",
-            "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+            "hash": "5afdbc0591b19370715117b113c5d22e9dae966340eeabc00075c84ecc5e2137"
         }
     },
     "bin": "codegraph.exe",
