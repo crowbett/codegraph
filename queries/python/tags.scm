@@ -31,6 +31,19 @@
       object: (_) @qualifier
       attribute: (identifier) @name))) @reference.inherit
 
+; `class B(Base[T])`, `class C(Generic[T], mod.Base[int])`: subscripted bases.
+(class_definition
+  superclasses: (argument_list
+    (subscript
+      value: (identifier) @name))) @reference.inherit
+
+(class_definition
+  superclasses: (argument_list
+    (subscript
+      value: (attribute
+        object: (_) @qualifier
+        attribute: (identifier) @name)))) @reference.inherit
+
 (type
   (identifier) @name) @reference.type
 

@@ -213,3 +213,12 @@ fn review_regressions_go_and_ts() {
     // H1 (TS): Bag.values is the repo's own method, not Array.prototype.values.
     assert_edge(&ix, "main.ts", 27, "go", "main.Item.go", "exact");
 }
+
+#[test]
+fn python_dotted_import_and_subscripted_bases() {
+    let ix = index_fixture("review/py");
+    // `import pkg.utils` binds `pkg`; `pkg.echo` is re-exported by pkg/__init__.py.
+    assert_edge(&ix, "main.py", 11, "echo", "pkg.utils.echo", "exact");
+    // `class Child(Base[int])` inherits `fail`.
+    assert_edge(&ix, "main.py", 7, "fail", "pkg.utils.Base.fail", "likely");
+}
