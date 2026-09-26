@@ -25,8 +25,11 @@ src/query.rs     find/def/refs/callers/callees/outline/path/impact/hotspots/dot/
 src/render.rs    human text (also the MCP `content` text, uncolored)
 src/output.rs    --json envelope, ANSI Style, Table; src/config.rs codegraph.toml
 src/mcp.rs       hand-rolled stdio MCP server (read-only tools, auto-refresh of the asked repo)
+src/watch.rs     `watch` / `mcp --watch`: notify events -> path filter -> per-repo debounce ->
+                 index::refresh_repo (root rescan when a repo appears/vanishes); busy retry
 tests/fixtures/<lang>/  mini projects; tests/lang.rs snapshots them (insta) + asserts resolution
 tests/graph.rs incremental.rs cli.rs   graph algorithms, re-index, binary + MCP stdio + self-index
+tests/watch.rs   watcher: edit/create/delete/new repo reach the DB, concurrent writers, NDJSON
 ```
 
 ## Commands
