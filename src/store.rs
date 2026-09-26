@@ -16,7 +16,7 @@ use crate::layout::FileUnit;
 
 /// Bump when the schema or extraction output changes incompatibly; a mismatch
 /// wipes the graph so the next `index` rebuilds it.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -102,9 +102,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
 /// `--full` run still deletes old files by id) and rebuilt once at the end.
 const FTS_TRIGGERS: &str = r"
 CREATE INDEX IF NOT EXISTS symbols_file ON symbols(file_id);
-CREATE INDEX IF NOT EXISTS symbols_repo ON symbols(repo_id);
 CREATE INDEX IF NOT EXISTS edges_file ON edges(file_id);
-CREATE INDEX IF NOT EXISTS edges_repo ON edges(repo_id);
 CREATE INDEX IF NOT EXISTS symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS symbols_name_nocase ON symbols(name COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS symbols_qkey ON symbols(qkey);
@@ -282,8 +280,7 @@ impl Store {
         // One transaction with the dirty mark, so a crash never leaves indexes missing
         // without the mark that makes the next writer rebuild them.
         let base = if cold {
-            "DROP INDEX IF EXISTS symbols_file; DROP INDEX IF EXISTS symbols_repo;
-             DROP INDEX IF EXISTS edges_file; DROP INDEX IF EXISTS edges_repo;"
+            "DROP INDEX IF EXISTS symbols_file; DROP INDEX IF EXISTS edges_file;"
         } else {
             ""
         };
@@ -415,7 +412,8 @@ pub fn delete_file(tx: &Connection, id: i64) -> Result<()> {
 }
 
 /// `edges.extra` of a reference: its receiver type hint and call syntax.
-fn ref_extra(hint: Option<&str>, dot: bool) -> Option<String> {
+/// `edges.extra` of a reference: its receiver type hint and method-call syntax.
+pub(crate) fn ref_extra(hint: Option<&str>, dot: bool) -> Option<String> {
     if hint.is_none() && !dot {
         return None;
     }
@@ -429,8 +427,24 @@ fn ref_extra(hint: Option<&str>, dot: bool) -> Option<String> {
     Some(serde_json::Value::Object(m).to_string())
 }
 
-/// Replace a file's row, symbols and (unresolved) edges. Returns the file id.
-pub fn replace_file(tx: &Connection, repo_id: i64, f: &NewFile<'_>) -> Result<i64> {
+/// `edges.extra` of an import: its bindings and flags.
+pub(crate) fn import_extra(imp: &crate::extract::RawImport) -> String {
+    let mut extra = serde_json::json!({"bindings": imp.bindings, "system": imp.system});
+    if imp.mod_path {
+        extra["mod_path"] = true.into();
+    }
+    extra.to_string()
+}
+
+/// Replace a file's row, symbols and (unresolved) edges. Returns the file id and its
+/// symbols' ids in extraction order. `with_edges: false` leaves the edges to the caller
+/// (bulk loads resolve them first, see `resolve::resolve_and_insert`).
+pub fn replace_file(
+    tx: &Connection,
+    repo_id: i64,
+    f: &NewFile<'_>,
+    with_edges: bool,
+) -> Result<(i64, Vec<i64>)> {
     tx.prepare_cached("DELETE FROM files WHERE repo_id = ?1 AND path = ?2")?
         .execute(params![repo_id, f.path])?;
     tx.prepare_cached(
@@ -494,6 +508,9 @@ pub fn replace_file(tx: &Connection, repo_id: i64, f: &NewFile<'_>) -> Result<i6
             ids.push(tx.last_insert_rowid());
         }
     }
+    if !with_edges {
+        return Ok((file_id, ids));
+    }
     let mut st = tx.prepare_cached(
         "INSERT INTO edges(repo_id, file_id, from_symbol, from_name, name, qualifier, kind, line, col, extra)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -514,11 +531,7 @@ pub fn replace_file(tx: &Connection, repo_id: i64, f: &NewFile<'_>) -> Result<i6
         ])?;
     }
     for imp in &f.facts.imports {
-        let mut extra = serde_json::json!({"bindings": imp.bindings, "system": imp.system});
-        if imp.mod_path {
-            extra["mod_path"] = true.into();
-        }
-        let extra = extra.to_string();
+        let extra = import_extra(imp);
         st.execute(params![
             repo_id,
             file_id,
@@ -532,7 +545,7 @@ pub fn replace_file(tx: &Connection, repo_id: i64, f: &NewFile<'_>) -> Result<i6
             extra,
         ])?;
     }
-    Ok(file_id)
+    Ok((file_id, ids))
 }
 
 #[cfg(test)]

@@ -352,8 +352,11 @@ fn index_roots_inner(
                 root.display()
             )));
         }
+        let t0 = Instant::now();
         let files = walk(&root, cfg);
+        util::trace("index.walk", t0);
         let groups = group_repos(&root, files);
+        util::trace("index.group_repos", t0);
         let mut repos: Vec<_> = groups.into_iter().collect();
         repos.sort_by(|a, b| a.0.cmp(&b.0));
         for (repo_root, files) in repos {
@@ -399,13 +402,13 @@ pub fn refresh_repo(
         })
         .collect();
     index_repo(store, cfg, name, repo_root, files, opts, start, &mut stats)?;
-    // Refreshes run per MCP call and per watch batch: count this repo only (indexed),
-    // not the whole graph (three full scans, seconds on a kernel-sized graph).
-    stats.symbols = store.conn().query_row(
-        "SELECT count(*) FROM symbols WHERE repo_id = (SELECT id FROM repos WHERE root = ?1)",
-        [repo_root.to_string_lossy()],
-        |r| r.get(0),
-    )?;
+    // Refreshes run per MCP call and per watch batch: count this repo only, from the
+    // counts its last resolve stored.
+    stats.symbols = store
+        .repos()?
+        .iter()
+        .find(|r| r.root == repo_root)
+        .map_or(0, |r| r.counts[0]);
     if let Some(res) = stats.changed_repos.last().and_then(|r| r.resolve) {
         stats.edges = res.edges as i64;
         stats.resolved_edges = res.resolved as i64;
@@ -440,9 +443,12 @@ fn index_repo(
     start: Instant,
     stats: &mut IndexStats,
 ) -> Result<()> {
+    let t0 = Instant::now();
     let found = classify(repo_root, files, cfg);
+    util::trace("index.classify", t0);
     let repo_id = store.upsert_repo(name, repo_root)?;
     let existing = store.repo_files(repo_id)?;
+    util::trace("index.repo_files", t0);
     stats.repos += 1;
     stats.files += found.len();
 
@@ -493,6 +499,9 @@ fn index_repo(
         resolve: None,
     };
     let present: HashSet<&str> = found.iter().map(|f| f.rel.as_str()).collect();
+    // A repo with no stored files (cold index, new repo): keep its references in memory,
+    // resolve them, and insert each edge once with its target.
+    let mut pending: Option<Vec<resolve::Pending>> = existing.is_empty().then(Vec::new);
     // Parse in parallel and write as results arrive: the single SQLite writer overlaps
     // the parsers, and a bounded channel caps how many parsed files sit in memory.
     let (sender, receiver) = std::sync::mpsc::sync_channel::<(usize, Outcome)>(512);
@@ -523,6 +532,7 @@ fn index_repo(
                 &mut layout,
                 &mut rs,
                 stats,
+                pending.as_mut(),
             );
         }
         parse_wall = producer.join().unwrap_or_default();
@@ -541,12 +551,16 @@ fn index_repo(
         }
     }
     tx.commit()?;
+    util::trace("index.parse_and_write", t0);
     stats.write_ms += tail + t_write.elapsed().as_millis();
     stats.parsed += rs.parsed;
     stats.removed += rs.removed;
     if rs.parsed > 0 || rs.removed > 0 || opts.full {
         let t_res = Instant::now();
-        rs.resolve = Some(resolve::resolve_repo(store, repo_id, repo_root)?);
+        rs.resolve = Some(match pending {
+            Some(p) => resolve::resolve_and_insert(store, repo_id, repo_root, p)?,
+            None => resolve::resolve_repo(store, repo_id, repo_root)?,
+        });
         stats.resolve_ms += t_res.elapsed().as_millis();
         stats.changed_repos.push(rs);
     }
@@ -565,6 +579,7 @@ fn write_outcome(
     layout: &mut Layout,
     rs: &mut RepoStats,
     stats: &mut IndexStats,
+    pending: Option<&mut Vec<resolve::Pending>>,
 ) -> Result<()> {
     match o {
         Outcome::Unchanged => stats.unchanged += 1,
@@ -583,12 +598,12 @@ fn write_outcome(
             }
         }
         Outcome::Parsed(b) => {
-            let (facts, hash) = *b;
+            let (mut facts, hash) = *b;
             if facts.has_errors {
                 stats.parse_errors += 1;
             }
             let unit = layout.unit(&f.rel, f.lang, facts.package.as_deref());
-            store::replace_file(
+            let (file_id, sym_ids) = store::replace_file(
                 tx,
                 repo_id,
                 &NewFile {
@@ -600,7 +615,16 @@ fn write_outcome(
                     unit: &unit,
                     facts: &facts,
                 },
+                pending.is_none(),
             )?;
+            if let Some(p) = pending {
+                p.push(resolve::Pending {
+                    file_id,
+                    sym_ids,
+                    refs: std::mem::take(&mut facts.refs),
+                    imports: std::mem::take(&mut facts.imports),
+                });
+            }
             rs.parsed += 1;
         }
     }

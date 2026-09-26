@@ -19,6 +19,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use rusqlite::params;
+use rusqlite::types::{ToSqlOutput, Value, ValueRef};
 
 use crate::error::Result;
 use crate::extract::{BindKind, Binding};
@@ -710,15 +711,215 @@ const IMPLICIT: &str = r#"{"implicit":true}"#;
 /// Resolve every edge of a repo and write the results.
 pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<ResolveStats> {
     let t0 = std::time::Instant::now();
-    let ctx_and_edges = load(store, repo_id, root)?;
+    let mut ctx = load_ctx(store, repo_id, root)?;
+    let (edges, implicit) = load_edges(store, repo_id, &ctx)?;
     crate::util::trace("resolve.load", t0);
-    let (ctx, edges) = ctx_and_edges;
-    let scopes: Vec<Scope> = (0..ctx.files.len()).map(|_| Scope::default()).collect();
-    let mut ctx = ctx;
-    let mut scopes = scopes;
-
     let mut stats = ResolveStats::default();
-    let mut updates: Vec<Update> = Vec::new();
+    let outs = resolve_edges(&mut ctx, &edges, &mut stats, t0);
+    crate::util::trace("resolve.pass2", t0);
+    let tx = store.conn_mut().transaction()?;
+    {
+        let mut st = tx.prepare_cached(
+            "UPDATE edges SET to_symbol = ?2, confidence = ?3, to_file = ?4,
+                from_symbol = COALESCE(?5, from_symbol) WHERE id = ?1",
+        )?;
+        for (e, o) in edges.iter().zip(&outs) {
+            let changed = e.old_to != o.to
+                || e.old_conf.as_deref() != o.conf
+                || e.old_to_file != o.to_file
+                || (o.from.is_some() && o.from != e.from_symbol);
+            if changed {
+                st.execute(params![e.id, o.to, o.conf, o.to_file, o.from])?;
+            }
+        }
+        // Derived edges are replaced in the same transaction as everything else.
+        // By id: a filter on the repo's edges would walk millions of rows.
+        let mut del = tx.prepare_cached("DELETE FROM edges WHERE id = ?1")?;
+        for id in &implicit {
+            del.execute([id])?;
+        }
+    }
+    write_implicit_and_counts(&tx, repo_id, &ctx, &mut stats)?;
+    tx.commit()?;
+    crate::util::trace("resolve.write", t0);
+    // Freeing millions of symbols and edges takes seconds; the caller doesn't wait for it.
+    std::thread::spawn(move || drop((ctx, edges)));
+    Ok(stats)
+}
+
+/// A file's freshly extracted references, not stored yet (bulk loads).
+pub struct Pending {
+    /// Row id of the file.
+    pub file_id: i64,
+    /// Row ids of its symbols, in extraction order (`RawRef::from` indexes them).
+    pub sym_ids: Vec<i64>,
+    /// References.
+    pub refs: Vec<crate::extract::RawRef>,
+    /// Imports.
+    pub imports: Vec<crate::extract::RawImport>,
+}
+
+/// Bulk load of a repo that had no stored files: resolve the extracted references in
+/// memory and insert each edge once, with its target. Storing them unresolved and
+/// updating them afterwards rewrites the whole edges table (16 s of a 60k-file cold index).
+pub fn resolve_and_insert(
+    store: &mut Store,
+    repo_id: i64,
+    root: &Path,
+    mut pending: Vec<Pending>,
+) -> Result<ResolveStats> {
+    let t0 = std::time::Instant::now();
+    let mut ctx = load_ctx(store, repo_id, root)?;
+    let file_idx: HashMap<i64, usize> = ctx
+        .files
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.id, i))
+        .collect();
+    // Path order, like edges loaded from the store: resolution must not depend on the
+    // order the parsers finished in.
+    pending.sort_by_key(|p| file_idx.get(&p.file_id).copied().unwrap_or(usize::MAX));
+    let mut edges: Vec<E> = Vec::new();
+    let mut cols: Vec<u32> = Vec::new();
+    for p in pending {
+        let Some(&file) = file_idx.get(&p.file_id) else {
+            continue;
+        };
+        for r in p.refs {
+            cols.push(r.col);
+            edges.push(E {
+                id: edges.len() as i64,
+                file,
+                from_symbol: r.from.and_then(|i| p.sym_ids.get(i).copied()),
+                from_name: r.from_name,
+                name: r.name,
+                qualifier: r.qualifier,
+                kind: r.kind,
+                extra: None,
+                old_to: None,
+                old_conf: None,
+                old_to_file: None,
+                hint: r.hint,
+                dot: r.dot,
+                line: r.line,
+            });
+        }
+        for imp in p.imports {
+            cols.push(1);
+            edges.push(E {
+                id: edges.len() as i64,
+                file,
+                from_symbol: None,
+                from_name: None,
+                extra: Some(crate::store::import_extra(&imp)),
+                name: imp.path,
+                qualifier: None,
+                kind: EdgeKind::Import,
+                old_to: None,
+                old_conf: None,
+                old_to_file: None,
+                hint: None,
+                dot: false,
+                line: imp.line,
+            });
+        }
+    }
+    crate::util::trace("resolve.load", t0);
+    let mut stats = ResolveStats::default();
+    let outs = resolve_edges(&mut ctx, &edges, &mut stats, t0);
+    crate::util::trace("resolve.pass2", t0);
+    // `extra` JSON built in parallel; rows go in 64 per statement (per-statement overhead
+    // dominated a row-at-a-time insert of millions of edges).
+    let extras: Vec<Option<String>> = edges
+        .par_iter()
+        .map(|e| {
+            if e.kind == EdgeKind::Import {
+                e.extra.clone()
+            } else {
+                crate::store::ref_extra(e.hint.as_deref(), e.dot)
+            }
+        })
+        .collect();
+    let tx = store.conn_mut().transaction()?;
+    {
+        const ROWS: usize = 64;
+        const HEAD: &str = "INSERT INTO edges(repo_id, file_id, from_symbol, from_name, name,
+            qualifier, kind, line, col, extra, to_symbol, to_file, confidence) VALUES ";
+        const ONE: &str = "(?,?,?,?,?,?,?,?,?,?,?,?,?)";
+        let mut full = tx.prepare(&format!("{HEAD}{}", vec![ONE; ROWS].join(",")))?;
+        let mut single = tx.prepare(&format!("{HEAD}{ONE}"))?;
+        let int = |v: i64| ToSqlOutput::Owned(Value::Integer(v));
+        let opt_int = |v: Option<i64>| ToSqlOutput::Owned(v.map_or(Value::Null, Value::Integer));
+        let mut vals: Vec<ToSqlOutput<'_>> = Vec::with_capacity(13 * ROWS);
+        let mut start = 0;
+        while start < edges.len() {
+            let end = (start + ROWS).min(edges.len());
+            vals.clear();
+            for i in start..end {
+                let (e, o) = (&edges[i], &outs[i]);
+                vals.extend([
+                    int(repo_id),
+                    int(ctx.files[e.file].id),
+                    opt_int(o.from.or(e.from_symbol)),
+                    sql_opt_text(e.from_name.as_deref()),
+                    sql_text(&e.name),
+                    sql_opt_text(e.qualifier.as_deref()),
+                    sql_text(e.kind.as_str()),
+                    int(i64::from(e.line)),
+                    int(i64::from(cols[i])),
+                    sql_opt_text(extras[i].as_deref()),
+                    opt_int(o.to),
+                    opt_int(o.to_file),
+                    sql_opt_text(o.conf),
+                ]);
+            }
+            if end - start == ROWS {
+                full.execute(rusqlite::params_from_iter(vals.iter()))?;
+            } else {
+                for row in vals.chunks(13) {
+                    single.execute(rusqlite::params_from_iter(row.iter()))?;
+                }
+            }
+            start = end;
+        }
+    }
+    write_implicit_and_counts(&tx, repo_id, &ctx, &mut stats)?;
+    tx.commit()?;
+    crate::util::trace("resolve.write", t0);
+    std::thread::spawn(move || drop((ctx, edges)));
+    Ok(stats)
+}
+
+/// A borrowed text parameter.
+fn sql_text(v: &str) -> ToSqlOutput<'_> {
+    ToSqlOutput::Borrowed(ValueRef::Text(v.as_bytes()))
+}
+
+/// A borrowed text parameter, or NULL.
+fn sql_opt_text(v: Option<&str>) -> ToSqlOutput<'_> {
+    ToSqlOutput::Borrowed(v.map_or(ValueRef::Null, |s| ValueRef::Text(s.as_bytes())))
+}
+
+/// Where one edge resolved to (imports: `to_file` only).
+#[derive(Default, Clone, Copy)]
+struct Out {
+    to: Option<i64>,
+    conf: Option<&'static str>,
+    to_file: Option<i64>,
+    /// Enclosing-symbol override resolved from `from_name`.
+    from: Option<i64>,
+}
+
+/// Resolve `edges`: imports build per-file scopes, then everything else in parallel. One
+/// [`Out`] per edge, in order.
+fn resolve_edges(
+    ctx: &mut Ctx,
+    edges: &[E],
+    stats: &mut ResolveStats,
+    t0: std::time::Instant,
+) -> Vec<Out> {
+    let mut outs = vec![Out::default(); edges.len()];
+    let mut scopes: Vec<Scope> = (0..ctx.files.len()).map(|_| Scope::default()).collect();
 
     // `#[path]` modules first: `use` paths resolved below may go through them. A name that
     // is also bound by a `use` in the same file, or declared twice, is a `#[cfg]` twin
@@ -764,7 +965,10 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
 
     crate::util::trace("resolve.pathmods", t0);
     // Pass 1: imports build per-file scopes.
-    for e in edges.iter().filter(|e| e.kind == EdgeKind::Import) {
+    for (i, e) in edges.iter().enumerate() {
+        if e.kind != EdgeKind::Import {
+            continue;
+        }
         stats.imports += 1;
         let x = parse_extra(e.extra.as_deref());
         if x.mod_path {
@@ -772,10 +976,7 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
             if to_file.is_some() {
                 stats.imports_resolved += 1;
             }
-            let to_file_id = to_file.map(|i| ctx.files[i].id);
-            if e.old_to_file != to_file_id || e.old_to.is_some() {
-                updates.push((e.id, None, None, to_file_id, None));
-            }
+            outs[i].to_file = to_file.map(|t| ctx.files[t].id);
             continue;
         }
         let (bindings, system) = (x.bindings, x.system);
@@ -787,10 +988,7 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
             stats.imports_resolved += 1;
         }
         ctx.bind(e.file, &e.name, targets.as_deref(), &bindings, scope);
-        let to_file_id = to_file.map(|i| ctx.files[i].id);
-        if e.old_to_file != to_file_id || e.old_to.is_some() {
-            updates.push((e.id, None, None, to_file_id, None));
-        }
+        outs[i].to_file = to_file.map(|t| ctx.files[t].id);
     }
     // C/C++ companions: foo.h <-> foo.c / foo.cpp.
     for (fi, scope) in scopes.iter_mut().enumerate() {
@@ -807,25 +1005,25 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
         scope.includes.dedup();
     }
     crate::util::trace("resolve.pass1", t0);
-    ctx.fill_mentions(&edges);
+    ctx.fill_mentions(edges);
     for (fi, scope) in scopes.iter().enumerate() {
         for (orig, _) in scope.names.values() {
             ctx.mentioned[fi].insert(orig.clone());
         }
     }
     ctx.scopes = scopes;
-    let ctx = ctx;
+    let ctx: &Ctx = ctx;
 
     // Pass 2: symbol edges, resolved in parallel (the context is read-only apart from
     // its memo tables), then counted and diffed in order.
     crate::util::trace("resolve.mentions", t0);
-    let pass2: Vec<&E> = edges
-        .iter()
-        .filter(|e| e.kind != EdgeKind::Import)
+    let pass2: Vec<usize> = (0..edges.len())
+        .filter(|&i| edges[i].kind != EdgeKind::Import)
         .collect();
     let results: Vec<Resolved> = pass2
         .par_iter()
-        .map(|e| {
+        .map(|&i| {
+            let e = &edges[i];
             let res = ctx.resolve_edge(e, &ctx.scopes[e.file]);
             let from_override = e.from_name.as_ref().and_then(|n| {
                 let fake = E {
@@ -850,7 +1048,7 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
             (res, from_override)
         })
         .collect();
-    for (e, (res, from_override)) in pass2.iter().zip(results) {
+    for (&i, (res, from_override)) in pass2.iter().zip(results) {
         stats.edges += 1;
         let (to, conf) = match res {
             Some((s, c)) => {
@@ -865,49 +1063,42 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
             None => (None, None),
         };
         let to_file = res.map(|(s, _)| ctx.files[ctx.syms[s].file].id);
-        let changed = e.old_to != to
-            || e.old_conf.as_deref() != conf
-            || e.old_to_file != to_file
-            || (from_override.is_some() && from_override != e.from_symbol);
-        if changed {
-            updates.push((e.id, to, conf, to_file, from_override));
-        }
+        outs[i] = Out {
+            to,
+            conf,
+            to_file,
+            from: from_override,
+        };
     }
 
-    crate::util::trace("resolve.pass2", t0);
-    let tx = store.conn_mut().transaction()?;
-    {
-        let mut st = tx.prepare_cached(
-            "UPDATE edges SET to_symbol = ?2, confidence = ?3, to_file = ?4,
-                from_symbol = COALESCE(?5, from_symbol) WHERE id = ?1",
-        )?;
-        for (id, to, conf, to_file, from) in &updates {
-            st.execute(params![id, to, conf, to_file, from])?;
-        }
-        // Derived edges are replaced in the same transaction as everything else.
-        tx.execute(
-            "DELETE FROM edges WHERE repo_id = ?1 AND kind = 'impl' AND extra = ?2",
-            params![repo_id, IMPLICIT],
-        )?;
-        let mut ins = tx.prepare_cached(
-            "INSERT INTO edges(repo_id, file_id, from_symbol, name, kind, line, col, to_symbol,
-                to_file, confidence, extra)
-             SELECT ?1, s.file_id, s.id, ?2, 'impl', s.start_line, s.start_col, ?3, ?4,
-                'likely', ?5
-             FROM symbols s WHERE s.id = ?6",
-        )?;
-        for (t, i) in ctx.go_implicit_impls() {
-            let iface = &ctx.syms[i];
-            ins.execute(params![
-                repo_id,
-                iface.name,
-                iface.id,
-                ctx.files[iface.file].id,
-                IMPLICIT,
-                ctx.syms[t].id
-            ])?;
-            stats.implicit_impls += 1;
-        }
+    outs
+}
+
+/// Derived Go interface-satisfaction edges, and the per-repo counts `status` reads.
+fn write_implicit_and_counts(
+    tx: &rusqlite::Transaction<'_>,
+    repo_id: i64,
+    ctx: &Ctx,
+    stats: &mut ResolveStats,
+) -> Result<()> {
+    let mut ins = tx.prepare_cached(
+        "INSERT INTO edges(repo_id, file_id, from_symbol, name, kind, line, col, to_symbol,
+            to_file, confidence, extra)
+         SELECT ?1, s.file_id, s.id, ?2, 'impl', s.start_line, s.start_col, ?3, ?4,
+            'likely', ?5
+         FROM symbols s WHERE s.id = ?6",
+    )?;
+    for (t, i) in ctx.go_implicit_impls() {
+        let iface = &ctx.syms[i];
+        ins.execute(params![
+            repo_id,
+            iface.name,
+            iface.id,
+            ctx.files[iface.file].id,
+            IMPLICIT,
+            ctx.syms[t].id
+        ])?;
+        stats.implicit_impls += 1;
     }
     tx.execute(
         "UPDATE repos SET symbols = ?2, edges = ?3, resolved = ?4, exact = ?5, likely = ?6,
@@ -922,24 +1113,10 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
             stats.name_only as i64,
         ],
     )?;
-    tx.commit()?;
-    crate::util::trace("resolve.write", t0);
-    // Freeing millions of symbols and edges takes seconds; the caller doesn't wait for it.
-    std::thread::spawn(move || drop((ctx, edges)));
-    Ok(stats)
+    Ok(())
 }
-
 /// Pass-2 result for one edge: (target, confidence) and the from-symbol override.
 type Resolved = (Option<(usize, Confidence)>, Option<i64>);
-
-/// (edge id, to_symbol, confidence, to_file, from_symbol override).
-type Update = (
-    i64,
-    Option<i64>,
-    Option<&'static str>,
-    Option<i64>,
-    Option<i64>,
-);
 
 #[derive(serde::Deserialize, Default)]
 struct ImportExtra {
@@ -985,11 +1162,27 @@ where
     T: Send,
     F: Fn(&rusqlite::Row<'_>) -> rusqlite::Result<Option<T>> + Sync,
 {
-    let (lo, hi): (Option<i64>, Option<i64>) = store.conn().query_row(
-        &format!("SELECT min(id), max(id) FROM {table} WHERE repo_id = ?1"),
-        [repo_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+    // The repo's rowid range: per file through `<table>_file` (a few index seeks per
+    // file), or one scan while a cold load has that index dropped.
+    let has_file_index: bool = store.conn().query_row(
+        "SELECT count(*) > 0 FROM sqlite_master WHERE type = 'index' AND name = ?1",
+        [format!("{table}_file")],
+        |r| r.get(0),
     )?;
+    let range_sql = if has_file_index {
+        format!(
+            "SELECT min(lo), max(hi) FROM (SELECT
+                (SELECT min(id) FROM {table} WHERE file_id = f.id) AS lo,
+                (SELECT max(id) FROM {table} WHERE file_id = f.id) AS hi
+             FROM files f WHERE f.repo_id = ?1)"
+        )
+    } else {
+        format!("SELECT min(id), max(id) FROM {table} WHERE repo_id = ?1")
+    };
+    let (lo, hi): (Option<i64>, Option<i64>) =
+        store
+            .conn()
+            .query_row(&range_sql, [repo_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
     let (Some(lo), Some(hi)) = (lo, hi) else {
         return Ok(Vec::new());
     };
@@ -1037,7 +1230,8 @@ where
 /// Below this many rowids a repo is read on one connection.
 const PAR_ROWS_MIN: i64 = 200_000;
 
-fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
+/// The repo's files and symbols, with their lookup tables.
+fn load_ctx(store: &Store, repo_id: i64, root: &Path) -> Result<Ctx> {
     let t0 = std::time::Instant::now();
     let conn = store.conn();
     let mut files = Vec::new();
@@ -1117,60 +1311,57 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
     // `files` is in path order, so (file index, id) is (path, id).
     syms.par_sort_unstable_by_key(|s| (s.file, s.id));
     crate::util::trace("resolve.load.syms", t0);
-    let mut edges: Vec<E> = par_rows(
-        store,
-        &path,
-        "edges",
-        repo_id,
-        "SELECT id, file_id, from_symbol, from_name, name, qualifier, kind, extra,
-                to_symbol, confidence, to_file, line
-         FROM edges WHERE +repo_id = ?1 AND id BETWEEN ?2 AND ?3",
-        |r| {
-            let fid: i64 = r.get(1)?;
-            let kind: String = r.get(6)?;
-            let (Some(&file), Some(kind)) = (file_idx.get(&fid), EdgeKind::parse(&kind)) else {
-                return Ok(None);
-            };
-            let extra: Option<String> = r.get(7)?;
-            if extra.as_deref() == Some(IMPLICIT) {
-                // Derived by the previous resolve; rebuilt below.
-                return Ok(None);
-            }
-            let (hint, dot) = if kind == EdgeKind::Import {
-                (None, false)
-            } else {
-                ref_hint(extra.as_deref())
-            };
-            Ok(Some(E {
-                id: r.get(0)?,
-                file,
-                from_symbol: r.get(2)?,
-                from_name: r.get(3)?,
-                name: r.get(4)?,
-                qualifier: r.get(5)?,
-                kind,
-                extra,
-                old_to: r.get(8)?,
-                old_conf: r.get(9)?,
-                old_to_file: r.get(10)?,
-                hint,
-                dot,
-                line: r.get(11)?,
-            }))
+    // Symbol lookup tables, built side by side (millions of symbols on large repos).
+    let ((by_name, by_member), (by_id, by_file)) = rayon::join(
+        || {
+            rayon::join(
+                || {
+                    let mut m: HashMap<String, Vec<usize>> = HashMap::with_capacity(syms.len() / 2);
+                    for (i, s) in syms.iter().enumerate() {
+                        m.entry(s.name.clone()).or_default().push(i);
+                    }
+                    m
+                },
+                || {
+                    let mut m: HashMap<(String, String), Vec<usize>> = HashMap::new();
+                    for (i, s) in syms.iter().enumerate() {
+                        if let (SymKind::Method, Some(c)) = (s.kind, &s.container) {
+                            m.entry((c.clone(), s.name.clone())).or_default().push(i);
+                        }
+                    }
+                    m
+                },
+            )
         },
-    )?;
-    edges.par_sort_unstable_by_key(|e| e.id);
-    crate::util::trace("resolve.load.edges", t0);
+        || {
+            rayon::join(
+                || {
+                    let mut m: HashMap<i64, usize> = HashMap::with_capacity(syms.len());
+                    for (i, s) in syms.iter().enumerate() {
+                        m.insert(s.id, i);
+                    }
+                    m
+                },
+                || {
+                    let mut v: Vec<Vec<usize>> = vec![Vec::new(); files.len()];
+                    for (i, s) in syms.iter().enumerate() {
+                        v[s.file].push(i);
+                    }
+                    v
+                },
+            )
+        },
+    );
     let mut ctx = Ctx {
         root: root.to_path_buf(),
-        by_file: vec![Vec::new(); files.len()],
+        by_file,
         mentioned: vec![HashSet::new(); files.len()],
         bases: HashMap::new(),
         files,
         syms,
-        by_name: HashMap::new(),
-        by_member: HashMap::new(),
-        by_id: HashMap::new(),
+        by_name,
+        by_member,
+        by_id,
         go_pkgs: HashMap::new(),
         rust_mods: HashMap::new(),
         rust_crates: HashSet::new(),
@@ -1188,17 +1379,6 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
         scopes: Vec::new(),
         memo: Mutex::new(HashMap::new()),
     };
-    for (i, s) in ctx.syms.iter().enumerate() {
-        ctx.by_name.entry(s.name.clone()).or_default().push(i);
-        if let (SymKind::Method, Some(c)) = (s.kind, &s.container) {
-            ctx.by_member
-                .entry((c.clone(), s.name.clone()))
-                .or_default()
-                .push(i);
-        }
-        ctx.by_id.insert(s.id, i);
-        ctx.by_file[s.file].push(i);
-    }
     for (i, f) in ctx.files.iter().enumerate() {
         ctx.paths.insert(f.path.clone(), i);
         let base = f.path.rsplit('/').next().unwrap_or(&f.path).to_string();
@@ -1226,7 +1406,73 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
     ctx.load_tsconfig();
     ctx.load_js_packages();
     crate::util::trace("resolve.load.ctx", t0);
-    Ok((ctx, edges))
+    Ok(ctx)
+}
+
+/// The repo's stored edges, and the ids of the derived edges the previous resolve wrote.
+fn load_edges(store: &Store, repo_id: i64, ctx: &Ctx) -> Result<(Vec<E>, Vec<i64>)> {
+    let t0 = std::time::Instant::now();
+    let path = store.path().to_path_buf();
+    let file_idx: HashMap<i64, usize> = ctx
+        .files
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.id, i))
+        .collect();
+    // Ok: an edge to resolve; Err: the id of a derived edge from the previous resolve.
+    let rows: Vec<std::result::Result<E, i64>> = par_rows(
+        store,
+        &path,
+        "edges",
+        repo_id,
+        "SELECT id, file_id, from_symbol, from_name, name, qualifier, kind, extra,
+                to_symbol, confidence, to_file, line
+         FROM edges WHERE +repo_id = ?1 AND id BETWEEN ?2 AND ?3",
+        |r| {
+            let fid: i64 = r.get(1)?;
+            let kind: String = r.get(6)?;
+            let (Some(&file), Some(kind)) = (file_idx.get(&fid), EdgeKind::parse(&kind)) else {
+                return Ok(None);
+            };
+            let extra: Option<String> = r.get(7)?;
+            if extra.as_deref() == Some(IMPLICIT) {
+                // Derived by the previous resolve; replaced by `resolve_repo`.
+                return Ok(Some(Err(r.get(0)?)));
+            }
+            let (hint, dot) = if kind == EdgeKind::Import {
+                (None, false)
+            } else {
+                ref_hint(extra.as_deref())
+            };
+            Ok(Some(Ok(E {
+                id: r.get(0)?,
+                file,
+                from_symbol: r.get(2)?,
+                from_name: r.get(3)?,
+                name: r.get(4)?,
+                qualifier: r.get(5)?,
+                kind,
+                extra,
+                old_to: r.get(8)?,
+                old_conf: r.get(9)?,
+                old_to_file: r.get(10)?,
+                hint,
+                dot,
+                line: r.get(11)?,
+            })))
+        },
+    )?;
+    let mut edges = Vec::with_capacity(rows.len());
+    let mut implicit = Vec::new();
+    for r in rows {
+        match r {
+            Ok(e) => edges.push(e),
+            Err(id) => implicit.push(id),
+        }
+    }
+    edges.par_sort_unstable_by_key(|e| e.id);
+    crate::util::trace("resolve.load.edges", t0);
+    Ok((edges, implicit))
 }
 
 impl Ctx {

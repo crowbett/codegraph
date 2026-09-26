@@ -69,10 +69,10 @@ fn edit_touch_delete_and_full() {
         count(
             &store,
             "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name IN (
-                'symbols_file', 'symbols_repo', 'edges_file', 'edges_repo', 'symbols_name',
+                'symbols_file', 'edges_file', 'symbols_name',
                 'symbols_name_nocase', 'symbols_qkey', 'edges_to', 'edges_from', 'edges_to_file')"
         ),
-        10
+        8
     );
 
     let again = reindex(&mut store, root, false);
@@ -176,4 +176,65 @@ fn budget_leaves_work_pending() {
     assert!(st.pending > 0);
     let st = reindex(&mut store, src.path(), false);
     assert_eq!(st.parsed, st.files);
+}
+
+/// Every edge as (file, line, col, name, kind, target qname, target file, confidence,
+/// enclosing symbol), independent of row ids.
+fn edge_dump(store: &Store) -> Vec<String> {
+    let mut st = store
+        .conn()
+        .prepare(
+            "SELECT f.path, e.line, e.col, e.name, e.kind, coalesce(t.qname, ''),
+                coalesce(tf.path, ''), coalesce(e.confidence, ''), coalesce(fs.qname, '')
+             FROM edges e JOIN files f ON f.id = e.file_id
+             LEFT JOIN symbols t ON t.id = e.to_symbol
+             LEFT JOIN files tf ON tf.id = e.to_file
+             LEFT JOIN symbols fs ON fs.id = e.from_symbol",
+        )
+        .unwrap();
+    let mut rows: Vec<String> = st
+        .query_map([], |r| {
+            Ok(format!(
+                "{}:{}:{} {} {} -> {} {} {} from {}",
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, String>(7)?,
+                r.get::<_, String>(8)?,
+            ))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    rows.sort();
+    rows
+}
+
+/// A cold index resolves references in memory and inserts each edge once; a re-index of
+/// a stored repo updates stored edges. Both must produce the same graph.
+#[test]
+fn cold_and_stored_paths_agree() {
+    for fixture in [
+        "go",
+        "go_infer",
+        "rust",
+        "rust_infer",
+        "ts_infer",
+        "python",
+        "c",
+    ] {
+        let src = copy_fixture(fixture);
+        let db = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&db.path().join("g.db")).unwrap();
+        reindex(&mut store, src.path(), false);
+        let cold = edge_dump(&store);
+        assert!(!cold.is_empty(), "{fixture}");
+        let full = reindex(&mut store, src.path(), true);
+        assert_counts(&store, &full);
+        assert_eq!(cold, edge_dump(&store), "{fixture}");
+    }
 }
