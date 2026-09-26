@@ -702,10 +702,6 @@ const IMPLICIT: &str = r#"{"implicit":true}"#;
 
 /// Resolve every edge of a repo and write the results.
 pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<ResolveStats> {
-    store.conn().execute(
-        "DELETE FROM edges WHERE repo_id = ?1 AND kind = 'impl' AND extra = ?2",
-        params![repo_id, IMPLICIT],
-    )?;
     let ctx_and_edges = load(store, repo_id, root)?;
     let (ctx, edges) = ctx_and_edges;
     let scopes: Vec<Scope> = (0..ctx.files.len()).map(|_| Scope::default()).collect();
@@ -821,6 +817,11 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
         for (id, to, conf, to_file, from) in &updates {
             st.execute(params![id, to, conf, to_file, from])?;
         }
+        // Derived edges are replaced in the same transaction as everything else.
+        tx.execute(
+            "DELETE FROM edges WHERE repo_id = ?1 AND kind = 'impl' AND extra = ?2",
+            params![repo_id, IMPLICIT],
+        )?;
         let mut ins = tx.prepare_cached(
             "INSERT INTO edges(repo_id, file_id, from_symbol, name, kind, line, col, to_symbol,
                 to_file, confidence, extra)
@@ -1019,6 +1020,10 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
             let (Some(&file), Some(kind)) = (file_idx.get(&fid), EdgeKind::parse(&kind)) else {
                 continue;
             };
+            if extra.as_deref() == Some(IMPLICIT) {
+                // Derived by the previous resolve; rebuilt below.
+                continue;
+            }
             let (hint, dot) = if kind == EdgeKind::Import {
                 (None, false)
             } else {
@@ -1129,6 +1134,15 @@ impl Ctx {
                 }
             }
         }
+        // Sorted, shallowest first: a duplicate package name (examples, fixtures) keeps
+        // the outermost package, deterministically.
+        let mut dirs: Vec<String> = dirs.into_iter().collect();
+        dirs.sort_by(|a, b| {
+            a.matches('/')
+                .count()
+                .cmp(&b.matches('/').count())
+                .then(a.cmp(b))
+        });
         for d in dirs {
             let p = if d.is_empty() {
                 self.root.join("package.json")
@@ -1167,7 +1181,7 @@ impl Ctx {
             .iter()
             .find_map(|x| x.as_str())
             .map(|e| e.trim_start_matches("./").to_string());
-            self.js_pkgs.insert(name.to_string(), (d, entry));
+            self.js_pkgs.entry(name.to_string()).or_insert((d, entry));
         }
     }
 
