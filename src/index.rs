@@ -397,7 +397,18 @@ pub fn refresh_repo(
         })
         .collect();
     index_repo(store, cfg, name, repo_root, files, opts, start, &mut stats)?;
-    finish(store, &mut stats, start)?;
+    // Refreshes run per MCP call and per watch batch: count this repo only (indexed),
+    // not the whole graph (three full scans, seconds on a kernel-sized graph).
+    stats.symbols = store.conn().query_row(
+        "SELECT count(*) FROM symbols WHERE repo_id = (SELECT id FROM repos WHERE root = ?1)",
+        [repo_root.to_string_lossy()],
+        |r| r.get(0),
+    )?;
+    if let Some(res) = stats.changed_repos.last().and_then(|r| r.resolve) {
+        stats.edges = res.edges as i64;
+        stats.resolved_edges = res.resolved as i64;
+    }
+    stats.elapsed_ms = start.elapsed().as_millis();
     Ok(stats)
 }
 
