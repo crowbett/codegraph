@@ -249,14 +249,21 @@ fn scip_index(dirs: &Dirs, r: &Repo) -> Result<()> {
         "typescript" => {
             if !repo.join("node_modules").is_dir() {
                 let lock = repo.join("package-lock.json").is_file();
-                let mut c = npm();
-                c.current_dir(&repo).args([
-                    if lock { "ci" } else { "install" },
-                    "--ignore-scripts",
-                    "--no-fund",
-                    "--no-audit",
-                ]);
-                run(c, &format!("npm install in {}", r.name))?;
+                let npm_in = |verb: &str| {
+                    let mut c = npm();
+                    c.current_dir(&repo).args([
+                        verb,
+                        "--ignore-scripts",
+                        "--no-fund",
+                        "--no-audit",
+                    ]);
+                    run(c, &format!("npm {verb} in {}", r.name))
+                };
+                // pnpm/yarn repos can ship a stale package-lock.json that `npm ci` rejects;
+                // fall back to a plain install (it only rewrites the lock in the clone).
+                if !lock || npm_in("ci").is_err() {
+                    npm_in("install")?;
+                }
             }
             let mut c = Command::new("node");
             c.arg(node_mod.join("scip-typescript/dist/src/main.js"))

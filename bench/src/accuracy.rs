@@ -297,6 +297,34 @@ impl Sources {
     }
 }
 
+/// Whether the (0-based) line of a JS/TS file is a binding inside an `import` statement:
+/// the line itself starts with `import`, or it and every line up to an `import {` opener
+/// hold nothing but names (`a,` / `type B as C,`).
+fn import_binding(src: &mut Sources, path: &str, line0: u32) -> bool {
+    let ts = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
+    if !ts.iter().any(|e| path.ends_with(e)) {
+        return false;
+    }
+    let names_only = |l: &str| {
+        !l.is_empty()
+            && l.chars()
+                .all(|c| c.is_alphanumeric() || matches!(c, '_' | '$' | ',' | ' ' | '\t'))
+    };
+    for l0 in (line0.saturating_sub(200)..=line0).rev() {
+        let Some(l) = src.line(path, l0) else {
+            return false;
+        };
+        let l = l.trim();
+        if l.starts_with("import ") || l.starts_with("import{") {
+            return true;
+        }
+        if !names_only(l) {
+            return false;
+        }
+    }
+    false
+}
+
 /// Byte range of an occurrence on its line. SCIP indexers disagree on the column unit
 /// (UTF-8 bytes vs UTF-16 units); on non-ASCII lines try both and keep the one that
 /// lands on an identifier.
@@ -573,6 +601,7 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
                 (Some(_), Some(e)) => match cg.edges[e].to {
                     None => Outcome::Unresolved,
                     Some(t) if Some(t) == expect => Outcome::Hit,
+                    Some(t) if correct_target(&cg, &scip, &def_text, &o.symbol, t) => Outcome::Hit,
                     Some(t) if related(&o.symbol, t) => Outcome::Dispatch,
                     Some(_) => Outcome::Wrong,
                 },
@@ -642,6 +671,16 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
         let Some(o) = hit else { continue };
         if o.is_def {
             continue;
+        }
+        // scip-typescript turns an import it cannot resolve (a workspace package whose
+        // `types` point at an unbuilt dist/) into a local bound at the import: no ground
+        // truth for the site, so leave it unjudged.
+        // Such a local has no definition occurrence; its first occurrence is the binding.
+        if is_local(&o.symbol) && !scip.defs.contains_key(&o.symbol) {
+            let first = scip.occs[&path].iter().find(|x| x.symbol == o.symbol);
+            if first.is_some_and(|f| import_binding(&mut src, &path, f.line)) {
+                continue;
+            }
         }
         let verdict = if !scip.defs.contains_key(&o.symbol) {
             Verdict::False
@@ -796,11 +835,34 @@ fn correct_target(
     let (Some(d), Some(s)) = (scip.defs.get(sym), cg.syms.get(&to)) else {
         return false;
     };
-    let l1 = d.line + 1;
-    cg.files[&s.file].0 == d.path
-        && s.start <= l1
-        && l1 <= s.end
-        && def_text.get(sym).is_none_or(|n| *n == s.name)
+    let name_ok = def_text.get(sym).is_none_or(|n| *n == s.name);
+    let path = &cg.files[&s.file].0;
+    // Any definition site of the symbol counts (overload stubs vs implementation).
+    let at_def = std::iter::once(d)
+        .chain(scip.extra_defs.get(sym).into_iter().flatten())
+        .any(|d| {
+            let l1 = d.line + 1;
+            *path == d.path && s.start <= l1 && l1 <= s.end && name_ok
+        });
+    at_def || python_redef(scip, sym, path, s, name_ok)
+}
+
+/// scip-python records only the first `@overload` stub of a function as its definition;
+/// the later stubs and the implementation are *references* to that symbol at their own
+/// name token. A codegraph symbol whose name token (on its first line, same file, no
+/// other definition of that name on the line) is such a reference is the same function.
+fn python_redef(scip: &Scip, sym: &str, path: &str, s: &CgSym, name_ok: bool) -> bool {
+    if !name_ok || !sym.starts_with("scip-python ") {
+        return false;
+    }
+    if scip.defs.get(sym).is_none_or(|d| d.path != path) {
+        return false;
+    }
+    let n = s.name.chars().count() as u32;
+    let occs = scip.on_line(path, s.start.saturating_sub(1));
+    let same_len = |o: &&Occ| o.end.saturating_sub(o.start) == n;
+    occs.iter().filter(same_len).all(|o| !o.is_def)
+        && occs.iter().filter(same_len).any(|o| o.symbol == sym)
 }
 
 fn short_sym(s: &str) -> String {
