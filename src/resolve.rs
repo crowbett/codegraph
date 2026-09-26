@@ -1588,10 +1588,10 @@ impl Ctx {
                     // Python `import a.b.c` also binds the top package `a`.
                     if f.lang == Lang::Python && local == path && local.contains('.') {
                         let head = local.split('.').next().unwrap_or(&local).to_string();
-                        if !scope.modules.contains_key(&head) {
-                            let files = self.py_module(fi, &head).unwrap_or_default();
-                            scope.modules.insert(head, files);
-                        }
+                        scope
+                            .modules
+                            .entry(head.clone())
+                            .or_insert_with(|| self.py_module(fi, &head).unwrap_or_default());
                     }
                     scope.modules.insert(local, targets.clone());
                 }
