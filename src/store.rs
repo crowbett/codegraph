@@ -63,11 +63,8 @@ CREATE TABLE IF NOT EXISTS symbols(
     ret TEXT,
     fields TEXT
 );
-CREATE INDEX IF NOT EXISTS symbols_name ON symbols(name);
-CREATE INDEX IF NOT EXISTS symbols_name_nocase ON symbols(name COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS symbols_file ON symbols(file_id);
 CREATE INDEX IF NOT EXISTS symbols_repo ON symbols(repo_id);
-CREATE INDEX IF NOT EXISTS symbols_qkey ON symbols(qkey);
 CREATE TABLE IF NOT EXISTS edges(
     id INTEGER PRIMARY KEY,
     repo_id INTEGER NOT NULL,
@@ -94,6 +91,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
 /// Query-side edge indexes and the triggers keeping `symbols_fts` in sync row by row;
 /// both are dropped during bulk loads and rebuilt once at the end.
 const FTS_TRIGGERS: &str = r"
+CREATE INDEX IF NOT EXISTS symbols_name ON symbols(name);
+CREATE INDEX IF NOT EXISTS symbols_name_nocase ON symbols(name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS symbols_qkey ON symbols(qkey);
 CREATE INDEX IF NOT EXISTS edges_to ON edges(to_symbol);
 CREATE INDEX IF NOT EXISTS edges_from ON edges(from_symbol);
 CREATE INDEX IF NOT EXISTS edges_to_file ON edges(to_file);
@@ -240,7 +240,8 @@ impl Store {
             "BEGIN;
              DROP TRIGGER IF EXISTS symbols_ai; DROP TRIGGER IF EXISTS symbols_ad;
              DROP INDEX IF EXISTS edges_to; DROP INDEX IF EXISTS edges_from;
-             DROP INDEX IF EXISTS edges_to_file;
+             DROP INDEX IF EXISTS edges_to_file; DROP INDEX IF EXISTS symbols_name;
+             DROP INDEX IF EXISTS symbols_name_nocase; DROP INDEX IF EXISTS symbols_qkey;
              INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_dirty', '1');
              COMMIT;",
         )?;
