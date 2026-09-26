@@ -118,16 +118,27 @@ CI assembles the packages from each OS's build, installs them into a scratch pro
 Needs Rust 1.85+ and a C compiler (tree-sitter grammars and bundled SQLite are C):
 
 ```sh
-cargo install --git https://github.com/crowbett/codegraph --locked
+cargo install --git https://github.com/crowbett/codegraph --locked codegraph
 # a tag
-cargo install --git https://github.com/crowbett/codegraph --tag v0.2.0 --locked
+cargo install --git https://github.com/crowbett/codegraph --tag v0.2.0 --locked codegraph
 ```
 
-While private, cargo must be able to authenticate to GitHub. Either use SSH
-(`cargo install --git ssh://git@github.com/crowbett/codegraph.git --locked`
-with `CARGO_NET_GIT_FETCH_WITH_CLI=true` so cargo uses your git/ssh-agent setup), or keep
-the https URL with a git credential helper (`gh auth setup-git`) and
-`CARGO_NET_GIT_FETCH_WITH_CLI=true`. The crate is `publish = false`; it is not on crates.io.
+The trailing package name `codegraph` is required: the repo also contains the `bench/`
+crate and a Rust test fixture, and `cargo install --git` refuses to guess between them.
+
+While private, cargo must authenticate to GitHub. The reliable way is SSH through your
+git setup:
+
+```sh
+CARGO_NET_GIT_FETCH_WITH_CLI=true \
+  cargo install --git ssh://git@github.com/crowbett/codegraph.git --locked codegraph
+```
+
+(PowerShell: `$env:CARGO_NET_GIT_FETCH_WITH_CLI = "true"` first.) The https URL also
+works with `CARGO_NET_GIT_FETCH_WITH_CLI=true` and a git credential helper that already
+holds a token (`gh auth setup-git`); with Git Credential Manager and no cached credential
+it opens a login prompt, and in a non-interactive shell it just hangs. The crate is
+`publish = false`; it is not on crates.io.
 
 From a clone: `cargo install --path . --locked`.
 
