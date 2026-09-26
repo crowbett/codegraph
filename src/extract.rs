@@ -361,7 +361,10 @@ fn in_attribute_or_macro_def(name: Node<'_>) -> bool {
     let mut cur = name.parent();
     while let Some(n) = cur {
         match n.kind() {
-            "attribute_item" | "inner_attribute_item" | "attribute" | "macro_definition"
+            "attribute_item"
+            | "inner_attribute_item"
+            | "attribute"
+            | "macro_definition"
             | "macro_rule" => {
                 return true;
             }

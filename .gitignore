@@ -9,3 +9,4 @@
 .idea/
 /.cache/
 /bench/target/
+/.claude/worktrees/
