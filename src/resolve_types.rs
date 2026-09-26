@@ -803,6 +803,9 @@ impl Ctx {
         if !seen.insert(t) || d > MAX_DEPTH {
             return Val::Ty(Ty::Unknown);
         }
+        if let Some(target) = self.alias_target(t) {
+            return self.field_of(target, name, seen, d + 1);
+        }
         let s = &self.syms[t];
         if let Some((_, h)) = s.fields.iter().find(|(k, _)| k == name) {
             return self.eval_val(s.file, Some(s.id), h, d + 1);
@@ -1115,6 +1118,11 @@ impl Ctx {
         if let Some(b) = self.best(ts.file, &own) {
             return Some((b, false));
         }
+        // A type alias (`type BoolFlag = FlagBase[bool]`, `type R = Repo<u8>;`) has the
+        // methods of its target.
+        if let Some(target) = self.alias_target(t) {
+            return self.method_on(target, name, seen, d + 1);
+        }
         // Go: promoted through embedded fields.
         for (k, h) in &ts.fields {
             if k.starts_with('~') {
@@ -1259,6 +1267,32 @@ impl Ctx {
                     }
                 }
             }
+        }
+    }
+
+    /// The type an alias symbol stands for, read from its signature
+    /// (`type A = B[T]`, `type A = B<T>;`).
+    fn alias_target(&self, t: usize) -> Option<usize> {
+        let s = &self.syms[t];
+        if s.kind != SymKind::Type {
+            return None;
+        }
+        let (_, rhs) = s.sig.split_once('=')?;
+        let rhs = rhs.trim().trim_end_matches(';').trim();
+        if rhs.is_empty() {
+            return None;
+        }
+        let v = Val::Text {
+            fi: s.file,
+            from: Some(s.id),
+            text: rhs.to_string(),
+            unwrap: false,
+            awaited: false,
+            elem: false,
+        };
+        match self.bind_val(&v, 0) {
+            Ty::Known(b) if b != t => Some(b),
+            _ => None,
         }
     }
 
