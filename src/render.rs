@@ -12,6 +12,7 @@ use crate::query::{
     CallNode, CallPath, CallTree, Def, Hit, Hotspots, Impact, Outline, OutlineNode, Ranked,
     References, Status, Sym,
 };
+use crate::watch::WatchEvent;
 
 /// Replace C0/C1 control characters (ESC, CR, BEL, U+0080..U+009F, ...) and bidi
 /// embedding/override/isolate controls (U+202A..U+202E, U+2066..U+2069, "Trojan
@@ -600,6 +601,98 @@ pub fn config(v: &ConfigView) -> String {
 /// One-line symbol label (`qname  file:line`).
 pub fn sym_line(sym: &Sym) -> String {
     format!("{}  {}", clean(&sym.qname), clean(&sym.loc()))
+}
+
+fn clock() -> String {
+    let t = crate::util::format_unix(crate::util::now_unix());
+    t.get(11..19).unwrap_or(&t).to_string()
+}
+
+fn listed(files: &[String], changed: usize) -> String {
+    let mut s: Vec<&str> = files.iter().take(3).map(String::as_str).collect();
+    let more = changed.saturating_sub(s.len());
+    let extra = format!("+{more}");
+    if more > 0 {
+        s.push(&extra);
+    }
+    s.join(", ")
+}
+
+/// One `watch` event as a human line. `None` for events not worth a line (a re-index
+/// that changed nothing, unless `verbose`).
+pub fn watch_event(e: &WatchEvent, verbose: bool, s: Style) -> Option<String> {
+    let line = match e {
+        WatchEvent::Ready {
+            roots,
+            repos,
+            initial,
+        } => {
+            let mut out = String::new();
+            if let Some(st) = initial {
+                out.push_str(&index(st, false, s));
+            }
+            let _ = write!(
+                out,
+                "{} watching {} ({} repos) — Ctrl-C to stop",
+                s.dim(&clock()),
+                roots.join(", "),
+                repos
+            );
+            out
+        }
+        WatchEvent::Reindex {
+            repo,
+            files,
+            changed,
+            ms,
+            stats,
+            ..
+        } => {
+            if stats.parsed == 0 && stats.removed == 0 && !verbose {
+                return None;
+            }
+            format!(
+                "{} {} {}: {} parsed, {} removed · {} symbols · {} ms ({})",
+                s.dim(&clock()),
+                s.green("reindex"),
+                s.bold(repo),
+                stats.parsed,
+                stats.removed,
+                human_count(stats.symbols),
+                ms,
+                clean(&listed(files, *changed))
+            )
+        }
+        WatchEvent::Rescan {
+            root,
+            reason,
+            ms,
+            stats,
+        } => format!(
+            "{} {} {root}: {} parsed, {} removed · {} repos · {} ms ({})",
+            s.dim(&clock()),
+            s.cyan("rescan"),
+            stats.parsed,
+            stats.removed,
+            stats.repos,
+            ms,
+            clean(reason)
+        ),
+        WatchEvent::Error {
+            repo,
+            code,
+            message,
+        } => format!(
+            "{} {} {}{code}: {}",
+            s.dim(&clock()),
+            s.red("error"),
+            repo.as_deref()
+                .map(|r| format!("{r}: "))
+                .unwrap_or_default(),
+            clean(message)
+        ),
+    };
+    Some(line)
 }
 
 #[cfg(test)]

@@ -1,0 +1,42 @@
+# Pinned repos for `codegraph-bench scale` (the 1.0 bar: a 100k-file repo indexes in < 60 s).
+#
+# Clones are shallow (`git clone --depth 1 --branch <rev>`) into `.cache/bench/scale/<name>`;
+# `commit` is checked after the clone so a moved tag is caught.
+#
+# No single sensible public repo has 100k files in codegraph's languages after the default
+# skip_dirs (Linux, the largest, has ~60k indexable .c/.h), so there is the kernel alone and
+# a combined run (several repos in one `index` call) that crosses 100k files.
+
+[[repo]]
+name = "linux"
+url = "https://github.com/torvalds/linux.git"
+rev = "v6.12"
+commit = "adc218676eef25575469234709c2d87185ca223a"
+touch = "kernel/sched/core.c"
+
+[[repo]]
+name = "rust"
+url = "https://github.com/rust-lang/rust.git"
+rev = "1.85.0"
+commit = "4d91de4e48198da2e33413efdcd9cd2cc0c46688"
+touch = "compiler/rustc_middle/src/ty/mod.rs"
+
+[[repo]]
+name = "kubernetes"
+url = "https://github.com/kubernetes/kubernetes.git"
+rev = "v1.32.0"
+commit = "70d3cc986aa8221cd1dfb1121852688902d3bf53"
+touch = "pkg/scheduler/scheduler.go"
+
+[[run]]
+name = "linux"
+repos = ["linux"]
+
+# Linux + rust-lang/rust alone is ~91k files: not enough.
+[[run]]
+name = "linux+rust"
+repos = ["linux", "rust"]
+
+[[run]]
+name = "combined"
+repos = ["linux", "rust", "kubernetes"]

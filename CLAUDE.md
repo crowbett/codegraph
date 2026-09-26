@@ -39,10 +39,13 @@ src/query.rs     find/def/refs/callers/callees/outline/path/impact/hotspots/dot/
 src/render.rs    human text (also the MCP `content` text, uncolored); `via`/confidence marks
 src/output.rs    --json envelope, ANSI Style, Table; src/config.rs codegraph.toml
 src/mcp.rs       hand-rolled stdio MCP server (read-only tools, auto-refresh of the asked repo)
+src/watch.rs     `watch` / `mcp --watch`: notify events -> path filter -> per-repo debounce ->
+                 index::refresh_repo (root rescan when a repo appears/vanishes); busy retry
 tests/fixtures/<lang>/  mini projects; tests/lang.rs snapshots them (insta) + asserts resolution
 tests/fixtures/{go,rust,ts}_infer/  typed-receiver resolution fixtures, asserted in tests/resolve.rs
 tests/graph.rs incremental.rs cli.rs resolve.rs   graph algorithms, re-index, binary + MCP
                  stdio + self-index, typed-receiver resolution
+tests/watch.rs   watcher: edit/create/delete/new repo reach the DB, concurrent writers, NDJSON
 bench/           standalone crate (`codegraph-bench`, own [workspace], not shipped): clones
                  the pinned corpus, builds SCIP ground truth, scores codegraph against it
                  (docs/ACCURACY.md has the method). bench/corpus.toml, bench/baseline/ (frozen

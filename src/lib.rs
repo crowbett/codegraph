@@ -22,6 +22,7 @@ pub mod resolve;
 pub mod store;
 pub(crate) mod tsfix;
 pub mod util;
+pub mod watch;
 
 /// Crate version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

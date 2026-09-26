@@ -1,7 +1,8 @@
-//! codegraph benchmarks: accuracy against SCIP ground truth (and, later, scale).
+//! codegraph benchmarks: accuracy against SCIP ground truth, and indexing scale.
 
 mod accuracy;
 mod corpus;
+mod scale;
 mod scipdata;
 
 use std::path::PathBuf;
@@ -45,6 +46,21 @@ enum Cmd {
         #[arg(long)]
         report: bool,
     },
+    /// Cold / no-op / one-file index timings on large pinned repos (bench/scale.toml).
+    Scale {
+        /// Only these runs (default: all).
+        #[arg(long = "run")]
+        runs: Vec<String>,
+        /// Iterations per run (medians are reported).
+        #[arg(long, short = 'n', default_value_t = 3)]
+        iterations: usize,
+        /// Clone the pinned repos and stop.
+        #[arg(long)]
+        prepare_only: bool,
+        /// Write the JSON results here (default .cache/bench/scale.json).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Print occurrences of a SCIP index on one file/line (debugging).
     Dump {
         repo: String,
@@ -66,6 +82,20 @@ fn main() -> Result<()> {
             write_docs,
             report,
         } => accuracy::run(&dirs, &repos, out, baseline, write_docs, report),
+        Cmd::Scale {
+            runs,
+            iterations,
+            prepare_only,
+            out,
+        } => scale::run(
+            &dirs,
+            &scale::Opts {
+                runs,
+                iterations,
+                prepare_only,
+                out,
+            },
+        ),
         Cmd::Dump { repo, path, line } => {
             let s = scipdata::Scip::load(&dirs.scip(&repo))?;
             if path == "-" {

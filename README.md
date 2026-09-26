@@ -107,9 +107,9 @@ files
 (Generated with a throwaway `KIT_DATA_DIR`/`KIT_CONFIG_DIR`, never `~/.config/kit`; paths
 above are shown as they'd appear from a normal `~/dev/rust/codegraph` checkout.)
 
-**Staying fresh:** the CLI only re-indexes on `codegraph index`; a `codegraph watch
-[PATH...]` command (file watcher, keeps the graph current between runs) is in progress —
-until then, re-run `index` or rely on the MCP server's auto-refresh (below).
+**Staying fresh:** `codegraph watch` re-indexes a repo about 300 ms after its files change (see
+[watch](#watch)); `codegraph mcp --watch` does it in the background, and every MCP call also
+refreshes the repo it asks about.
 
 ## MCP registration
 
@@ -121,7 +121,6 @@ claude mcp add codegraph -- codegraph mcp
 
 ```text
 codegraph index [--full] [PATH...]      index the configured roots (default ~/dev), incrementally
-codegraph watch [PATH...]               keep the graph fresh (file watcher) — coming soon
 codegraph find <name> [--kind fn] [--repo x]
 codegraph def <symbol>                  definition + source (with its doc comment)
 codegraph refs <symbol> [--kind call|ref|impl|inherit]
@@ -132,7 +131,8 @@ codegraph path <from> <to>              shortest call path
 codegraph impact <file|symbol> [-d N]   what transitively depends on this
 codegraph hotspots [--repo x]           most referenced, largest fan-out, dead-code candidates
 codegraph dot <symbol> [--format dot|mermaid]
-codegraph status | config path|show | version | mcp
+codegraph watch [PATH...]               keep the graph fresh as files change (Ctrl-C stops)
+codegraph status | config path|show | version | mcp [--watch]
 ```
 
 A `<symbol>` can be a simple name (`Evaluate`), a qualified name (`rules.Engine.Evaluate`,
@@ -144,6 +144,14 @@ In trees, `~` marks a `likely` edge and `?` marks `name_only`. `[via Trait::meth
 call resolved through dynamic dispatch (an interface/trait/base-class method, not the
 concrete implementation shown). `[as value]` means the function is passed as a callback or
 handler, not called. `[cycle]` and `[seen above]` mark recursion and repeated subtrees.
+
+### `watch`
+
+`codegraph watch [PATH...]` indexes the roots once, then re-indexes a repo ~300 ms after its
+files change (`--debounce-ms`, max 2 s latency), with the same filters as `index`; build
+output (`target/`, `node_modules/`, `.git/`...) never triggers work, new repos are picked up.
+`--json` streams NDJSON (`ready`, `reindex`, `rescan`, `error`); Ctrl-C exits 0.
+`codegraph mcp --watch` does the same in the background for repos already in the graph.
 
 ### `--json`
 

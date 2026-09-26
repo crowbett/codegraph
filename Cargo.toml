@@ -25,7 +25,9 @@ doc = false
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive", "wrap_help"] }
+ctrlc = "3.5.2"
 ignore = "0.4.33"
+notify = "8.2.0"
 rayon = "1.12.0"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
