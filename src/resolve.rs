@@ -29,6 +29,30 @@ use crate::store::Store;
 #[path = "resolve_types.rs"]
 mod types;
 
+/// Rust std-trait methods a type commonly implements several times (once per type
+/// parameter of the trait), so a name alone cannot pick the impl.
+const TRAIT_OVERLOADS: &[&str] = &[
+    "from",
+    "try_from",
+    "into",
+    "try_into",
+    "from_iter",
+    "extend",
+    "eq",
+    "ne",
+    "partial_cmp",
+    "cmp",
+    "add",
+    "sub",
+    "mul",
+    "div",
+    "index",
+    "index_mut",
+    "as_ref",
+    "as_mut",
+    "borrow",
+];
+
 /// Resolution counters for one repo.
 #[derive(Debug, Clone, Copy, Default, serde::Serialize)]
 pub struct ResolveStats {
@@ -1971,6 +1995,14 @@ impl Ctx {
             .filter(|&s| self.syms[s].container.as_deref() == Some(ty))
             .collect();
         if m.is_empty() {
+            return None;
+        }
+        // `BytesMut::from(x)`: one method per trait impl (`From<&[u8]>`, `From<Bytes>`...);
+        // which one depends on the argument type, which we don't know.
+        if m.len() > 1
+            && self.files[self.syms[m[0]].file].lang == Lang::Rust
+            && TRAIT_OVERLOADS.contains(&self.syms[m[0]].name.as_str())
+        {
             return None;
         }
         let worse = if conf == Confidence::Exact {

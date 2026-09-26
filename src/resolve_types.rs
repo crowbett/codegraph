@@ -69,6 +69,14 @@ const SELF_CTORS: &[&str] = &[
     "clone",
     "with_capacity",
 ];
+/// `T`, `K2`, `Fut`-less short all-caps names: likely a generic type parameter.
+fn looks_generic(name: &str) -> bool {
+    name.len() <= 2
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+}
+
 /// Method name -> (parameter count, result count) when known.
 type MethodSet<'s> = HashMap<&'s str, Option<(usize, usize)>>;
 
@@ -1037,6 +1045,9 @@ impl Ctx {
             }
             // A type that exists nowhere in the repo is a builtin, a std/dependency type or
             // a global (Go builtins, `Vec`, `TempDir`, `Map`, `HTMLElement`).
+            // `T`, `W`, `F`: a generic parameter we can't see (struct/impl generics), not a
+            // std type.
+            _ if all.is_empty() && looks_generic(name) => Ty::Unknown,
             _ if all.is_empty() => Ty::External,
             _ if builtin_type(lang, name) && same_unit.is_empty() => Ty::External,
             _ => Ty::Unknown,
