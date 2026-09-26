@@ -153,6 +153,10 @@ struct Ctx {
     go_pkgs: HashMap<String, Vec<usize>>,
     rust_mods: HashMap<(String, String), Vec<usize>>,
     rust_crates: HashSet<String>,
+    /// `#[path = ".."] mod name;`: (declaring file, name) -> the file it loads.
+    path_mods: HashMap<(usize, String), usize>,
+    /// The inverse: a file loaded through `#[path]` -> the file declaring it.
+    path_parent: HashMap<usize, usize>,
     py_mods: HashMap<String, Vec<usize>>,
     js_mods: HashMap<String, usize>,
     /// Workspace packages (`package.json` `name` -> (package dir, entry path)).
@@ -697,6 +701,9 @@ fn is_self_word(q: &str) -> bool {
     matches!(q, "self" | "this" | "Self" | "cls")
 }
 
+/// One `#[path] mod` declaration: (import edge id, the file it loads if indexed).
+type PathDecl = (i64, Option<usize>);
+
 /// `edges.extra` of derived Go interface-satisfaction edges (rebuilt on every resolve).
 const IMPLICIT: &str = r#"{"implicit":true}"#;
 
@@ -711,10 +718,64 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
     let mut stats = ResolveStats::default();
     let mut updates: Vec<Update> = Vec::new();
 
+    // `#[path]` modules first: `use` paths resolved below may go through them. A name that
+    // is also bound by a `use` in the same file, or declared twice, is a `#[cfg]` twin
+    // (`#[cfg(not(feature = "std"))] #[path = "core.rs"] mod imp;` next to
+    // `use std::io as imp;`): which one the build sees is unknown, so neither is followed.
+    let mut used: HashSet<(usize, String)> = HashSet::new();
+    // (declaring file, module name) -> every declaration: (edge id, loaded file).
+    let mut cands: HashMap<(usize, String), Vec<PathDecl>> = HashMap::new();
+    for e in edges.iter().filter(|e| e.kind == EdgeKind::Import) {
+        if ctx.files[e.file].lang != Lang::Rust {
+            continue;
+        }
+        let x = parse_extra(e.extra.as_deref());
+        if !x.mod_path {
+            used.extend(x.bindings.into_iter().map(|b| (e.file, b.local)));
+            continue;
+        }
+        let Some(name) = x.bindings.into_iter().next().map(|b| b.local) else {
+            continue;
+        };
+        let dir = dir_of(&ctx.files[e.file].path);
+        let rel = norm_rel(&format!("{dir}/{}", e.name.replace('\\', "/")));
+        let target = ctx
+            .paths
+            .get(&rel)
+            .copied()
+            .filter(|&t| t != e.file && ctx.files[t].lang == Lang::Rust);
+        cands
+            .entry((e.file, name))
+            .or_default()
+            .push((e.id, target));
+    }
+    let mut path_mod_targets: HashMap<i64, usize> = HashMap::new();
+    for (key, decls) in cands {
+        let [(id, Some(t))] = decls[..] else { continue };
+        if used.contains(&key) {
+            continue;
+        }
+        path_mod_targets.insert(id, t);
+        ctx.path_parent.entry(t).or_insert(key.0);
+        ctx.path_mods.insert(key, t);
+    }
+
     // Pass 1: imports build per-file scopes.
     for e in edges.iter().filter(|e| e.kind == EdgeKind::Import) {
         stats.imports += 1;
-        let (bindings, system) = parse_extra(e.extra.as_deref());
+        let x = parse_extra(e.extra.as_deref());
+        if x.mod_path {
+            let to_file = path_mod_targets.get(&e.id).copied();
+            if to_file.is_some() {
+                stats.imports_resolved += 1;
+            }
+            let to_file_id = to_file.map(|i| ctx.files[i].id);
+            if e.old_to_file != to_file_id || e.old_to.is_some() {
+                updates.push((e.id, None, None, to_file_id, None));
+            }
+            continue;
+        }
+        let (bindings, system) = (x.bindings, x.system);
         let targets = ctx.import_targets(e.file, &e.name, system);
         let scope = &mut scopes[e.file];
         scope.any_import = true;
@@ -858,18 +919,21 @@ type Update = (
     Option<i64>,
 );
 
-fn parse_extra(extra: Option<&str>) -> (Vec<Binding>, bool) {
-    #[derive(serde::Deserialize, Default)]
-    struct Extra {
-        #[serde(default)]
-        bindings: Vec<Binding>,
-        #[serde(default)]
-        system: bool,
-    }
-    let x: Extra = extra
+#[derive(serde::Deserialize, Default)]
+struct ImportExtra {
+    #[serde(default)]
+    bindings: Vec<Binding>,
+    #[serde(default)]
+    system: bool,
+    /// Rust `#[path = ".."] mod name;` (see `extract::RawImport::mod_path`).
+    #[serde(default)]
+    mod_path: bool,
+}
+
+fn parse_extra(extra: Option<&str>) -> ImportExtra {
+    extra
         .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or_default();
-    (x.bindings, x.system)
+        .unwrap_or_default()
 }
 
 /// (receiver type hint, method-call syntax) from a reference edge's `extra`.
@@ -1061,6 +1125,8 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
         go_pkgs: HashMap::new(),
         rust_mods: HashMap::new(),
         rust_crates: HashSet::new(),
+        path_mods: HashMap::new(),
+        path_parent: HashMap::new(),
         py_mods: HashMap::new(),
         js_mods: HashMap::new(),
         js_pkgs: HashMap::new(),
@@ -1351,6 +1417,14 @@ impl Ctx {
             .unwrap_or(&f.package)
             .to_string();
         let (krate, mut base, rest): (String, Vec<String>, &[&str]) = match first {
+            // A file outside `src/` (`crate@path` package) loaded through `#[path]` belongs
+            // to the crate of its declarer. A `src/` file keeps its own crate even when a
+            // test crate also includes it.
+            "crate" if f.package.contains('@') => (
+                self.files[self.path_root(fi)].package.clone(),
+                Vec::new(),
+                &segs[1..],
+            ),
             "crate" => (f.package.clone(), Vec::new(), &segs[1..]),
             "self" => (f.package.clone(), split_mod(&f.module), &segs[1..]),
             "super" => {
@@ -1427,9 +1501,25 @@ impl Ctx {
         Some((files, item))
     }
 
+    /// The outermost file whose `#[path]` chain loads `fi` (`fi` itself if none does).
+    fn path_root(&self, fi: usize) -> usize {
+        let mut cur = fi;
+        // Bounded: a cycle of `#[path]` declarations must not hang resolution.
+        for _ in 0..64 {
+            match self.path_parent.get(&cur) {
+                Some(&p) if p != fi => cur = p,
+                _ => break,
+            }
+        }
+        cur
+    }
+
     /// The file a `mod name;` declared in file `fi` loads (`name.rs` or `name/mod.rs`
     /// next to it), for module trees outside `src/` (integration tests, examples).
     fn rust_mod_file(&self, fi: usize, name: &str) -> Option<usize> {
+        if let Some(&t) = self.path_mods.get(&(fi, name.to_string())) {
+            return Some(t);
+        }
         let f = &self.files[fi];
         // A crate root or `mod.rs` loads siblings; `a.rs` loads from `a/`.
         let stem = stem_of(&f.path);

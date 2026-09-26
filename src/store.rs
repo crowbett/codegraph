@@ -16,7 +16,7 @@ use crate::layout::FileUnit;
 
 /// Bump when the schema or extraction output changes incompatibly; a mismatch
 /// wipes the graph so the next `index` rebuilds it.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -482,7 +482,11 @@ pub fn replace_file(tx: &Connection, repo_id: i64, f: &NewFile<'_>) -> Result<i6
         ])?;
     }
     for imp in &f.facts.imports {
-        let extra = serde_json::json!({"bindings": imp.bindings, "system": imp.system}).to_string();
+        let mut extra = serde_json::json!({"bindings": imp.bindings, "system": imp.system});
+        if imp.mod_path {
+            extra["mod_path"] = true.into();
+        }
+        let extra = extra.to_string();
         st.execute(params![
             repo_id,
             file_id,

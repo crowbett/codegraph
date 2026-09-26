@@ -141,6 +141,9 @@ pub struct RawImport {
     pub bindings: Vec<Binding>,
     /// `#include <...>` (never resolved inside the repo first).
     pub system: bool,
+    /// Rust `#[path = "..."] mod name;`: `path` is the attribute's file path (relative to
+    /// the declaring file's directory) and the one binding's `local` is the module name.
+    pub mod_path: bool,
 }
 
 /// Everything extracted from one file.
@@ -396,6 +399,9 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
     };
 
     build_symbols(lang, src, &nav, &mut defs, &mut facts);
+    if lang == Lang::Rust {
+        rust_path_mods(&nav, &defs, src, &mut facts.imports);
+    }
     apply_exports(lang, src, &export_nodes, &defs, &mut facts.symbols);
 
     let mut infer = Infer::new(lang, root, src, &nav);
@@ -508,6 +514,56 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
     facts.limited = match_limited || !infer.hints_enabled();
 
     Ok(facts)
+}
+
+/// File-level `#[path = "x.rs"] mod name;` declarations, as `mod_path` imports. A
+/// `#[path]` inside an inline `mod m { .. }` is relative to `m`'s directory and is skipped.
+fn rust_path_mods<'t>(nav: &Nav<'t>, defs: &[DefCand<'t>], src: &[u8], out: &mut Vec<RawImport>) {
+    for d in defs {
+        if d.node.kind() != "mod_item"
+            || d.node.child_by_field_name("body").is_some()
+            || nav.parent(d.node).is_none_or(|p| p.kind() != "source_file")
+        {
+            continue;
+        }
+        let mut sib = nav.prev_sibling(d.node);
+        while let Some(s) = sib {
+            match s.kind() {
+                "attribute_item" => {
+                    if let Some(path) = path_attribute(s, src) {
+                        out.push(RawImport {
+                            path,
+                            line: line_of(d.node),
+                            bindings: vec![Binding {
+                                kind: BindKind::Module,
+                                name: String::new(),
+                                local: text(d.name, src).to_string(),
+                            }],
+                            system: false,
+                            mod_path: true,
+                        });
+                        break;
+                    }
+                }
+                "line_comment" | "block_comment" => {}
+                _ => break,
+            }
+            sib = nav.prev_sibling(s);
+        }
+    }
+}
+
+/// `"x.rs"` from a `#[path = "x.rs"]` attribute item.
+fn path_attribute(item: Node<'_>, src: &[u8]) -> Option<String> {
+    let attr = item.named_child(0).filter(|a| a.kind() == "attribute")?;
+    let name = attr.named_child(0)?;
+    if text(name, src) != "path" {
+        return None;
+    }
+    let value = attr
+        .child_by_field_name("value")
+        .filter(|v| v.kind() == "string_literal")?;
+    Some(unquote(text(value, src)))
 }
 
 /// `x` in `x.f()` (a field expression or a `.` token in a macro token tree).
@@ -1360,6 +1416,7 @@ fn parse_import(lang: Lang, node: Node<'_>, src: &[u8], out: &mut Vec<RawImport>
                     line: line_of(node),
                     bindings: Vec::new(),
                     system,
+                    mod_path: false,
                 });
             }
         }
@@ -1411,6 +1468,7 @@ fn go_imports(node: Node<'_>, src: &[u8], out: &mut Vec<RawImport>) {
             line: line_of(spec),
             bindings,
             system: false,
+            mod_path: false,
         });
     }
 }
@@ -1463,6 +1521,7 @@ fn rust_use(node: Node<'_>, prefix: &str, line: u32, src: &[u8], out: &mut Vec<R
                 path: full,
                 line,
                 system: false,
+                mod_path: false,
             });
         }
         "use_wildcard" => {
@@ -1478,6 +1537,7 @@ fn rust_use(node: Node<'_>, prefix: &str, line: u32, src: &[u8], out: &mut Vec<R
                     local: String::new(),
                 }],
                 system: false,
+                mod_path: false,
             });
         }
         "identifier" | "scoped_identifier" | "crate" | "self" | "super" | "metavariable" => {
@@ -1498,6 +1558,7 @@ fn rust_use(node: Node<'_>, prefix: &str, line: u32, src: &[u8], out: &mut Vec<R
                 path: full,
                 line,
                 system: false,
+                mod_path: false,
             });
         }
         _ => {}
@@ -1531,6 +1592,7 @@ fn python_import(node: Node<'_>, src: &[u8], out: &mut Vec<RawImport>) {
                     local,
                 }],
                 system: false,
+                mod_path: false,
             });
         }
         return;
@@ -1578,6 +1640,7 @@ fn python_import(node: Node<'_>, src: &[u8], out: &mut Vec<RawImport>) {
         line,
         bindings,
         system: false,
+        mod_path: false,
     });
 }
 
@@ -1640,6 +1703,7 @@ fn js_import(node: Node<'_>, src: &[u8], out: &mut Vec<RawImport>) {
             line,
             bindings,
             system: false,
+            mod_path: false,
         });
         return;
     }
@@ -1663,6 +1727,7 @@ fn js_import(node: Node<'_>, src: &[u8], out: &mut Vec<RawImport>) {
                             local,
                         }],
                         system: false,
+                        mod_path: false,
                     });
                 }
             }
@@ -1723,6 +1788,7 @@ fn js_import(node: Node<'_>, src: &[u8], out: &mut Vec<RawImport>) {
         line,
         bindings,
         system: false,
+        mod_path: false,
     });
 }
 

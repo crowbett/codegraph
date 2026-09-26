@@ -83,6 +83,16 @@ fn rust_loop_vars_callbacks_reexports_and_test_modules() {
     assert_edge(&ix, "tests/it.rs", 5, "setup", "setup", "exact");
 }
 
+#[test]
+fn rust_path_attribute_modules() {
+    let ix = index_fixture("rust_infer");
+    // tests/lex.rs: `#[path = "lex/cases.rs"] mod cases;` whose `crate::walk` is the
+    // `#[path = "../src/walk.rs"] mod walk;` of the same test crate.
+    assert_edge(&ix, "tests/lex/cases.rs", 4, "walk", "walk::walk", "exact");
+    // A `#[cfg]` twin (`#[path] mod imp;` next to `use std::io as imp;`) is not followed.
+    assert_eq!(edge(&ix.store, "tests/lex.rs", 14, "stub"), None);
+}
+
 fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
     let mut st = ix
         .store
