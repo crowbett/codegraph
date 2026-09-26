@@ -16,7 +16,7 @@ use crate::layout::FileUnit;
 
 /// Bump when the schema or extraction output changes incompatibly; a mismatch
 /// wipes the graph so the next `index` rebuilds it.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -59,7 +59,9 @@ CREATE TABLE IF NOT EXISTS symbols(
     doc TEXT,
     exported INTEGER NOT NULL,
     is_default INTEGER NOT NULL,
-    recv TEXT
+    recv TEXT,
+    ret TEXT,
+    fields TEXT
 );
 CREATE INDEX IF NOT EXISTS symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS symbols_name_nocase ON symbols(name COLLATE NOCASE);
@@ -307,6 +309,21 @@ pub fn delete_file(tx: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// `edges.extra` of a reference: its receiver type hint and call syntax.
+fn ref_extra(hint: Option<&str>, dot: bool) -> Option<String> {
+    if hint.is_none() && !dot {
+        return None;
+    }
+    let mut m = serde_json::Map::new();
+    if let Some(h) = hint {
+        m.insert("rt".into(), h.into());
+    }
+    if dot {
+        m.insert("dot".into(), true.into());
+    }
+    Some(serde_json::Value::Object(m).to_string())
+}
+
 /// Replace a file's row, symbols and (unresolved) edges. Returns the file id.
 pub fn replace_file(tx: &Connection, repo_id: i64, f: &NewFile<'_>) -> Result<i64> {
     tx.prepare_cached("DELETE FROM files WHERE repo_id = ?1 AND path = ?2")?
@@ -335,8 +352,10 @@ pub fn replace_file(tx: &Connection, repo_id: i64, f: &NewFile<'_>) -> Result<i6
     {
         let mut st = tx.prepare_cached(
             "INSERT INTO symbols(file_id, repo_id, parent_id, name, kind, qname, qkey, container,
-                start_line, start_col, end_line, end_col, signature, doc, exported, is_default, recv)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                start_line, start_col, end_line, end_col, signature, doc, exported, is_default, recv,
+                ret, fields)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+                ?18, ?19)",
         )?;
         for s in &f.facts.symbols {
             let parent = s.parent.and_then(|p| ids.get(p).copied());
@@ -363,6 +382,9 @@ pub fn replace_file(tx: &Connection, repo_id: i64, f: &NewFile<'_>) -> Result<i6
                 s.exported,
                 s.default_export,
                 s.recv,
+                s.ret,
+                (!s.fields.is_empty())
+                    .then(|| serde_json::to_string(&s.fields).unwrap_or_default()),
             ])?;
             ids.push(tx.last_insert_rowid());
         }
@@ -383,7 +405,7 @@ pub fn replace_file(tx: &Connection, repo_id: i64, f: &NewFile<'_>) -> Result<i6
             r.kind.as_str(),
             r.line,
             r.col,
-            Option::<String>::None,
+            ref_extra(r.hint.as_deref(), r.dot),
         ])?;
     }
     for imp in &f.facts.imports {

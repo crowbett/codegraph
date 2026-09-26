@@ -11,6 +11,7 @@ use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, QueryCursor};
 
 use crate::error::Result;
+use crate::infer::Infer;
 use crate::lang::Lang;
 use crate::model::{EdgeKind, SymKind};
 
@@ -52,6 +53,10 @@ pub struct RawSymbol {
     pub default_export: bool,
     /// Receiver variable name (Go `func (s *Store) ...` -> `s`).
     pub recv: Option<String>,
+    /// Return type hint (functions/methods), see [`crate::infer`].
+    pub ret: Option<String>,
+    /// Field name -> type hint (structs/classes); Go embedded fields are `~Type`.
+    pub fields: Vec<(String, String)>,
     start_byte: usize,
     end_byte: usize,
 }
@@ -73,6 +78,11 @@ pub struct RawRef {
     pub from: Option<usize>,
     /// For `impl Trait for Type`: the implementing type's name.
     pub from_name: Option<String>,
+    /// Receiver type hint for calls/values (see [`crate::infer`]); `L` on a bare name
+    /// means it is a local variable.
+    pub hint: Option<String>,
+    /// Method-call syntax (`x.f()`), as opposed to a path (`x::f()`); Rust only.
+    pub dot: bool,
 }
 
 /// How an import binds a local name.
@@ -281,6 +291,22 @@ pub fn extract(lang: Lang, src: &[u8]) -> Result<FileFacts> {
     build_symbols(lang, src, &mut defs, &mut facts);
     apply_exports(lang, src, &export_nodes, &defs, &mut facts.symbols);
 
+    let mut infer = Infer::new(lang, root, src);
+    let def_nodes: HashMap<(usize, usize), Node<'_>> = defs
+        .iter()
+        .map(|d| ((d.node.start_byte(), d.node.end_byte()), d.node))
+        .collect();
+    for sym in &mut facts.symbols {
+        let Some(&node) = def_nodes.get(&(sym.start_byte, sym.end_byte)) else {
+            continue;
+        };
+        if matches!(sym.kind, SymKind::Function | SymKind::Method) {
+            sym.ret = infer.ret_of(node);
+        } else if matches!(sym.kind, SymKind::Struct | SymKind::Class) {
+            sym.fields = infer.fields_of(node);
+        }
+    }
+
     for node in import_nodes {
         parse_import(lang, node, src, &mut facts.imports);
     }
@@ -338,6 +364,17 @@ pub fn extract(lang: Lang, src: &[u8]) -> Result<FileFacts> {
         let pos = r.name.start_position();
         let from = enclosing(&facts.symbols, r.name.start_byte());
         let from_name = r.impl_for.map(|n| base_type_name(text(n, src)));
+        let (hint, dot) = if matches!(r.kind, EdgeKind::Call | EdgeKind::Value) {
+            match r.qualifier {
+                Some(q) => (
+                    infer.qualifier_hint(q),
+                    lang == Lang::Rust && is_dot_receiver(q),
+                ),
+                None => (infer.bare_is_local(r.name).then(|| "L".to_string()), false),
+            }
+        } else {
+            (None, false)
+        };
         facts.refs.push(RawRef {
             name,
             qualifier: r.qualifier.map(|q| normalize_qualifier(text(q, src))),
@@ -346,10 +383,21 @@ pub fn extract(lang: Lang, src: &[u8]) -> Result<FileFacts> {
             col: pos.column as u32 + 1,
             from: if from_name.is_some() { None } else { from },
             from_name,
+            hint,
+            dot,
         });
     }
 
     Ok(facts)
+}
+
+/// `x` in `x.f()` (a field expression or a `.` token in a macro token tree).
+fn is_dot_receiver(q: Node<'_>) -> bool {
+    match q.parent() {
+        Some(p) if p.kind() == "field_expression" => true,
+        Some(p) if p.kind() == "token_tree" => q.next_sibling().is_some_and(|n| n.kind() == "."),
+        _ => false,
+    }
 }
 
 /// Rust tokens inside `#[attr(...)]` or a `macro_rules!` body are not calls even when they
@@ -1055,6 +1103,8 @@ fn build_symbols(lang: Lang, src: &[u8], defs: &mut [DefCand<'_>], facts: &mut F
             exported,
             default_export: false,
             recv,
+            ret: None,
+            fields: Vec::new(),
             start_byte: sb,
             end_byte: eb,
         });

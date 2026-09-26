@@ -83,8 +83,8 @@ fn go_same_name_in_two_packages_and_receivers() {
     );
     // Receiver method: `s.lookup` inside a method with receiver `s` is exact.
     assert_edge(&ix, "a/a.go", 16, "lookup", "a.Store.lookup", "exact");
-    // Parameter typed `*a.Store`: the type is mentioned, so the method call is likely.
-    assert_edge(&ix, "b/b.go", 10, "Get", "a.Store.Get", "likely");
+    // Parameter typed `*a.Store`: the receiver's type is known, so the call is exact.
+    assert_edge(&ix, "b/b.go", 10, "Get", "a.Store.Get", "exact");
     // Function passed as a value (handler registration).
     assert_edge(&ix, "main.go", 14, "handle", "main.handle", "exact");
     // Stdlib calls stay unresolved rather than guessing.
@@ -153,7 +153,7 @@ fn javascript_default_import_and_require() {
         6,
         "render",
         "widget.Widget.render",
-        "likely",
+        "exact",
     );
 }
 

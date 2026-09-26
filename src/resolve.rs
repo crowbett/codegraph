@@ -12,6 +12,7 @@
 //! 5. receiver-expression method calls (`x.foo()`) -> methods named `foo` (likely when the
 //!    owning type is mentioned in the file, else name-only); common std method names skipped.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -22,6 +23,9 @@ use crate::extract::{BindKind, Binding};
 use crate::lang::Lang;
 use crate::model::{Confidence, EdgeKind, SymKind};
 use crate::store::Store;
+
+#[path = "resolve_types.rs"]
+mod types;
 
 /// Resolution counters for one repo.
 #[derive(Debug, Clone, Copy, Default, serde::Serialize)]
@@ -64,6 +68,8 @@ struct S {
     recv: Option<String>,
     span: u32,
     qkey: String,
+    ret: Option<String>,
+    fields: Vec<(String, String)>,
 }
 
 struct E {
@@ -78,6 +84,10 @@ struct E {
     old_to: Option<i64>,
     old_conf: Option<String>,
     old_to_file: Option<i64>,
+    /// Receiver type hint (`rt` in `extra`).
+    hint: Option<String>,
+    /// Rust method-call syntax.
+    dot: bool,
 }
 
 /// Local names an import introduces into a file.
@@ -115,7 +125,13 @@ struct Ctx {
     bases: HashMap<String, Vec<String>>,
     ts_paths: Vec<(String, Vec<String>)>,
     ts_base: Option<String>,
+    /// Per-file import scopes (filled after the import pass).
+    scopes: Vec<Scope>,
+    memo: Memo,
 }
+
+/// Evaluated receiver hints keyed by (file, enclosing symbol, hint).
+type Memo = RefCell<HashMap<(usize, Option<i64>, String), types::Ty>>;
 
 fn dir_of(p: &str) -> &str {
     p.rfind('/').map_or("", |i| &p[..i])
@@ -687,11 +703,13 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
             ctx.mentioned[fi].insert(orig.clone());
         }
     }
+    ctx.scopes = scopes;
+    let ctx = ctx;
 
     // Pass 2: symbol edges.
     for e in edges.iter().filter(|e| e.kind != EdgeKind::Import) {
         stats.edges += 1;
-        let res = ctx.resolve_edge(e, &scopes[e.file]);
+        let res = ctx.resolve_edge(e, &ctx.scopes[e.file]);
         let from_override = e.from_name.as_ref().and_then(|n| {
             let fake = E {
                 id: 0,
@@ -705,8 +723,10 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
                 old_to: None,
                 old_conf: None,
                 old_to_file: None,
+                hint: None,
+                dot: false,
             };
-            ctx.resolve_edge(&fake, &scopes[e.file])
+            ctx.resolve_edge(&fake, &ctx.scopes[e.file])
                 .map(|(s, _)| ctx.syms[s].id)
         });
         let (to, conf) = match res {
@@ -768,6 +788,17 @@ fn parse_extra(extra: Option<&str>) -> (Vec<Binding>, bool) {
     (x.bindings, x.system)
 }
 
+/// (receiver type hint, method-call syntax) from a reference edge's `extra`.
+fn ref_hint(extra: Option<&str>) -> (Option<String>, bool) {
+    let Some(v) = extra.and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()) else {
+        return (None, false);
+    };
+    (
+        v["rt"].as_str().map(str::to_string),
+        v["dot"].as_bool().unwrap_or(false),
+    )
+}
+
 fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
     let conn = store.conn();
     let mut files = Vec::new();
@@ -808,7 +839,7 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
     {
         let mut st = conn.prepare(
             "SELECT id, file_id, parent_id, name, kind, container, exported, is_default, recv,
-                    end_line - start_line, qkey
+                    end_line - start_line, qkey, ret, fields
              FROM symbols WHERE repo_id = ?1 ORDER BY id",
         )?;
         let rows = st.query_map([repo_id], |r| {
@@ -824,11 +855,26 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
                 r.get::<_, Option<String>>(8)?,
                 r.get::<_, i64>(9)?,
                 r.get::<_, String>(10)?,
+                r.get::<_, Option<String>>(11)?,
+                r.get::<_, Option<String>>(12)?,
             ))
         })?;
         for row in rows {
-            let (id, fid, parent, name, kind, container, exported, is_default, recv, span, qkey) =
-                row?;
+            let (
+                id,
+                fid,
+                parent,
+                name,
+                kind,
+                container,
+                exported,
+                is_default,
+                recv,
+                span,
+                qkey,
+                ret,
+                fields,
+            ) = row?;
             let (Some(&file), Some(kind)) = (file_idx.get(&fid), SymKind::parse(&kind)) else {
                 continue;
             };
@@ -844,6 +890,10 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
                 recv,
                 span: span.max(0) as u32,
                 qkey,
+                ret,
+                fields: fields
+                    .and_then(|f| serde_json::from_str(&f).ok())
+                    .unwrap_or_default(),
             });
         }
     }
@@ -875,6 +925,11 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
             let (Some(&file), Some(kind)) = (file_idx.get(&fid), EdgeKind::parse(&kind)) else {
                 continue;
             };
+            let (hint, dot) = if kind == EdgeKind::Import {
+                (None, false)
+            } else {
+                ref_hint(extra.as_deref())
+            };
             edges.push(E {
                 id,
                 file,
@@ -887,6 +942,8 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
                 old_to: to,
                 old_conf: conf,
                 old_to_file: tf,
+                hint,
+                dot,
             });
         }
     }
@@ -909,6 +966,8 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
         by_stem: HashMap::new(),
         ts_paths: Vec::new(),
         ts_base: None,
+        scopes: Vec::new(),
+        memo: RefCell::new(HashMap::new()),
     };
     for (i, s) in ctx.syms.iter().enumerate() {
         ctx.by_name.entry(s.name.clone()).or_default().push(i);
@@ -1510,6 +1569,15 @@ impl Ctx {
             }
             return None;
         }
+        // 1b. Typed receiver (`x.f()` where the type of `x` is known or provably external).
+        match self.resolve_typed(e) {
+            types::Typed::NoOpinion => {}
+            types::Typed::Resolved(r) => return r,
+        }
+        if lang == Lang::Rust && e.dot {
+            // `x.f()` in Rust is a method call on a value, never a module path.
+            return self.receiver_guess(e, cands, scope, lang);
+        }
         // 2. module binding (Go pkg, TS namespace, Python module alias, Rust `use a::m`).
         let head = q.split("::").next().unwrap_or(q);
         let module_hit = scope.modules.get(q).or_else(|| {
@@ -1736,6 +1804,10 @@ impl Ctx {
         scope: &Scope,
         lang: Lang,
     ) -> Option<(usize, Confidence)> {
+        if e.hint.as_deref() == Some("L") {
+            // A local variable or parameter, not a repo symbol.
+            return None;
+        }
         let fi = e.file;
         let f = &self.files[fi];
         let (self_ty, _) = self.self_type(e.from_symbol);

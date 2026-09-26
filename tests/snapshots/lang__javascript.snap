@@ -14,7 +14,7 @@ edges:
   src/main.js:1 import <file>: ./widget.js => src/widget.js
   src/main.js:2 import <file>: ../lib/util => lib/util.js
   src/main.js:5 call main.start: Widget => widget.Widget (exact)
-  src/main.js:6 call main.start: w.render => widget.Widget.render (likely)
+  src/main.js:6 call main.start: w.render => widget.Widget.render (exact)
   src/main.js:7 call main.start: slugify => util.slugify (exact)
   src/main.js:10 call <file>: start => main.start (exact)
   src/widget.js:3 call widget.Widget.render: this.label => widget.Widget.label (exact)

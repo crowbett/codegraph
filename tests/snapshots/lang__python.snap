@@ -26,4 +26,4 @@ edges:
   pkg/sub/tasks.py:9 call pkg.sub.tasks.run: helper => pkg.util.helper (exact)
   pkg/sub/tasks.py:10 call pkg.sub.tasks.run: U => pkg.models.User (exact)
   pkg/sub/tasks.py:11 call pkg.sub.tasks.run: models.User => pkg.models.User (exact)
-  pkg/sub/tasks.py:12 call pkg.sub.tasks.run: u.rename => pkg.models.User.rename (likely)
+  pkg/sub/tasks.py:12 call pkg.sub.tasks.run: u.rename => pkg.models.User.rename (exact)

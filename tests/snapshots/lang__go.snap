@@ -22,7 +22,7 @@ edges:
   a/a.go:19 ref a.Store.lookup: Store => a.Store (exact)
   b/b.go:3 import <file>: example.com/app/a => a/a.go
   b/b.go:9 ref b.Use: a.Store => a.Store (exact)
-  b/b.go:10 call b.Use: s.Get => a.Store.Get (likely)
+  b/b.go:10 call b.Use: s.Get => a.Store.Get (exact)
   b/b.go:10 call b.Use: a.Helper => a.Helper (exact)
   main.go:4 import <file>: fmt => (external)
   main.go:5 import <file>: net/http => (external)
@@ -30,7 +30,7 @@ edges:
   main.go:8 import <file>: example.com/app/b => b/b.go
   main.go:12 call main.main: a.NewStore => a.NewStore (exact)
   main.go:13 call main.main: fmt.Println => ?
-  main.go:13 call main.main: s.Get => a.Store.Get (name_only)
+  main.go:13 call main.main: s.Get => a.Store.Get (exact)
   main.go:13 call main.main: a.Helper => a.Helper (exact)
   main.go:13 call main.main: bb.Helper => b.Helper (exact)
   main.go:13 call main.main: bb.Use => b.Use (exact)

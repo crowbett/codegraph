@@ -23,6 +23,6 @@ edges:
   src/index.ts:10 call src.App.run: strings.helper => strings.helper (exact)
   src/index.ts:11 call src.App.run: add => math.add (exact)
   src/index.ts:16 call src.main: App => src.App (exact)
-  src/index.ts:17 call src.main: app.run => src.App.run (likely)
+  src/index.ts:17 call src.main: app.run => src.App.run (exact)
   src/index.ts:18 call src.main: app.greet => strings.Greeter.greet (likely)
   src/lib/strings.ts:12 call strings.Greeter.greet: this.format => strings.Greeter.format (exact)

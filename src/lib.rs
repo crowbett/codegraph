@@ -10,6 +10,7 @@ pub mod config;
 pub mod error;
 pub mod extract;
 pub mod index;
+pub(crate) mod infer;
 pub mod lang;
 pub mod layout;
 pub mod mcp;
