@@ -1,0 +1,8 @@
+# https://doc.rust-lang.org/clippy/lint_configuration.html
+msrv = "1.85"
+cognitive-complexity-threshold = 25
+too-many-arguments-threshold = 7
+too-many-lines-threshold = 120
+avoid-breaking-exported-api = false
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

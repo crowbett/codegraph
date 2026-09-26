@@ -1,0 +1,16 @@
+---
+source: tests/lang.rs
+expression: dump(&ix.store)
+---
+symbols:
+  src/main.c:4-8 function main  [pub]
+  src/util.c:4-4 function util_add  [pub, doc="Adds two ints."]
+  src/util.c:6-6 function twice
+  src/util.h:5-8 struct point  [pub, doc="A 2D point."]
+edges:
+  src/main.c:1 import <file>: stdio.h => (external)
+  src/main.c:2 import <file>: util.h => src/util.h
+  src/main.c:5 ref main: point => point (likely)
+  src/main.c:6 call main: util_add => util_add (likely)
+  src/util.c:1 import <file>: util.h => src/util.h
+  src/util.c:6 call twice: util_add => util_add (exact)

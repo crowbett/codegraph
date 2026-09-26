@@ -1,0 +1,428 @@
+//! SQLite storage for the graph: repos, files, symbols, edges (+ FTS5 over symbols).
+//!
+//! Edges are written unresolved by the indexer (name + qualifier) and filled in
+//! (`to_symbol`, `confidence`) by [`crate::resolve`], which re-runs per repo whenever
+//! any of its files changed.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use rusqlite::{params, Connection, OptionalExtension};
+
+use crate::error::{Error, Result};
+use crate::extract::FileFacts;
+use crate::lang::Lang;
+use crate::layout::FileUnit;
+
+/// Bump when the schema or extraction output changes incompatibly; a mismatch
+/// wipes the graph so the next `index` rebuilds it.
+pub const SCHEMA_VERSION: i64 = 1;
+
+const SCHEMA: &str = r"
+CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS repos(
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    root TEXT NOT NULL UNIQUE,
+    indexed_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS files(
+    id INTEGER PRIMARY KEY,
+    repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    lang TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    mtime INTEGER NOT NULL,
+    size INTEGER NOT NULL,
+    lines INTEGER NOT NULL,
+    module TEXT NOT NULL,
+    package TEXT NOT NULL,
+    pkgname TEXT,
+    parse_errors INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(repo_id, path)
+);
+CREATE TABLE IF NOT EXISTS symbols(
+    id INTEGER PRIMARY KEY,
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    repo_id INTEGER NOT NULL,
+    parent_id INTEGER,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    qname TEXT NOT NULL,
+    qkey TEXT NOT NULL,
+    container TEXT,
+    start_line INTEGER NOT NULL,
+    start_col INTEGER NOT NULL,
+    end_line INTEGER NOT NULL,
+    end_col INTEGER NOT NULL,
+    signature TEXT NOT NULL,
+    doc TEXT,
+    exported INTEGER NOT NULL,
+    is_default INTEGER NOT NULL,
+    recv TEXT
+);
+CREATE INDEX IF NOT EXISTS symbols_name ON symbols(name);
+CREATE INDEX IF NOT EXISTS symbols_name_nocase ON symbols(name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS symbols_file ON symbols(file_id);
+CREATE INDEX IF NOT EXISTS symbols_repo ON symbols(repo_id);
+CREATE INDEX IF NOT EXISTS symbols_qkey ON symbols(qkey);
+CREATE TABLE IF NOT EXISTS edges(
+    id INTEGER PRIMARY KEY,
+    repo_id INTEGER NOT NULL,
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    from_symbol INTEGER,
+    from_name TEXT,
+    name TEXT NOT NULL,
+    qualifier TEXT,
+    kind TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    col INTEGER NOT NULL,
+    to_symbol INTEGER,
+    to_file INTEGER,
+    confidence TEXT,
+    extra TEXT
+);
+CREATE INDEX IF NOT EXISTS edges_to ON edges(to_symbol);
+CREATE INDEX IF NOT EXISTS edges_from ON edges(from_symbol);
+CREATE INDEX IF NOT EXISTS edges_file ON edges(file_id);
+CREATE INDEX IF NOT EXISTS edges_to_file ON edges(to_file);
+CREATE INDEX IF NOT EXISTS edges_repo ON edges(repo_id);
+CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+    name, qname, doc, content='symbols', content_rowid='id', tokenize='trigram'
+);
+CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
+    INSERT INTO symbols_fts(rowid, name, qname, doc) VALUES (new.id, new.name, new.qname, new.doc);
+END;
+CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
+    INSERT INTO symbols_fts(symbols_fts, rowid, name, qname, doc)
+    VALUES ('delete', old.id, old.name, old.qname, old.doc);
+END;
+";
+
+/// Normalized key for qualified-name matching: `::` -> `.`.
+pub fn qkey(qname: &str) -> String {
+    qname.replace("::", ".")
+}
+
+/// A file row as seen by the indexer.
+#[derive(Debug, Clone)]
+pub struct FileRow {
+    /// Row id.
+    pub id: i64,
+    /// Content hash.
+    pub hash: String,
+    /// mtime (ns).
+    pub mtime: i64,
+    /// Size in bytes.
+    pub size: i64,
+}
+
+/// A repo row.
+#[derive(Debug, Clone)]
+pub struct RepoRow {
+    /// Row id.
+    pub id: i64,
+    /// Display name.
+    pub name: String,
+    /// Absolute root.
+    pub root: PathBuf,
+    /// Last index time (unix seconds).
+    pub indexed_at: i64,
+}
+
+/// A file to (re)insert.
+pub struct NewFile<'a> {
+    /// Repo-relative path, forward slashes.
+    pub path: &'a str,
+    /// Language.
+    pub lang: Lang,
+    /// Content hash.
+    pub hash: &'a str,
+    /// mtime (ns).
+    pub mtime: i64,
+    /// Size.
+    pub size: i64,
+    /// Module-system unit.
+    pub unit: &'a FileUnit,
+    /// Extraction output.
+    pub facts: &'a FileFacts,
+}
+
+/// The graph database.
+pub struct Store {
+    conn: Connection,
+    path: PathBuf,
+}
+
+impl std::fmt::Debug for Store {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Store")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Store {
+    /// Open (creating if needed) the database at `path`.
+    pub fn open(path: &Path) -> Result<Self> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| Error::io(format!("create {}", dir.display()), e))?;
+        }
+        let conn = Connection::open(path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(10))?;
+        // The graph is a derived, rebuildable cache: skip fsyncs (4x faster bulk
+        // indexing). An OS crash mid-index can at worst require `index --full`.
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=OFF; PRAGMA foreign_keys=ON;
+             PRAGMA temp_store=MEMORY; PRAGMA cache_size=-65536;",
+        )?;
+        let mut store = Self {
+            conn,
+            path: path.to_path_buf(),
+        };
+        store.migrate()?;
+        Ok(store)
+    }
+
+    fn migrate(&mut self) -> Result<()> {
+        let has_meta: bool = self.conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='meta'",
+            [],
+            |r| r.get::<_, i64>(0).map(|n| n > 0),
+        )?;
+        if has_meta {
+            let v: Option<String> = self
+                .conn
+                .query_row("SELECT value FROM meta WHERE key='schema'", [], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            if v.as_deref() != Some(&SCHEMA_VERSION.to_string()) {
+                self.conn.execute_batch(
+                    "DROP TABLE IF EXISTS symbols_fts; DROP TABLE IF EXISTS edges;
+                     DROP TABLE IF EXISTS symbols; DROP TABLE IF EXISTS files;
+                     DROP TABLE IF EXISTS repos; DROP TABLE IF EXISTS meta;",
+                )?;
+            }
+        }
+        self.conn.execute_batch(SCHEMA)?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema', ?1)",
+            [SCHEMA_VERSION.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Database file path.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Raw connection (queries live in [`crate::query`]).
+    pub fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
+    /// Mutable connection (transactions).
+    pub fn conn_mut(&mut self) -> &mut Connection {
+        &mut self.conn
+    }
+
+    /// Insert or rename a repo; returns its id.
+    pub fn upsert_repo(&self, name: &str, root: &Path) -> Result<i64> {
+        let root_s = root.to_string_lossy();
+        self.conn.execute(
+            "INSERT INTO repos(name, root) VALUES (?1, ?2)
+             ON CONFLICT(root) DO UPDATE SET name = excluded.name",
+            params![name, root_s],
+        )?;
+        Ok(self
+            .conn
+            .query_row("SELECT id FROM repos WHERE root = ?1", [root_s], |r| {
+                r.get(0)
+            })?)
+    }
+
+    /// All repos.
+    pub fn repos(&self) -> Result<Vec<RepoRow>> {
+        let mut st = self
+            .conn
+            .prepare_cached("SELECT id, name, root, indexed_at FROM repos ORDER BY name")?;
+        let rows = st.query_map([], |r| {
+            Ok(RepoRow {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                root: PathBuf::from(r.get::<_, String>(2)?),
+                indexed_at: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Delete a repo and everything under it.
+    pub fn delete_repo(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM repos WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Mark a repo as indexed now.
+    pub fn set_indexed(&self, id: i64, ts: i64) -> Result<()> {
+        self.conn
+            .execute("UPDATE repos SET indexed_at = ?2 WHERE id = ?1", [id, ts])?;
+        Ok(())
+    }
+
+    /// Files of a repo keyed by relative path.
+    pub fn repo_files(&self, repo_id: i64) -> Result<HashMap<String, FileRow>> {
+        let mut st = self
+            .conn
+            .prepare_cached("SELECT id, path, hash, mtime, size FROM files WHERE repo_id = ?1")?;
+        let rows = st.query_map([repo_id], |r| {
+            Ok((
+                r.get::<_, String>(1)?,
+                FileRow {
+                    id: r.get(0)?,
+                    hash: r.get(2)?,
+                    mtime: r.get(3)?,
+                    size: r.get(4)?,
+                },
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<HashMap<_, _>>>()?)
+    }
+}
+
+/// Update mtime/size of an unchanged-content file.
+pub fn touch_file(tx: &Connection, id: i64, mtime: i64, size: i64) -> Result<()> {
+    tx.prepare_cached("UPDATE files SET mtime = ?2, size = ?3 WHERE id = ?1")?
+        .execute(params![id, mtime, size])?;
+    Ok(())
+}
+
+/// Delete a file (cascades to its symbols and edges).
+pub fn delete_file(tx: &Connection, id: i64) -> Result<()> {
+    tx.prepare_cached("DELETE FROM files WHERE id = ?1")?
+        .execute([id])?;
+    Ok(())
+}
+
+/// Replace a file's row, symbols and (unresolved) edges. Returns the file id.
+pub fn replace_file(tx: &Connection, repo_id: i64, f: &NewFile<'_>) -> Result<i64> {
+    tx.prepare_cached("DELETE FROM files WHERE repo_id = ?1 AND path = ?2")?
+        .execute(params![repo_id, f.path])?;
+    tx.prepare_cached(
+        "INSERT INTO files(repo_id, path, lang, hash, mtime, size, lines, module, package, pkgname, parse_errors)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+    )?
+    .execute(params![
+        repo_id,
+        f.path,
+        f.lang.as_str(),
+        f.hash,
+        f.mtime,
+        f.size,
+        f.facts.lines,
+        f.unit.module,
+        f.unit.package,
+        f.facts.package,
+        f.facts.has_errors,
+    ])?;
+    let file_id = tx.last_insert_rowid();
+    let sep = f.lang.sep();
+
+    let mut ids: Vec<i64> = Vec::with_capacity(f.facts.symbols.len());
+    {
+        let mut st = tx.prepare_cached(
+            "INSERT INTO symbols(file_id, repo_id, parent_id, name, kind, qname, qkey, container,
+                start_line, start_col, end_line, end_col, signature, doc, exported, is_default, recv)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+        )?;
+        for s in &f.facts.symbols {
+            let parent = s.parent.and_then(|p| ids.get(p).copied());
+            let qname = if f.unit.prefix.is_empty() {
+                s.local_qname.clone()
+            } else {
+                format!("{}{sep}{}", f.unit.prefix.replace('/', sep), s.local_qname)
+            };
+            st.execute(params![
+                file_id,
+                repo_id,
+                parent,
+                s.name,
+                s.kind.as_str(),
+                qname,
+                qkey(&qname),
+                s.container,
+                s.start_line,
+                s.start_col,
+                s.end_line,
+                s.end_col,
+                s.signature,
+                s.doc,
+                s.exported,
+                s.default_export,
+                s.recv,
+            ])?;
+            ids.push(tx.last_insert_rowid());
+        }
+    }
+    let mut st = tx.prepare_cached(
+        "INSERT INTO edges(repo_id, file_id, from_symbol, from_name, name, qualifier, kind, line, col, extra)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+    )?;
+    for r in &f.facts.refs {
+        let from = r.from.and_then(|i| ids.get(i).copied());
+        st.execute(params![
+            repo_id,
+            file_id,
+            from,
+            r.from_name,
+            r.name,
+            r.qualifier,
+            r.kind.as_str(),
+            r.line,
+            r.col,
+            Option::<String>::None,
+        ])?;
+    }
+    for imp in &f.facts.imports {
+        let extra = serde_json::json!({"bindings": imp.bindings, "system": imp.system}).to_string();
+        st.execute(params![
+            repo_id,
+            file_id,
+            Option::<i64>::None,
+            Option::<String>::None,
+            imp.path,
+            Option::<String>::None,
+            "import",
+            imp.line,
+            1,
+            extra,
+        ])?;
+    }
+    Ok(file_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_twice_and_version_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("g.db");
+        {
+            let s = Store::open(&db).unwrap();
+            s.upsert_repo("r", Path::new("C:/r")).unwrap();
+            s.conn()
+                .execute("UPDATE meta SET value='0' WHERE key='schema'", [])
+                .unwrap();
+        }
+        let s = Store::open(&db).unwrap();
+        assert!(s.repos().unwrap().is_empty(), "old schema must be wiped");
+        let id = s.upsert_repo("r", Path::new("C:/r")).unwrap();
+        assert_eq!(s.upsert_repo("r2", Path::new("C:/r")).unwrap(), id);
+        assert_eq!(s.repos().unwrap()[0].name, "r2");
+    }
+}

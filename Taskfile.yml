@@ -1,0 +1,59 @@
+version: "3"
+
+vars:
+  APP: codegraph
+  VERSION: 0.1.0
+  ZIP: '{{.APP}}-{{.VERSION}}-windows-amd64.zip'
+
+tasks:
+  default:
+    cmds:
+      - task --list
+
+  build:
+    desc: Debug build
+    cmds:
+      - cargo build
+
+  test:
+    desc: Unit + integration tests (fixtures, incremental, graph, CLI, MCP stdio, self-index)
+    cmds:
+      - cargo test --all-targets
+
+  snapshots:
+    desc: Re-record insta fixture snapshots (review the diff before committing)
+    env:
+      INSTA_UPDATE: always
+    cmds:
+      - cargo test --test lang
+
+  lint:
+    desc: rustfmt check + clippy with warnings as errors
+    cmds:
+      - cargo fmt --all -- --check
+      - cargo clippy --all-targets -- -D warnings
+
+  fmt:
+    cmds:
+      - cargo fmt --all
+
+  ci:
+    desc: Definition of done (fmt, clippy, test)
+    cmds:
+      - task: lint
+      - task: test
+
+  index:
+    desc: Index the configured roots with the release binary
+    cmds:
+      - cargo run --release -- index -v
+
+  release:
+    desc: Optimised build zipped as dist/{{.ZIP}}
+    cmds:
+      - cargo build --release --locked
+      - pwsh -NoProfile -Command "New-Item -ItemType Directory -Force dist | Out-Null; Compress-Archive -Force -Path target/release/{{.APP}}.exe, README.md, LICENSE -DestinationPath dist/{{.ZIP}}; (Get-FileHash dist/{{.ZIP}} -Algorithm SHA256).Hash"
+
+  clean:
+    cmds:
+      - cargo clean

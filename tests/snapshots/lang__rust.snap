@@ -1,0 +1,45 @@
+---
+source: tests/lang.rs
+expression: dump(&ix.store)
+---
+symbols:
+  src/main.rs:1-1 module store
+  src/main.rs:2-2 module util
+  src/main.rs:6-12 function main
+  src/main.rs:14-16 function run
+  src/store.rs:5-7 struct store::Store  [pub, doc="A key-value store."]
+  src/store.rs:10-13 trait store::Backend  [pub, doc="Storage backends."]
+  src/store.rs:12-12 method store::Backend::load  [pub, in store::Backend, doc="Load everything."]
+  src/store.rs:17-19 method store::Store::new  [pub, doc="Make an empty store."]
+  src/store.rs:21-23 method store::Store::get  [pub]
+  src/store.rs:25-27 method store::Store::find
+  src/store.rs:31-33 method store::Store::load  [pub]
+  src/util.rs:2-5 function util::new  [pub, doc="Free function named like `Store::new`."]
+  src/util.rs:8-8 function util::helper  [pub, doc="Shared helper."]
+edges:
+  src/main.rs:4 import <file>: store::Backend => src/store.rs
+  src/main.rs:4 import <file>: store::Store => src/store.rs
+  src/main.rs:7 call main: Store.new => store::Store::new (exact)
+  src/main.rs:8 call main: s.get => store::Store::get (name_only)
+  src/main.rs:9 call main: util.helper => util::helper (exact)
+  src/main.rs:10 call main: util.new => util::new (exact)
+  src/main.rs:11 call main: run => run (exact)
+  src/main.rs:14 ref run: Backend => store::Backend (exact)
+  src/main.rs:15 call run: b.load => store::Store::load (name_only)
+  src/store.rs:6 ref store::Store: Vec => ?
+  src/store.rs:6 ref store::Store: String => ?
+  src/store.rs:15 ref <file>: Store => store::Store (exact)
+  src/store.rs:18 ref store::Store::new: Store => store::Store (exact)
+  src/store.rs:18 call store::Store::new: Vec.new => ?
+  src/store.rs:21 ref store::Store::get: Option => ?
+  src/store.rs:21 ref store::Store::get: String => ?
+  src/store.rs:22 call store::Store::get: self.find => store::Store::find (exact)
+  src/store.rs:25 ref store::Store::find: Option => ?
+  src/store.rs:25 ref store::Store::find: String => ?
+  src/store.rs:26 call store::Store::find: self.items.iter => ?
+  src/store.rs:26 call store::Store::find: self.items.iter().find => store::Store::find (name_only)
+  src/store.rs:26 call store::Store::find: x.as_str => ?
+  src/store.rs:30 impl store::Store: Backend => store::Backend (exact)
+  src/store.rs:30 ref <file>: Store => store::Store (exact)
+  src/store.rs:32 call store::Store::load: self.items.len => ?
+  src/util.rs:3 call util::new: helper => util::helper (exact)

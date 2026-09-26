@@ -1,0 +1,42 @@
+---
+source: tests/lang.rs
+expression: dump(&ix.store)
+---
+symbols:
+  a/a.go:5-7 struct a.Store  [pub, doc="Store holds values."]
+  a/a.go:10-12 function a.NewStore  [pub, doc="NewStore builds a Store."]
+  a/a.go:15-17 method a.Store.Get  [pub, doc="Get returns an item."]
+  a/a.go:19-21 method a.Store.lookup
+  a/a.go:24-24 function a.Helper  [pub, doc="Helper is a package-level function named like b.Helper."]
+  b/b.go:6-6 function b.Helper  [pub, doc="Helper shares its name with a.Helper."]
+  b/b.go:9-11 function b.Use  [pub, doc="Use calls into package a."]
+  main.go:11-16 function main.main
+  main.go:18-18 function main.run
+  main.go:20-20 function main.helper
+  main.go:22-22 function main.handle
+edges:
+  a/a.go:10 ref a.NewStore: Store => a.Store (exact)
+  a/a.go:11 ref a.NewStore: Store => a.Store (exact)
+  a/a.go:15 ref a.Store.Get: Store => a.Store (exact)
+  a/a.go:16 call a.Store.Get: s.lookup => a.Store.lookup (exact)
+  a/a.go:19 ref a.Store.lookup: Store => a.Store (exact)
+  b/b.go:3 import <file>: example.com/app/a => a/a.go
+  b/b.go:9 ref b.Use: a.Store => a.Store (exact)
+  b/b.go:10 call b.Use: s.Get => a.Store.Get (likely)
+  b/b.go:10 call b.Use: a.Helper => a.Helper (exact)
+  main.go:4 import <file>: fmt => (external)
+  main.go:5 import <file>: net/http => (external)
+  main.go:7 import <file>: example.com/app/a => a/a.go
+  main.go:8 import <file>: example.com/app/b => b/b.go
+  main.go:12 call main.main: a.NewStore => a.NewStore (exact)
+  main.go:13 call main.main: fmt.Println => ?
+  main.go:13 call main.main: s.Get => a.Store.Get (name_only)
+  main.go:13 call main.main: a.Helper => a.Helper (exact)
+  main.go:13 call main.main: bb.Helper => b.Helper (exact)
+  main.go:13 call main.main: bb.Use => b.Use (exact)
+  main.go:14 call main.main: http.HandleFunc => ?
+  main.go:14 value main.main: handle => main.handle (exact)
+  main.go:15 call main.main: run => main.run (exact)
+  main.go:18 call main.run: helper => main.helper (exact)
+  main.go:22 ref main.handle: http.ResponseWriter => ?
+  main.go:22 ref main.handle: http.Request => ?

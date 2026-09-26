@@ -1,0 +1,20 @@
+---
+source: tests/lang.rs
+expression: dump(&ix.store)
+---
+symbols:
+  lib/util.js:1-3 function util.slugify
+  lib/util.js:5-5 function util.unused
+  src/main.js:4-8 function main.start  [pub]
+  src/widget.js:1-9 class widget.Widget  [pub, default]
+  src/widget.js:2-4 method widget.Widget.render  [pub, in widget.Widget]
+  src/widget.js:6-8 method widget.Widget.label  [pub, in widget.Widget]
+edges:
+  lib/util.js:2 call util.slugify: s.toLowerCase => ?
+  src/main.js:1 import <file>: ./widget.js => src/widget.js
+  src/main.js:2 import <file>: ../lib/util => lib/util.js
+  src/main.js:5 call main.start: Widget => widget.Widget (exact)
+  src/main.js:6 call main.start: w.render => widget.Widget.render (likely)
+  src/main.js:7 call main.start: slugify => util.slugify (exact)
+  src/main.js:10 call <file>: start => main.start (exact)
+  src/widget.js:3 call widget.Widget.render: this.label => widget.Widget.label (exact)

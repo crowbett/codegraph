@@ -1,0 +1,9 @@
+/target
+/dist
+*.zip
+*.pdb
+*.swp
+*.snap.new
+.DS_Store
+.vscode/
+.idea/

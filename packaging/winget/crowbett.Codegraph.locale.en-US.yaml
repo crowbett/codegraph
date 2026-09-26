@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.9.0.schema.json
+PackageIdentifier: crowbett.Codegraph
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: crowbett
+PublisherUrl: https://github.com/crowbett
+PackageName: codegraph
+PackageUrl: https://github.com/crowbett/codegraph
+License: MIT
+LicenseUrl: https://github.com/crowbett/codegraph/blob/main/LICENSE
+ShortDescription: A tree-sitter symbol + call graph of every repo you own, served to AI agents over MCP.
+Description: >-
+  codegraph parses Go, Rust, C, C++, TypeScript, JavaScript and Python with tree-sitter,
+  resolves calls, type references, impls and imports across files into a SQLite graph,
+  and answers find / definition / references / callers / callees / outline / path / impact
+  queries from the CLI or as an MCP server for Claude Code.
+Moniker: codegraph
+Tags:
+  - cli
+  - tree-sitter
+  - call-graph
+  - mcp
+  - developer-tools
+ManifestType: defaultLocale
+ManifestVersion: 1.9.0

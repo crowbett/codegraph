@@ -1,0 +1,29 @@
+---
+source: tests/lang.rs
+expression: dump(&ix.store)
+---
+symbols:
+  include/shapes.hpp:3-22 module geo  [pub]
+  include/shapes.hpp:5-9 class geo::Shape  [pub, in geo]
+  include/shapes.hpp:7-7 method geo::Shape::~Shape  [pub, in geo::Shape]
+  include/shapes.hpp:8-8 method geo::Shape::area  [pub, in geo::Shape]
+  include/shapes.hpp:11-18 class geo::Circle  [pub, in geo]
+  include/shapes.hpp:14-14 method geo::Circle::area  [pub, in geo::Circle]
+  src/main.cpp:3-7 function main  [pub]
+  src/shapes.cpp:3-11 module geo  [pub]
+  src/shapes.cpp:5-5 method geo::Circle::Circle  [pub, in geo]
+  src/shapes.cpp:7-7 method geo::Circle::area  [pub, in geo]
+  src/shapes.cpp:9-9 function geo::total  [pub, in geo]
+edges:
+  include/shapes.hpp:11 inherit geo::Circle: Shape => geo::Shape (exact)
+  include/shapes.hpp:20 ref geo: Shape => geo::Shape (exact)
+  include/shapes.hpp:20 ref geo: Shape => geo::Shape (exact)
+  src/main.cpp:1 import <file>: shapes.hpp => include/shapes.hpp
+  src/main.cpp:4 ref main: geo.Circle => geo::Circle (exact)
+  src/main.cpp:5 ref main: geo.Circle => geo::Circle (exact)
+  src/main.cpp:6 call main: geo.total => geo::total (exact)
+  src/shapes.cpp:1 import <file>: shapes.hpp => include/shapes.hpp
+  src/shapes.cpp:9 ref geo::total: Shape => geo::Shape (likely)
+  src/shapes.cpp:9 ref geo::total: Shape => geo::Shape (likely)
+  src/shapes.cpp:9 call geo::total: a.area => geo::Shape::area (likely)
+  src/shapes.cpp:9 call geo::total: b.area => geo::Shape::area (likely)
