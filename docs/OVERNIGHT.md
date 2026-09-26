@@ -185,3 +185,16 @@ in flight.
 
 Perf since M2: bulk FTS/index rebuild, include index, streaming writer, parallel pass 2,
 path-ordered determinism: ~/dev cold index 7.0 s (v0.1.1) → ~4.4 s.
+
+## M3 — freshness + scale (merged a1aab64)
+
+`codegraph watch` (notify, per-repo debounce 300 ms / max 2 s, NDJSON with `--json`, new repos
+picked up, busy-retry) and `codegraph mcp --watch` landed from the M3 worktree agent (5/5
+consecutive `tests/watch.rs` passes after the merge). Its scale harness (`task bench:scale`,
+pins in bench/scale.toml: Linux v6.12, rust-lang/rust 1.85.0, kubernetes v1.32.0) measured the
+**pre-overnight** code: Linux 60k files cold 543 s, the 102k-file combined run 1,054–1,129 s
+(docs/SCALE.md). Fixed since (each from that profile): include basename index, bulk FTS +
+deferred query indexes, streaming writer, parallel pass 2, deterministic ties, `#define`
+constants out of substring search (schema v3), per-repo refresh counts. Linux cold on current
+code (before schema v3): **224 s** (parse 57 / write tail 6 / resolve 58 / index+FTS rebuild
+~100). Re-measurement of linux + combined on current code is running.
