@@ -65,3 +65,17 @@ fn ts_workspace_packages_and_typed_receivers() {
     assert_edge(&ix, app, 16, "lookup", "main.Service.lookup", "exact");
     assert_edge(&ix, app, 17, "run", "src.Tool.run", "exact");
 }
+
+#[test]
+fn rust_loop_vars_callbacks_reexports_and_test_modules() {
+    let ix = index_fixture("rust_infer");
+    let w = "src/walk.rs";
+    // `pub use inner::compact` in store/mod.rs.
+    assert_edge(&ix, w, 4, "compact", "store::inner::compact", "exact");
+    // for b in &[MemBackend] / .map(|b| ..) / if let Some(m) = Option<&MemBackend>.
+    assert_edge(&ix, w, 6, "list", "backend::MemBackend::list", "exact");
+    assert_edge(&ix, w, 8, "list", "backend::MemBackend::list", "exact");
+    assert_edge(&ix, w, 10, "list", "backend::MemBackend::list", "exact");
+    // `mod common;` in an integration test.
+    assert_edge(&ix, "tests/it.rs", 5, "setup", "setup", "exact");
+}

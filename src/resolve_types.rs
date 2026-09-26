@@ -34,6 +34,8 @@ enum Val {
         text: String,
         unwrap: bool,
         awaited: bool,
+        /// An element of the collection type `text`.
+        elem: bool,
     },
     Ty(Ty),
 }
@@ -67,6 +69,141 @@ const SELF_CTORS: &[&str] = &[
     "clone",
     "with_capacity",
 ];
+/// Rust iterator adaptors whose items are the receiver's items.
+const RUST_ITER_SAME: &[&str] = &[
+    "iter",
+    "iter_mut",
+    "into_iter",
+    "filter",
+    "skip",
+    "take",
+    "rev",
+    "peekable",
+    "chain",
+    "cloned",
+    "copied",
+    "by_ref",
+    "skip_while",
+    "take_while",
+    "step_by",
+    "fuse",
+    "inspect",
+    "drain",
+    "as_slice",
+];
+/// TS/JS array methods returning an array of the same elements.
+const TS_ARRAY_SAME: &[&str] = &[
+    "filter",
+    "slice",
+    "concat",
+    "sort",
+    "reverse",
+    "toSorted",
+    "toReversed",
+    "values",
+];
+
+/// Element type of a collection type text (`Vec<T>`, `[]T`, `T[]`, `list[T]`,
+/// `Option<T>`), or `None` when unknown.
+fn element_of(lang: Lang, text: &str) -> Option<String> {
+    let t = text.trim();
+    match lang {
+        Lang::Rust => {
+            let mut t = t;
+            loop {
+                let before = t;
+                t = t.trim_start_matches('&').trim_start();
+                if t.starts_with('\'') {
+                    t = t.find(' ').map_or("", |i| &t[i + 1..]);
+                }
+                t = t.strip_prefix("mut ").unwrap_or(t);
+                if t == before {
+                    break;
+                }
+            }
+            if let Some(inner) = t.strip_prefix('[').and_then(|x| x.strip_suffix(']')) {
+                return Some(split_top(inner, ';')[0].to_string());
+            }
+            let (head, arg) = outer_generic(t, '<', '>');
+            let last = head.rsplit("::").next().unwrap_or(head);
+            match last {
+                "Vec" | "VecDeque" | "HashSet" | "BTreeSet" | "BinaryHeap" | "LinkedList"
+                | "Option" | "Result" | "IntoIter" | "Iter" => arg.map(str::to_string),
+                "Box" | "Rc" | "Arc" => arg.and_then(|a| element_of(lang, a)),
+                _ => {
+                    // `impl Iterator<Item = T>`
+                    let i = t.find("Item=")?;
+                    let rest = &t[i + 5..];
+                    Some(split_top(rest.trim_end_matches('>'), ',')[0].to_string())
+                }
+            }
+        }
+        Lang::Go => {
+            let t = t.trim_start_matches('*');
+            if let Some(rest) = t.strip_prefix("[]") {
+                return Some(rest.to_string());
+            }
+            if let Some(rest) = t.strip_prefix("chan ") {
+                return Some(rest.to_string());
+            }
+            if t.starts_with("map[") {
+                let (_, v) = t.split_at(t.find(']')? + 1);
+                return Some(v.to_string());
+            }
+            if t.starts_with('[') {
+                return Some(t[t.find(']')? + 1..].to_string());
+            }
+            None
+        }
+        Lang::TypeScript | Lang::Tsx | Lang::JavaScript => {
+            let t = t.strip_prefix("readonly ").unwrap_or(t);
+            if let Some(inner) = t.strip_suffix("[]") {
+                return Some(inner.trim_matches(['(', ')']).to_string());
+            }
+            let (head, arg) = outer_generic(t, '<', '>');
+            matches!(
+                head,
+                "Array"
+                    | "ReadonlyArray"
+                    | "Set"
+                    | "ReadonlySet"
+                    | "Iterable"
+                    | "IterableIterator"
+                    | "Generator"
+                    | "AsyncIterable"
+            )
+            .then(|| arg.map(str::to_string))
+            .flatten()
+        }
+        Lang::Python => {
+            let (head, arg) = outer_generic(t, '[', ']');
+            let last = head.rsplit('.').next().unwrap_or(head);
+            matches!(
+                last,
+                "list"
+                    | "List"
+                    | "set"
+                    | "Set"
+                    | "frozenset"
+                    | "FrozenSet"
+                    | "Iterable"
+                    | "Iterator"
+                    | "Sequence"
+                    | "Collection"
+                    | "Generator"
+                    | "dict"
+                    | "Dict"
+                    | "Mapping"
+                    | "tuple"
+                    | "Tuple"
+            )
+            .then(|| arg.map(str::to_string))
+            .flatten()
+        }
+        Lang::C | Lang::Cpp => None,
+    }
+}
+
 /// Methods that unwrap an `Option`/`Result`.
 const UNWRAP: &[&str] = &[
     "unwrap",
@@ -421,6 +558,27 @@ impl Ctx {
                 text: t.to_string(),
                 unwrap: false,
                 awaited: false,
+                elem: false,
+            };
+        }
+        if let Some(inner) = h.strip_prefix("E:") {
+            return match self.eval_val(fi, from, inner, d) {
+                Val::Text {
+                    fi,
+                    from,
+                    text,
+                    unwrap,
+                    awaited,
+                    elem: false,
+                } => Val::Text {
+                    fi,
+                    from,
+                    text,
+                    unwrap,
+                    awaited,
+                    elem: true,
+                },
+                _ => Val::Ty(Ty::Unknown),
             };
         }
         if let Some(inner) = h.strip_prefix("Q:").or_else(|| h.strip_prefix("A:")) {
@@ -432,12 +590,14 @@ impl Ctx {
                     text,
                     unwrap,
                     awaited,
+                    elem,
                 } => Val::Text {
                     fi,
                     from,
                     text,
                     unwrap: unwrap || is_q,
                     awaited: awaited || !is_q,
+                    elem,
                 },
                 v @ Val::Ty(_) => v,
             };
@@ -454,6 +614,20 @@ impl Ctx {
                 let lang = self.files[fi].lang;
                 if lang == Lang::Rust && PASSTHROUGH.contains(&name) {
                     return self.eval_val(fi, from, base, d);
+                }
+                // Iterator adaptors keep the element type: track the collection itself.
+                let same_elems = match lang {
+                    Lang::Rust => RUST_ITER_SAME.contains(&name),
+                    Lang::TypeScript | Lang::Tsx | Lang::JavaScript => {
+                        TS_ARRAY_SAME.contains(&name)
+                    }
+                    _ => false,
+                };
+                if same_elems {
+                    let v = self.eval_val(fi, from, base, d);
+                    if matches!(v, Val::Text { elem: false, .. }) {
+                        return v;
+                    }
                 }
                 if lang == Lang::Rust && UNWRAP.contains(&name) {
                     return self.eval_val(fi, from, &format!("Q:{base}"), d);
@@ -585,8 +759,21 @@ impl Ctx {
                 text,
                 unwrap,
                 awaited,
+                elem,
             } => {
                 let lang = self.files[*fi].lang;
+                let owned;
+                let text = if *elem {
+                    match element_of(lang, text) {
+                        Some(t) => {
+                            owned = t;
+                            &owned
+                        }
+                        None => return Ty::Unknown,
+                    }
+                } else {
+                    text
+                };
                 match normalize(lang, text, *unwrap, *awaited, 0) {
                     Norm::External => Ty::External,
                     Norm::Unknown => Ty::Unknown,
@@ -700,18 +887,13 @@ impl Ctx {
             .collect();
         match lang {
             Lang::Go | Lang::Rust if !same_unit.is_empty() => self.pick_type(fi, &same_unit),
-            Lang::Rust if !scope.globs.is_empty() => {
-                let g = self.type_syms_in(&scope.globs, name);
-                if g.is_empty() {
-                    Ty::Unknown
-                } else {
-                    self.pick_type(fi, &g)
-                }
+            Lang::Rust if !self.type_syms_in(&scope.globs, name).is_empty() => {
+                self.pick_type(fi, &self.type_syms_in(&scope.globs, name))
             }
-            _ if all.is_empty() && builtin_type(lang, name) => Ty::External,
-            // A lowercase Go name that is not a type of this package is a builtin or a
-            // package we can't see; TS/Python types that exist nowhere are globals.
-            _ if all.is_empty() && lang != Lang::Rust => Ty::External,
+            // A type that exists nowhere in the repo is a builtin, a std/dependency type or
+            // a global (Go builtins, `Vec`, `TempDir`, `Map`, `HTMLElement`).
+            _ if all.is_empty() => Ty::External,
+            _ if builtin_type(lang, name) && same_unit.is_empty() => Ty::External,
             _ => Ty::Unknown,
         }
     }
@@ -833,6 +1015,20 @@ mod tests {
         assert_eq!(n("impl Backend+Send", false), "|Backend");
         assert_eq!(n("crate::a::Store<T>", false), "crate::a|Store");
         assert_eq!(n("Arc<Mutex<Store>>", false), "|Store");
+    }
+
+    #[test]
+    fn elements() {
+        let e = |l, t| element_of(l, t).unwrap_or_default();
+        assert_eq!(e(Lang::Rust, "&Vec<Snapshot>"), "Snapshot");
+        assert_eq!(e(Lang::Rust, "&[Id]"), "Id");
+        assert_eq!(e(Lang::Rust, "Option<&Tree>"), "&Tree");
+        assert_eq!(e(Lang::Rust, "implIterator<Item=Entry>"), "Entry");
+        assert_eq!(e(Lang::Go, "[]*Rule"), "*Rule");
+        assert_eq!(e(Lang::Go, "map[string]*Rule"), "*Rule");
+        assert_eq!(e(Lang::TypeScript, "readonly Tool[]"), "Tool");
+        assert_eq!(e(Lang::TypeScript, "Array<Tool>"), "Tool");
+        assert_eq!(e(Lang::Python, "list[Txn]"), "Txn");
     }
 
     #[test]

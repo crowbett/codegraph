@@ -12,6 +12,7 @@
 //! | `M:<name>@<hint>` | the result of calling method `name` on `<hint>` |
 //! | `F:<name>@<hint>` | field `name` of `<hint>` |
 //! | `Q:<hint>` | `<hint>` unwrapped (Rust `?`, `.unwrap()`); `A:<hint>` awaited |
+//! | `E:<hint>` | an element of the collection `<hint>` (loop variables, callback params) |
 //! | `L` | a local variable or parameter with no known type (never a repo symbol) |
 //!
 //! Evidence comes from parameters, `let`/`:=`/`const`/assignments, struct and class
@@ -39,6 +40,8 @@ struct Decl<'a> {
     /// Initializer, evaluated lazily at lookup (building an environment must not
     /// evaluate expressions: they look names up in that same environment).
     value: Option<Node<'a>>,
+    /// The binding is an element of `value` (`for x in xs`, `xs.map(|x| ..)`).
+    elem: bool,
     /// The binding holds a function (closure, arrow function, nested def).
     func: bool,
 }
@@ -217,8 +220,35 @@ impl<'a> Infer<'a> {
             at,
             hint,
             value,
+            elem: false,
             func,
         });
+    }
+
+    /// A binding that is an element of the collection `coll`.
+    fn decl_elem(out: &mut Vec<Decl<'a>>, name: &str, at: usize, coll: Node<'a>) {
+        if name.is_empty() || name == "_" {
+            return;
+        }
+        out.push(Decl {
+            name: name.to_string(),
+            at,
+            hint: None,
+            value: Some(coll),
+            elem: true,
+            func: false,
+        });
+    }
+
+    /// Collection whose elements a callback's first parameter receives:
+    /// `xs.map(|x| ..)`, `xs.forEach(x => ..)`, `opt.and_then(|x| ..)`.
+    fn callback_source(&self, f: Node<'a>) -> Option<Node<'a>> {
+        let args = f.parent().filter(|p| p.kind() == "arguments")?;
+        let call = args.parent().filter(|p| p.kind() == "call_expression")?;
+        let func = call.child_by_field_name("function")?;
+        let (obj, field) = Self::member_parts(func)?;
+        let m = self.t(field);
+        ITER_CALLBACKS.contains(&m).then_some(obj)
     }
 
     /// A binding's type hint: its written type, else its initializer's.
@@ -227,7 +257,15 @@ impl<'a> Infer<'a> {
             return d.hint.clone();
         }
         let v = d.value?;
-        self.eval(v, depth + 1)
+        let h = self.eval(v, depth + 1)?;
+        if d.elem {
+            if h == "L" {
+                return None;
+            }
+            mk("E:", &h)
+        } else {
+            Some(h)
+        }
     }
 
     fn params(&mut self, f: Node<'a>, out: &mut Vec<Decl<'a>>) {
@@ -277,14 +315,23 @@ impl<'a> Infer<'a> {
                                 }
                             }
                         }
-                        "identifier" => Self::decl(out, self.t(p), at, None, false),
+                        "identifier" => match self.callback_source(f) {
+                            Some(src) if first_param(ps, p) => {
+                                Self::decl_elem(out, self.t(p), at, src);
+                            }
+                            _ => Self::decl(out, self.t(p), at, None, false),
+                        },
                         _ => {}
                     }
                 }
             }
             Lang::TypeScript | Lang::Tsx | Lang::JavaScript => {
+                let src = self.callback_source(f);
                 if let Some(p) = f.child_by_field_name("parameter") {
-                    Self::decl(out, self.t(p), at, None, false);
+                    match src {
+                        Some(s) => Self::decl_elem(out, self.t(p), at, s),
+                        None => Self::decl(out, self.t(p), at, None, false),
+                    }
                 }
                 if let Some(ps) = f.child_by_field_name("parameters") {
                     let mut c = ps.walk();
@@ -294,6 +341,12 @@ impl<'a> Infer<'a> {
                             .and_then(|t| t.named_child(0))
                             .and_then(|t| mk("T:", &squash(self.t(t))));
                         let pat = p.child_by_field_name("pattern").unwrap_or(p);
+                        if let (Some(s), None, "identifier") = (src, &ty, pat.kind()) {
+                            if first_param(ps, p) {
+                                Self::decl_elem(out, self.t(pat), at, s);
+                                continue;
+                            }
+                        }
                         for n in pattern_names(pat) {
                             Self::decl(out, self.t(n), at, ty.clone(), false);
                         }
@@ -423,8 +476,16 @@ impl<'a> Infer<'a> {
             }
             (Lang::Go, "range_clause") => {
                 if let Some(l) = n.child_by_field_name("left") {
-                    for x in named(l) {
-                        Self::decl(out, self.t(x), n.start_byte(), None, false);
+                    let vars = named(l);
+                    let right = n.child_by_field_name("right");
+                    for (i, x) in vars.iter().enumerate() {
+                        match right {
+                            // `for _, v := range xs`: v is an element.
+                            Some(r) if i == 1 => {
+                                Self::decl_elem(out, self.t(*x), n.start_byte(), r);
+                            }
+                            _ => Self::decl(out, self.t(*x), n.start_byte(), None, false),
+                        }
                     }
                 }
             }
@@ -457,10 +518,47 @@ impl<'a> Infer<'a> {
                     Self::decl_v(out, self.t(x), at, hint.clone(), value, func);
                 }
             }
-            (
-                Lang::Rust,
-                "let_condition" | "for_expression" | "match_arm" | "closure_parameters",
-            ) => {
+            (Lang::Rust, "for_expression") => {
+                let (Some(p), Some(v)) = (
+                    n.child_by_field_name("pattern"),
+                    n.child_by_field_name("value"),
+                ) else {
+                    return;
+                };
+                if matches!(p.kind(), "identifier" | "mut_pattern") {
+                    for x in pattern_names(p) {
+                        Self::decl_elem(out, self.t(x), n.start_byte(), v);
+                    }
+                } else {
+                    for x in pattern_names(p) {
+                        Self::decl(out, self.t(x), n.start_byte(), None, false);
+                    }
+                }
+            }
+            (Lang::Rust, "let_condition") => {
+                let (Some(p), v) = (
+                    n.child_by_field_name("pattern"),
+                    n.child_by_field_name("value"),
+                ) else {
+                    return;
+                };
+                // `if let Some(x) = opt` / `Ok(x) = res`: x is the payload.
+                let inner = (p.kind() == "tuple_struct_pattern")
+                    .then(|| p.named_child(0))
+                    .flatten()
+                    .filter(|t| matches!(self.t(*t), "Some" | "Ok"))
+                    .and_then(|_| p.named_child(1))
+                    .filter(|x| x.kind() == "identifier" && p.named_child_count() == 2);
+                match (inner, v) {
+                    (Some(x), Some(v)) => Self::decl_elem(out, self.t(x), n.start_byte(), v),
+                    _ => {
+                        for x in pattern_names(p) {
+                            Self::decl(out, self.t(x), n.start_byte(), None, false);
+                        }
+                    }
+                }
+            }
+            (Lang::Rust, "match_arm" | "closure_parameters") => {
                 let pat = n
                     .child_by_field_name("pattern")
                     .or_else(|| (n.kind() == "closure_parameters").then_some(n));
@@ -487,6 +585,23 @@ impl<'a> Infer<'a> {
                 let value = if simple { value } else { None };
                 for x in pattern_names(name) {
                     Self::decl_v(out, self.t(x), at, hint.clone(), value, func);
+                }
+            }
+            (Lang::TypeScript | Lang::Tsx | Lang::JavaScript, "for_in_statement")
+                if has_kind(n, "of") =>
+            {
+                let (Some(l), Some(r)) = (
+                    n.child_by_field_name("left"),
+                    n.child_by_field_name("right"),
+                ) else {
+                    return;
+                };
+                if l.kind() == "identifier" {
+                    Self::decl_elem(out, self.t(l), n.start_byte(), r);
+                } else {
+                    for x in pattern_names(l) {
+                        Self::decl(out, self.t(x), n.start_byte(), None, false);
+                    }
                 }
             }
             (
@@ -517,6 +632,17 @@ impl<'a> Infer<'a> {
                     for x in pattern_names(l) {
                         Self::decl(out, self.t(x), at, None, false);
                     }
+                }
+            }
+            (Lang::Python, "for_statement" | "for_in_clause")
+                if n.child_by_field_name("left")
+                    .is_some_and(|l| l.kind() == "identifier") =>
+            {
+                if let (Some(l), Some(r)) = (
+                    n.child_by_field_name("left"),
+                    n.child_by_field_name("right"),
+                ) {
+                    Self::decl_elem(out, self.t(l), n.start_byte(), r);
                 }
             }
             (Lang::Python, "for_statement" | "with_item" | "for_in_clause" | "except_clause") => {
@@ -950,6 +1076,49 @@ impl<'a> Infer<'a> {
             }
         }
     }
+}
+
+/// Methods whose callback's first parameter is an element of the receiver.
+const ITER_CALLBACKS: &[&str] = &[
+    "map",
+    "filter",
+    "for_each",
+    "any",
+    "all",
+    "find",
+    "filter_map",
+    "flat_map",
+    "position",
+    "take_while",
+    "skip_while",
+    "inspect",
+    "and_then",
+    "map_or",
+    "map_or_else",
+    "is_some_and",
+    "is_none_or",
+    "find_map",
+    "max_by_key",
+    "min_by_key",
+    "sort_by_key",
+    "retain",
+    "partition",
+    "forEach",
+    "some",
+    "every",
+    "findIndex",
+    "findLast",
+    "flatMap",
+];
+
+/// Whether `p` is the first named parameter in `ps`.
+fn first_param(ps: Node<'_>, p: Node<'_>) -> bool {
+    let mut c = ps.walk();
+    let first = ps
+        .named_children(&mut c)
+        .next()
+        .is_some_and(|x| x.id() == p.id());
+    first
 }
 
 fn named(n: Node<'_>) -> Vec<Node<'_>> {

@@ -1255,7 +1255,10 @@ impl Ctx {
                     if self.rust_mods.contains_key(&key) {
                         (f.package.clone(), Vec::new(), &segs[..])
                     } else {
-                        return None;
+                        // `mod common;` in tests/it.rs -> tests/common/mod.rs.
+                        let t = self.rust_mod_file(fi, first)?;
+                        let tf = &self.files[t];
+                        (tf.package.clone(), split_mod(&tf.module), &segs[1..])
                     }
                 }
             }
@@ -1268,6 +1271,7 @@ impl Ctx {
         } else {
             own_crate
         };
+        let mut krate = krate;
         let mut i = 0;
         while i < rest.len() {
             let mut next = base.clone();
@@ -1278,6 +1282,16 @@ impl Ctx {
             {
                 base = next;
                 i += 1;
+            } else if let Some(t) = self
+                .rust_mods
+                .get(&(krate.clone(), base.join("::")))
+                .and_then(|fs| fs.iter().find_map(|&bf| self.rust_mod_file(bf, rest[i])))
+            {
+                // `crate::testenv::X` where tests/it.rs declares `mod testenv;`.
+                let tf = &self.files[t];
+                krate.clone_from(&tf.package);
+                base = split_mod(&tf.module);
+                i += 1;
             } else {
                 break;
             }
@@ -1285,6 +1299,32 @@ impl Ctx {
         let files = self.rust_mods.get(&(krate, base.join("::")))?.clone();
         let item = rest.get(i).map(|s| (*s).to_string());
         Some((files, item))
+    }
+
+    /// The file a `mod name;` declared in file `fi` loads (`name.rs` or `name/mod.rs`
+    /// next to it), for module trees outside `src/` (integration tests, examples).
+    fn rust_mod_file(&self, fi: usize, name: &str) -> Option<usize> {
+        let f = &self.files[fi];
+        // A crate root or `mod.rs` loads siblings; `a.rs` loads from `a/`.
+        let stem = stem_of(&f.path);
+        let dir = if f.module.is_empty() || stem == "mod" {
+            f.dir.clone()
+        } else if f.dir.is_empty() {
+            stem.to_string()
+        } else {
+            format!("{}/{stem}", f.dir)
+        };
+        let join = |p: String| {
+            if dir.is_empty() {
+                p
+            } else {
+                format!("{dir}/{p}")
+            }
+        };
+        [join(format!("{name}.rs")), join(format!("{name}/mod.rs"))]
+            .iter()
+            .find_map(|p| self.paths.get(p).copied())
+            .filter(|&t| self.files[t].lang == Lang::Rust)
     }
 
     fn py_module(&self, fi: usize, path: &str) -> Option<Vec<usize>> {
@@ -1518,7 +1558,25 @@ impl Ctx {
         if !direct.is_empty() || depth == 0 {
             return direct;
         }
-        Vec::new()
+        // Re-exports in the target module (`pub use a::b::f;`, `pub use a::*;`,
+        // `from .x import f`): follow them.
+        let mut out = Vec::new();
+        for &t in files {
+            let Some(sc) = self.scopes.get(t) else {
+                continue;
+            };
+            if let Some((orig, tf)) = sc.names.get(name) {
+                if !tf.is_empty() && tf.as_slice() != [t] {
+                    out.extend(self.lookup_in(tf, orig, edge, depth - 1));
+                }
+            }
+            if !sc.globs.is_empty() && self.files[t].lang == Lang::Rust {
+                out.extend(self.lookup_in(&sc.globs, name, edge, depth - 1));
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     fn default_export(&self, files: &[usize]) -> Option<usize> {
@@ -1681,8 +1739,11 @@ impl Ctx {
             types::Typed::Resolved(r) => return r,
         }
         if lang == Lang::Rust && e.dot {
-            // `x.f()` in Rust is a method call on a value, never a module path.
-            return self.receiver_guess(e, cands, scope, lang);
+            // `x.f()` in Rust is a method call on a value, never a module path. With no
+            // type evidence a name match is right less than a third of the time.
+            return self
+                .receiver_guess(e, cands, scope, lang)
+                .filter(|&(_, c)| c != Confidence::NameOnly);
         }
         // 2. module binding (Go pkg, TS namespace, Python module alias, Rust `use a::m`).
         let head = q.split("::").next().unwrap_or(q);
@@ -1712,7 +1773,7 @@ impl Ctx {
             } else {
                 targets.clone()
             };
-            let m = self.lookup_in(&files, &e.name, e.kind, 0);
+            let m = self.lookup_in(&files, &e.name, e.kind, 2);
             return self.pick(fi, &m, Confidence::Exact, Confidence::Likely);
         }
         // Python dotted module qualifier bound as `import a.b`.
@@ -1720,7 +1781,7 @@ impl Ctx {
             if let Some(targets) = scope.modules.get(head) {
                 let sub = q.to_string();
                 let files = self.py_module(fi, &sub).unwrap_or_else(|| targets.clone());
-                let m = self.lookup_in(&files, &e.name, e.kind, 0);
+                let m = self.lookup_in(&files, &e.name, e.kind, 2);
                 return self.pick(fi, &m, Confidence::Exact, Confidence::Likely);
             }
         }
@@ -1729,7 +1790,7 @@ impl Ctx {
             let full = q.to_string();
             match self.rust_path(fi, &full) {
                 Some((files, None)) => {
-                    let m = self.lookup_in(&files, &e.name, e.kind, 0);
+                    let m = self.lookup_in(&files, &e.name, e.kind, 2);
                     return self.pick(fi, &m, Confidence::Exact, Confidence::Likely);
                 }
                 Some((_, Some(item))) => {
@@ -1749,7 +1810,7 @@ impl Ctx {
         {
             // `util::helper()` where `util` is a module of this crate.
             if let Some((files, None)) = self.rust_path(fi, q) {
-                let m = self.lookup_in(&files, &e.name, e.kind, 0);
+                let m = self.lookup_in(&files, &e.name, e.kind, 2);
                 return self.pick(fi, &m, Confidence::Exact, Confidence::Likely);
             }
         }
@@ -1939,7 +2000,7 @@ impl Ctx {
             if targets.is_empty() {
                 return None;
             }
-            let m = self.lookup_in(targets, orig, e.kind, 0);
+            let m = self.lookup_in(targets, orig, e.kind, 2);
             let m = if m.is_empty() {
                 self.reexported(targets, orig, e.kind)
             } else {
