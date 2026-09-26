@@ -30,6 +30,9 @@ pub struct Occ {
 pub struct Scip {
     /// symbol -> definition site (locals are keyed `local N@path`).
     pub defs: HashMap<String, Def>,
+    /// Further definition sites of a symbol that has several: Python/TS `@overload`
+    /// stubs plus the implementation, Rust `#[cfg]` twins. Each is the same symbol.
+    pub extra_defs: HashMap<String, Vec<Def>>,
     /// path -> occurrences sorted by (line, start).
     pub occs: HashMap<String, Vec<Occ>>,
     /// symbol -> symbols it implements (is_implementation).
@@ -57,13 +60,22 @@ impl Scip {
                 let symbol = canonical(&p, &o.symbol);
                 let is_def = o.symbol_roles & 1 != 0;
                 // A constructor folded into its class keeps the class's own definition.
-                let folded = symbol != o.symbol && !is_local(&o.symbol);
+                let folded = strip_constructor(&o.symbol).is_some();
                 if is_def && !folded {
-                    out.defs.entry(symbol.clone()).or_insert(Def {
+                    let d = Def {
                         path: p.clone(),
                         line,
                         start,
-                    });
+                    };
+                    match out.defs.get(&symbol) {
+                        None => {
+                            out.defs.insert(symbol.clone(), d);
+                        }
+                        Some(first) if first.path != d.path || first.line != d.line => {
+                            out.extra_defs.entry(symbol.clone()).or_default().push(d);
+                        }
+                        Some(_) => {}
+                    }
                 }
                 v.push(Occ {
                     line,
@@ -152,17 +164,21 @@ pub fn is_local(sym: &str) -> bool {
 /// nested functions resolve like any other definition; a TS constructor
 /// (`C#<constructor>().`) is folded into its class (`C#`), which is what codegraph links
 /// `new C()` to.
+/// A class declared inside a function body is a local too: its constructor is spelled
+/// `local 7`<constructor>`().` and folds into `local 7@path`.
 fn canonical(path: &str, sym: &str) -> String {
-    if is_local(sym) {
-        format!("{sym}@{path}")
-    } else if let Some(class) = sym
-        .strip_suffix("`<constructor>`().")
-        .or_else(|| sym.strip_suffix("<constructor>()."))
-    {
-        class.to_string()
+    let base = strip_constructor(sym).unwrap_or(sym);
+    if is_local(base) {
+        format!("{base}@{path}")
     } else {
-        sym.to_string()
+        base.to_string()
     }
+}
+
+/// The class part of a TS constructor symbol, if `sym` is one.
+fn strip_constructor(sym: &str) -> Option<&str> {
+    sym.strip_suffix("`<constructor>`().")
+        .or_else(|| sym.strip_suffix("<constructor>()."))
 }
 
 /// Descriptor class of a symbol string.
@@ -216,6 +232,10 @@ mod tests {
         );
         assert_eq!(class_of("rust-analyzer cargo fd 1 f/g(x)"), Class::Other);
         assert_eq!(canonical("a.ts", "local 3"), "local 3@a.ts");
+        assert_eq!(
+            canonical("a.ts", "local 3`<constructor>`()."),
+            "local 3@a.ts"
+        );
         assert_eq!(
             canonical("a.ts", "npm p 1 a/C#<constructor>()."),
             "npm p 1 a/C#"
