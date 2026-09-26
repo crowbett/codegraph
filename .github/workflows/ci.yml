@@ -36,12 +36,15 @@ jobs:
           - name: linux-amd64
             os: ubuntu-latest
             exe: codegraph
+            npm: linux-x64
           - name: macos-arm64
             os: macos-latest
             exe: codegraph
+            npm: darwin-arm64
           - name: windows-amd64
             os: windows-latest
             exe: codegraph.exe
+            npm: win32-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -58,6 +61,16 @@ jobs:
       - name: smoke
         shell: bash
         run: ./target/release/${{ matrix.exe }} version
+      - name: npm shim smoke
+        shell: bash
+        run: |
+          node packaging/npm/build.mjs --binary ${{ matrix.npm }}=target/release/${{ matrix.exe }} --out npmtest/stage
+          (cd npmtest/stage/codegraph-${{ matrix.npm }} && npm pack --silent --pack-destination ../..)
+          (cd npmtest/stage/codegraph && npm pack --silent --pack-destination ../..)
+          mkdir npmtest/proj && cd npmtest/proj
+          npm init -y > /dev/null
+          npm install --no-audit --no-fund ../*.tgz
+          ./node_modules/.bin/codegraph version
       - uses: actions/upload-artifact@v4
         with:
           name: codegraph-${{ matrix.name }}
@@ -66,6 +79,26 @@ jobs:
             README.md
             LICENSE
           if-no-files-found: error
+
+  packaging:
+    name: packaging scripts lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: install.sh
+        run: |
+          sh -n packaging/install.sh
+          shellcheck -s sh packaging/install.sh
+      - name: install.ps1
+        shell: pwsh
+        run: '[scriptblock]::Create((Get-Content -Raw packaging/install.ps1)) | Out-Null'
+      - name: npm scripts
+        run: |
+          node --check packaging/npm/build.mjs
+          node --check packaging/npm/codegraph/bin/codegraph.js
+          node -e "JSON.parse(require('fs').readFileSync('packaging/npm/codegraph/package.json'))"
+      - name: homebrew formula
+        run: ruby -c packaging/homebrew/codegraph.rb
 
   bench:
     name: bench crate builds
