@@ -130,6 +130,60 @@ impl<'a> Infer<'a> {
         self.eval(q, 0)
     }
 
+    /// Receiver hint for a `.name(` call inside a macro token tree, where `q` is the token
+    /// before the `.`: rebuild the chain from raw tokens (`repo.backend().exists(..)`,
+    /// `k.id.short()`).
+    pub(crate) fn token_receiver_hint(&mut self, q: Node<'a>) -> Option<String> {
+        if !self.supported() {
+            return None;
+        }
+        self.token_chain(q, 0)
+    }
+
+    fn token_chain(&mut self, q: Node<'a>, depth: u8) -> Option<String> {
+        if depth > MAX_DEPTH {
+            return None;
+        }
+        let prev = q.prev_sibling();
+        match q.kind() {
+            "self" => Some("S".into()),
+            "identifier" => {
+                if prev.is_some_and(|p| p.kind() == ".") {
+                    let base = self.token_chain(prev?.prev_sibling()?, depth + 1)?;
+                    return mk(&format!("F:{}@", self.t(q)), &base);
+                }
+                if prev.is_some_and(|p| p.kind() == "::") {
+                    return None;
+                }
+                self.eval(q, depth + 1).filter(|h| h != "L")
+            }
+            "token_tree" if self.t(q).starts_with('(') => {
+                // `<recv>.m(args)` / `path::f(args)` / `f(args)`
+                let m = prev.filter(|p| p.kind() == "identifier")?;
+                let before = m.prev_sibling();
+                match before.map(|b| b.kind()) {
+                    Some(".") => {
+                        let base = self.token_chain(before?.prev_sibling()?, depth + 1)?;
+                        mk(&format!("M:{}@", self.t(m)), &base)
+                    }
+                    Some("::") => {
+                        let mut parts = vec![self.t(m).to_string()];
+                        let mut cur = before;
+                        while let Some(sep) = cur.filter(|c| c.kind() == "::") {
+                            let seg = sep.prev_sibling().filter(|s| s.kind() == "identifier")?;
+                            parts.push(self.t(seg).to_string());
+                            cur = seg.prev_sibling();
+                        }
+                        parts.reverse();
+                        mk("C:", &parts.join("::"))
+                    }
+                    _ => mk("C:", self.t(m)),
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// Whether a bare identifier used as a call/value is a local variable or parameter
     /// (not a function): such a name never refers to a repo-level symbol.
     pub(crate) fn bare_is_local(&mut self, name: Node<'a>) -> bool {
@@ -548,6 +602,14 @@ impl<'a> Infer<'a> {
                     .flatten()
                     .filter(|t| matches!(self.t(*t), "Some" | "Ok"))
                     .and_then(|_| p.named_child(1))
+                    .map(|x| {
+                        if matches!(x.kind(), "ref_pattern" | "mut_pattern") {
+                            x.named_child(x.named_child_count().saturating_sub(1) as u32)
+                                .unwrap_or(x)
+                        } else {
+                            x
+                        }
+                    })
                     .filter(|x| x.kind() == "identifier" && p.named_child_count() == 2);
                 match (inner, v) {
                     (Some(x), Some(v)) => Self::decl_elem(out, self.t(x), n.start_byte(), v),
@@ -834,7 +896,22 @@ impl<'a> Infer<'a> {
                 }
                 mk("C:", &name)
             }
-            "scoped_identifier" => mk("C:", &squash(&strip_generics(self.t(f)))),
+            "scoped_identifier" => {
+                let path = squash(&strip_generics(self.t(f)));
+                // `Arc::new(x)`, `Box::new(x)`: smart pointers deref to `x`'s type.
+                let wrapper = path.rsplit_once("::").is_some_and(|(q, n)| {
+                    n == "new"
+                        && matches!(
+                            q.rsplit("::").next().unwrap_or(q),
+                            "Arc" | "Rc" | "Box" | "RefCell" | "Mutex" | "RwLock" | "Cell"
+                        )
+                });
+                if wrapper {
+                    let arg = e.child_by_field_name("arguments")?.named_child(0)?;
+                    return self.eval(arg, d);
+                }
+                mk("C:", &path)
+            }
             "field_expression" | "selector_expression" | "member_expression" | "attribute" => {
                 let (obj, field) = Self::member_parts(f)?;
                 let fname = self.t(field).to_string();

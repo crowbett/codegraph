@@ -113,3 +113,14 @@ fn go_implicit_interfaces_and_typed_receivers() {
     // Promoted through the embedded *Store, from a range element.
     assert_edge(&ix, a, 21, "Get", "store.Store.Get", "likely");
 }
+
+#[test]
+fn rust_receivers_inside_macros_and_smart_pointers() {
+    let ix = index_fixture("rust_infer");
+    let f = "src/shared.rs";
+    // Receiver chain rebuilt from macro tokens: repo.backend().list().
+    assert_edge(&ix, f, 7, "backend", "repo::Repo::backend", "exact");
+    assert_edge(&ix, f, 7, "list", "backend::Backend::list", "exact");
+    // Arc::new(r) derefs to Repo.
+    assert_edge(&ix, f, 8, "count", "repo::Repo::count", "exact");
+}

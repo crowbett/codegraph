@@ -198,6 +198,19 @@ const TS_ARRAY_SAME: &[&str] = &[
     "values",
 ];
 
+/// `Result<T, E>` / `Option<T>` (behind references) -> `T`; anything else unchanged.
+fn unwrap_text(lang: Lang, text: &str) -> String {
+    if lang != Lang::Rust {
+        return text.to_string();
+    }
+    let t = text.trim().trim_start_matches('&');
+    let (head, arg) = outer_generic(t, '<', '>');
+    match (head.rsplit("::").next().unwrap_or(head), arg) {
+        ("Result" | "Option", Some(a)) => a.to_string(),
+        _ => text.to_string(),
+    }
+}
+
 /// Element type of a collection type text (`Vec<T>`, `[]T`, `T[]`, `list[T]`,
 /// `Option<T>`), or `None` when unknown.
 fn element_of(lang: Lang, text: &str) -> Option<String> {
@@ -858,6 +871,14 @@ impl Ctx {
             } => {
                 let lang = self.files[*fi].lang;
                 let owned;
+                let unwrapped;
+                let text = if *elem && *unwrap {
+                    // `for x in f()?`: unwrap the Result first, then take elements.
+                    unwrapped = unwrap_text(lang, text);
+                    unwrapped.as_str()
+                } else {
+                    text
+                };
                 let text = if *elem {
                     match element_of(lang, text) {
                         Some(t) => {

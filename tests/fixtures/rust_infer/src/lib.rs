@@ -32,3 +32,4 @@ pub fn by_impl(b: impl Backend) -> usize {
 
 pub mod store;
 pub mod walk;
+pub mod shared;

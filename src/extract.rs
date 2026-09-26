@@ -369,6 +369,11 @@ pub fn extract(lang: Lang, src: &[u8]) -> Result<FileFacts> {
         let from_name = r.impl_for.map(|n| base_type_name(text(n, src)));
         let (hint, dot) = if matches!(r.kind, EdgeKind::Call | EdgeKind::Value) {
             match r.qualifier {
+                // A Rust path qualifier (`m::f`, `Type::f`) is never a value.
+                Some(q) if lang == Lang::Rust && !is_dot_receiver(q) => (None, false),
+                Some(q) if q.parent().is_some_and(|p| p.kind() == "token_tree") => {
+                    (infer.token_receiver_hint(q), true)
+                }
                 Some(q) => (
                     infer.qualifier_hint(q),
                     lang == Lang::Rust && is_dot_receiver(q),
