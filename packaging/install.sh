@@ -11,9 +11,13 @@
 #
 # Private repository: while crowbett/codegraph is private, anonymous
 # downloads (including raw.githubusercontent.com for this script) return 404. Set
-# GH_TOKEN (or GITHUB_TOKEN) to a token with read access to the repo, e.g.
-#   GH_TOKEN=$(gh auth token) sh install.sh
-# With a token the script downloads assets through the GitHub API.
+# GH_TOKEN (or GITHUB_TOKEN) to a token with read access to the repo. Prefer a
+# fine-grained personal access token scoped to this one repository with only
+# "Contents: read" (see docs/INSTALL.md); `GH_TOKEN=$(gh auth token)` also works but
+# hands the script your full gh login.
+# With a token the script downloads assets through the GitHub API using curl; the
+# token is passed in a private (mode 600) curl config file, never on a command line
+# where other local users could read it from ps. The token path requires curl.
 #
 # Options:
 #   --version X.Y.Z   install that release instead of the latest (a leading v is fine)
@@ -39,7 +43,7 @@ usage: install.sh [--version X.Y.Z] [--dir DIR]
 
 Installs codegraph from GitHub releases into ~/.local/bin (or DIR), verifying the
 archive against SHA256SUMS. Never edits PATH or shell profiles.
-While the repo is private, set GH_TOKEN (e.g. GH_TOKEN=$(gh auth token)).
+While the repo is private, set GH_TOKEN to a read-only token (needs curl).
 EOF
     exit 0
 }
@@ -90,23 +94,41 @@ else
 fi
 command -v tar >/dev/null 2>&1 || die "need tar"
 
+TMP=$(mktemp -d 2>/dev/null || mktemp -d -t codegraph)
+trap 'rm -rf "$TMP"' EXIT INT TERM
+
+# The token never goes on a command line (argv is world-readable via ps): curl reads
+# the Authorization header from a mode-600 config file inside the private temp dir.
+AUTH_CFG=
+if [ -n "$TOKEN" ]; then
+    # wget can only take headers on its command line, and re-sends them on redirects.
+    [ "$DL" = curl ] || die "GH_TOKEN/GITHUB_TOKEN downloads need curl (wget would expose the token); install curl"
+    case $TOKEN in
+        *[!A-Za-z0-9_]*) die "GH_TOKEN/GITHUB_TOKEN has unexpected characters (expected a GitHub token)" ;;
+    esac
+    AUTH_CFG="$TMP/auth.curlrc"
+    (
+        umask 077
+        # heredoc, not echo/printf: an external printf would put the token in argv
+        cat >"$AUTH_CFG" <<EOF
+header = "Authorization: Bearer $TOKEN"
+EOF
+    )
+fi
+
 # fetch URL OUT [ACCEPT]: download with optional auth and Accept header.
 fetch() {
     _accept=${3:-}
     if [ "$DL" = curl ]; then
-        set -- curl -fsSL --proto '=https' --tlsv1.2 -o "$2" "$1"
-        [ -n "$TOKEN" ] && set -- "$@" -H "Authorization: Bearer $TOKEN"
+        set -- curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$2" "$1"
+        [ -n "$AUTH_CFG" ] && set -- "$@" --config "$AUTH_CFG"
         [ -n "$_accept" ] && set -- "$@" -H "Accept: $_accept"
     else
-        set -- wget -q -O "$2" "$1"
-        [ -n "$TOKEN" ] && set -- "$@" --header "Authorization: Bearer $TOKEN"
+        set -- wget -q --https-only -O "$2" "$1"
         [ -n "$_accept" ] && set -- "$@" --header "Accept: $_accept"
     fi
     "$@"
 }
-
-TMP=$(mktemp -d 2>/dev/null || mktemp -d -t codegraph)
-trap 'rm -rf "$TMP"' EXIT INT TERM
 
 API="https://api.github.com/repos/$REPO"
 
@@ -127,10 +149,11 @@ else
     if [ -z "$VERSION" ]; then
         # /releases/latest redirects to /releases/tag/vX.Y.Z.
         if [ "$DL" = curl ]; then
-            loc=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest") ||
+            loc=$(curl -fsSLI --proto '=https' --proto-redir '=https' --tlsv1.2 -o /dev/null \
+                -w '%{url_effective}' "https://github.com/$REPO/releases/latest") ||
                 die "cannot reach github.com/$REPO (private repo? set GH_TOKEN)"
         else
-            loc=$(wget -q -S --spider "https://github.com/$REPO/releases/latest" 2>&1 |
+            loc=$(wget -q -S --spider --https-only "https://github.com/$REPO/releases/latest" 2>&1 |
                 sed -n 's/^ *Location: *//p' | tail -n1)
         fi
         VERSION=${loc##*/}

@@ -20,14 +20,37 @@ Archives are flat: the binary, `README.md` and `LICENSE` at the top level.
 `github.com/.../releases/download/...`, `raw.githubusercontent.com` and the Git URL all
 return 404. Every path below therefore needs GitHub auth until the repo is made public:
 
-- scripts: set `GH_TOKEN` (or `GITHUB_TOKEN`) to a token with `contents: read` on the repo,
-  e.g. `GH_TOKEN=$(gh auth token)`; the scripts then fetch through the GitHub API;
+- scripts: set `GH_TOKEN` (or `GITHUB_TOKEN`) to a token with `contents: read` on the repo
+  (see "Which token" below); the scripts then fetch through the GitHub API;
 - fetching the scripts themselves: use `gh` instead of curl (shown below);
 - cargo: an authenticated git (SSH key or credential helper);
 - scoop / winget / Homebrew / npm: only work once the repo (and the tap / npm packages)
   are public, or with the per-tool token setup noted in each section.
 
 Once the repo is public, drop the token bits; nothing else changes.
+
+### Which token
+
+Use a **fine-grained personal access token** made for this and nothing else: GitHub ->
+Settings -> Developer settings -> Fine-grained tokens -> "Generate new token", resource
+owner `crowbett`, "Only select repositories" = `codegraph`, repository
+permission **Contents: Read-only** (Metadata: Read-only is added automatically), a short
+expiry. That token can read releases and nothing else. `GH_TOKEN=$(gh auth token)` works
+too, but it hands the script your full `gh` login (typically `repo` scope on every repo
+you can reach), so prefer the fine-grained one on any machine you do not fully control.
+
+How the scripts handle it:
+
+- `install.sh` needs **curl** for the token path. The `Authorization` header goes into a
+  mode-600 curl `--config` file inside the script's private temp dir (deleted on exit),
+  never onto a command line where `ps` would show it to other local users. With only
+  `wget` available it refuses to use a token (wget takes headers on its command line and
+  re-sends them on redirects). All downloads are HTTPS-only, including redirects.
+- `install.ps1` passes the token only as an HTTPS request header; Windows PowerShell 5.1
+  and PowerShell 7 both drop it when GitHub redirects the download to its storage host.
+
+Environment variables are still readable by your own user (and root), so run the
+installer from a shell you trust and `unset GH_TOKEN` afterwards if you exported it.
 
 ## Linux and macOS: install script
 
@@ -48,8 +71,9 @@ The script detects OS (`linux`/`macos`) and arch (`amd64`/`arm64`, native arm64 
 under Rosetta), downloads the matching archive and `SHA256SUMS`, verifies the hash,
 and installs `codegraph` into `~/.local/bin` (override: `--dir` or
 `CODEGRAPH_INSTALL_DIR`). It never edits PATH or shell profiles; if the directory is not
-on PATH it prints the `export PATH=...` line to add. Needs `curl` or `wget`, `tar`, and
-`sha256sum` or `shasum`.
+on PATH it prints the `export PATH=...` line to add. Needs `curl` (or `wget` for public,
+token-less downloads; GNU wget 1.15+ for `--https-only`), `tar`, and `sha256sum` or
+`shasum`.
 
 ## Windows: install script
 
@@ -142,6 +166,33 @@ it opens a login prompt, and in a non-interactive shell it just hangs. The crate
 
 From a clone: `cargo install --path . --locked`.
 
+## Verifying provenance
+
+`SHA256SUMS` proves an archive was not corrupted in transit, but it is downloaded from the
+same release as the archive, so it cannot prove *who built it*. Releases built by
+`.github/workflows/release.yml` also carry a signed **SLSA build-provenance attestation**
+for every archive (`actions/attest-build-provenance`), binding the file's digest to this
+repository, the workflow file and the tag it ran on. Verify one with the GitHub CLI
+(2.49+):
+
+```sh
+gh release download vX.Y.Z -R crowbett/codegraph -p 'codegraph-*-linux-amd64.tar.gz'
+gh attestation verify codegraph-X.Y.Z-linux-amd64.tar.gz \
+  -R crowbett/codegraph \
+  --signer-workflow crowbett/codegraph/.github/workflows/release.yml
+```
+
+A pass prints the attestation's source repo, workflow and ref; any mismatch (a file not
+built by that workflow in that repo) fails with a non-zero exit. `--signer-workflow`
+also rejects artifacts attested by some other workflow in the repo. Offline:
+`gh attestation download` the bundle once, then `gh attestation verify --bundle <file>`.
+
+Caveats: GitHub only issues attestations for **public** repositories (private ones need
+GitHub Enterprise Cloud). While this repo is private the release workflow skips the step
+with a warning, so releases cut before it goes public (including v0.1.1) have no
+attestation; verify those with `SHA256SUMS` only. The install scripts verify the
+checksum, not the attestation; run `gh attestation verify` yourself when provenance matters.
+
 ## After installing
 
 ```sh
@@ -158,9 +209,11 @@ codegraph mcp        # stdio MCP server; see README for client registration
    `gh workflow run release.yml --ref main -f dry_run=true`. It builds all five archives and
    `SHA256SUMS` as workflow artifacts and never creates a release.
 3. Tag and push: `git tag -s vX.Y.Z -m vX.Y.Z ; git push origin vX.Y.Z`. The tag must match
-   `Cargo.toml` (the workflow fails otherwise). The workflow builds every target and creates
-   a **draft** GitHub release with the archives, `SHA256SUMS` and generated notes.
-4. Check the draft (download one archive, run `codegraph version`), then publish it.
+   `Cargo.toml` (the workflow fails otherwise). The workflow builds every target without a
+   build cache (hermetic), attests build provenance for each archive (public repo only),
+   and creates a **draft** GitHub release with the archives, `SHA256SUMS` and generated notes.
+4. Check the draft (download one archive, run `codegraph version`, and once the repo is
+   public `gh attestation verify` it as in "Verifying provenance"), then publish it.
 5. Update the package manifests from the release's `SHA256SUMS`:
    - scoop `packaging/scoop/codegraph.json`: `version`, `url`, `hash` (windows zip);
    - winget `packaging/winget/*.yaml`: `PackageVersion` in all three, `InstallerUrl`,

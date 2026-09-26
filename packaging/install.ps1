@@ -16,9 +16,14 @@
 
   Private repository: while crowbett/codegraph is private, anonymous
   downloads (including raw.githubusercontent.com for this script) return 404. Set
-  $env:GH_TOKEN (or $env:GITHUB_TOKEN) to a token with read access, e.g.
-    $env:GH_TOKEN = gh auth token
-  With a token the script downloads assets through the GitHub API.
+  $env:GH_TOKEN (or $env:GITHUB_TOKEN) to a token with read access. Prefer a
+  fine-grained personal access token scoped to this one repository with only
+  "Contents: read" (see docs/INSTALL.md); `$env:GH_TOKEN = gh auth token` also works
+  but hands the script your full gh login.
+  With a token the script downloads assets through the GitHub API. The token only
+  travels in HTTPS request headers (never on a command line), and both Windows
+  PowerShell and PowerShell 7 drop the Authorization header when GitHub redirects
+  the download to its storage host.
 
   Environment: CODEGRAPH_VERSION, CODEGRAPH_INSTALL_DIR, GH_TOKEN / GITHUB_TOKEN,
   CODEGRAPH_REPO (owner/name, default crowbett/codegraph).
