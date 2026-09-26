@@ -52,6 +52,8 @@ pub(crate) struct Infer<'a> {
     src: &'a [u8],
     envs: HashMap<usize, Vec<Decl<'a>>>,
     globals: Option<Vec<Decl<'a>>>,
+    /// Evaluated initializers: (value node id, element-of) -> hint.
+    memo: HashMap<(usize, bool), Option<String>>,
     root: Node<'a>,
 }
 
@@ -91,6 +93,7 @@ impl<'a> Infer<'a> {
             src,
             envs: HashMap::new(),
             globals: None,
+            memo: HashMap::new(),
             root,
         }
     }
@@ -311,15 +314,23 @@ impl<'a> Infer<'a> {
             return d.hint.clone();
         }
         let v = d.value?;
-        let h = self.eval(v, depth + 1)?;
-        if d.elem {
-            if h == "L" {
-                return None;
-            }
-            mk("E:", &h)
-        } else {
-            Some(h)
+        let key = (v.id(), d.elem);
+        if let Some(h) = self.memo.get(&key) {
+            return h.clone();
         }
+        // Guard against self-reference while evaluating (`x = x.next()` chains).
+        self.memo.insert(key, None);
+        let h = self.eval(v, depth + 1).and_then(|h| {
+            if !d.elem {
+                Some(h)
+            } else if h == "L" {
+                None
+            } else {
+                mk("E:", &h)
+            }
+        });
+        self.memo.insert(key, h.clone());
+        h
     }
 
     fn params(&mut self, f: Node<'a>, out: &mut Vec<Decl<'a>>) {
@@ -451,21 +462,39 @@ impl<'a> Infer<'a> {
     /// Collect declarations under `node`, not descending into nested functions
     /// (whose names are recorded as function bindings).
     fn collect(&mut self, node: Node<'a>, out: &mut Vec<Decl<'a>>, top: bool) {
-        let mut stack = vec![node];
-        while let Some(n) = stack.pop() {
-            if n.id() != node.id() && self.is_function(n) {
-                if let Some(name) = n.child_by_field_name("name") {
-                    Self::decl(out, self.t(name), n.start_byte(), None, true);
+        // One cursor for the whole walk (a cursor per node dominated the cost).
+        let mut cur = node.walk();
+        loop {
+            let n = cur.node();
+            let mut descend = true;
+            if n.id() != node.id() {
+                if !n.is_named() {
+                    descend = false;
+                } else if self.is_function(n) {
+                    if let Some(name) = n.child_by_field_name("name") {
+                        Self::decl(out, self.t(name), n.start_byte(), None, true);
+                    }
+                    descend = false;
+                } else if top && Self::is_block(n) {
+                    descend = false;
                 }
-                continue;
             }
-            if top && n.id() != node.id() && Self::is_block(n) {
-                continue;
+            if descend {
+                self.decl_of(n, out);
+                if cur.goto_first_child() {
+                    continue;
+                }
             }
-            self.decl_of(n, out);
-            let mut c = n.walk();
-            for ch in n.named_children(&mut c) {
-                stack.push(ch);
+            loop {
+                if cur.node().id() == node.id() {
+                    return;
+                }
+                if cur.goto_next_sibling() {
+                    break;
+                }
+                if !cur.goto_parent() {
+                    return;
+                }
             }
         }
     }
