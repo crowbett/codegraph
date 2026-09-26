@@ -32,7 +32,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Compress-Archive -Force -Path target/release/codegraph.exe, README.md, LICENSE -DestinationPath dist/codegraph-0.1.0-windows-amd64.zip
+          Compress-Archive -Force -Path target/release/codegraph.exe, README.md, LICENSE -DestinationPath dist/codegraph-0.1.1-windows-amd64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: codegraph-windows-amd64

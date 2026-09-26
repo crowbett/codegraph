@@ -35,7 +35,7 @@ tests/graph.rs incremental.rs cli.rs   graph algorithms, re-index, binary + MCP 
 cargo fmt --check ; cargo clippy --all-targets -- -D warnings ; cargo test
 cargo build --release
 task snapshots   # re-record fixture snapshots (INSTA_UPDATE=always), then review the diff
-task release     # dist\codegraph-0.1.0-windows-amd64.zip
+task release     # dist\codegraph-0.1.1-windows-amd64.zip
 ```
 
 Smoke against a throwaway data dir (never the real `~/.config/kit`):

@@ -210,7 +210,7 @@ Known blind spots:
 ```powershell
 cargo fmt --check ; cargo clippy --all-targets -- -D warnings ; cargo test
 task snapshots   # re-record fixture snapshots, then review the diff
-task release     # dist\codegraph-0.1.0-windows-amd64.zip
+task release     # dist\codegraph-0.1.1-windows-amd64.zip
 ```
 
 Tests:
