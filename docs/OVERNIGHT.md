@@ -245,3 +245,29 @@ devkit lost 1 hit. Reverted; needs type-literal members in resolve_types first.
 Still open for Rust recall (bytes 79%, serde-json 83%): in-repo extension traits on std
 types (`impl BufMut for Vec<u8>` → `vec.put(..)`; round 2's `Foreign(type)` attempt was
 +0.2/−0.3), `json!(..)` macro return types (`data.pointer(..)`), generic-bounded fields.
+
+## Round 4 — "speed it up" (2026-09-26 afternoon)
+
+Scale work driven by `CODEGRAPH_TRACE=1` (new) on a persistent Linux graph. The finding
+that reframed it: of Linux's 42 s resolve, resolution was ~2 s; everything else was SQLite
+round trips (18 s loading 11.5 M rows back, 16–19 s of `UPDATE`s that rewrite the 1.5 GB
+edges table). Details and numbers in docs/SCALE.md ("Results after the SQLite work").
+
+| commit | what |
+|---|---|
+| cbb4d34 | parallel rowid-slice loads, cold loads drop per-file indexes, per-repo counts (schema v5, `status` 66x faster), partial `edges_to_file`, mimalloc, `CODEGRAPH_TRACE` |
+| b221410 | cold repos resolve in memory and insert edges once (64 rows/statement), repo indexes dropped (schema v6), implicit-edge cleanup by id, parallel symbol tables |
+| (this) | bench harness uses mimalloc like the CLI (it was measuring a 2x slower allocator path) |
+
+Net, same machine: Linux cold 153–193 s → 109–129 s; 1-file re-index 32–38 s → 12–14 s;
+no-op 4.2 s → 1.0 s; `status` 7.9 s → 0.12 s; 102k combined cold 249–265 s → 180 s.
+Verification: accuracy bench JSON byte-identical after every step; full edge dump of ~/dev
+identical between the cold (in-memory) and stored (UPDATE) paths; new tests
+`cold_and_stored_paths_agree` (7 fixtures) and stored-count checks in tests/incremental.rs.
+
+Costs: peak memory +1.2 GB on a Linux-sized cold index (held references), ~+0.8 GB from
+mimalloc. Dead ends: SQLite sorter threads, `UPDATE … FROM`, mmap reads (all measured, no
+gain). Deferred: a scoped re-resolve for 1-file edits (needs every file's scope and
+`mentioned` set because of re-exports and return-type evaluation in the defining file, so
+it would save ~35% of the 1-file path for real correctness risk); a resident resolver in
+`watch` is the bigger lever.

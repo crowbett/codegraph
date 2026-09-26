@@ -77,6 +77,47 @@ but still ~4x the 60 s bar; the 1-file touch is still dominated by a whole-repo 
 pass 2 hold more in memory at once. Edge counts match the baseline to within 0.002% (Linux
 +157 edges: SEC-1-era extraction changes, not measured separately).
 
+## Results after the SQLite work (commit `b221410`, 2026-09-26 afternoon)
+
+Profile first (`CODEGRAPH_TRACE=1`): resolving itself took ~2 s of Linux's 42 s resolve
+phase; the rest was SQLite I/O. Loading 8.5 M edges + 3 M symbols back out took 18 s, and
+writing results back as 8.3 M `UPDATE`s took 16–19 s. Any `UPDATE` rewrites the 1.5 GB
+edges table: even a single `UPDATE edges SET to_symbol = NULL` takes 7–9 s. Changes, each
+kept only if the graph and accuracy bench output were unchanged:
+
+| change | effect (Linux) |
+|---|---|
+| parallel read-only connections over rowid slices for symbols/edges | resolve load 18 s → 7 s |
+| cold loads also drop the per-file indexes (append-only inserts) | parse phase 52 s → 34 s (the single writer had been throttling the parsers) |
+| cold loads resolve in memory and insert each edge once, 64 rows per statement | resolve write-back 16 s → gone; one-shot edge insert ~13 s |
+| per-repo counts on `repos` (schema v5) | `status` 7.9 s → 0.12 s; index summary no longer scans edges |
+| Go implicit-edge cleanup by id; context freed on a background thread; parallel symbol tables | ~4 s per re-resolve |
+| `symbols_repo` / `edges_repo` dropped, `edges_to_file` partial (imports only) | fewer rows to rebuild after a cold load |
+| mimalloc | ~9% faster extraction |
+
+Rejected (measured, no gain): SQLite sorter threads for `CREATE INDEX`, `UPDATE … FROM` a
+temp table, mmap reads.
+
+Scale bench, two iterations each (slow / fast; the machine was shared, so the spread is
+wide):
+
+| run | cold | parse / write / resolve / other (fast) | no-op | 1 file touched | peak WS | DB |
+|---|---:|---|---:|---:|---:|---:|
+| linux | **114.1 / 129.0 s** (9f5bf03: 152.6 / 219.5) | 38.9 / 2.7 / 23.5 / 49.0 s | **1.0 s** (was 4.2) | **11.8 / 14.0 s** (was 32–37) | 8,351 MB | 1,801 MB |
+| combined (102k files) | **179.6 s** / 271.8 s (was 249–265) | 54.8 / 4.3 / 43.7 / 76.7 s | 4.5 s | 31.5 s in the harness, **15.5 s** from the CLI | 8,470 MB | 2,258 MB |
+
+The harness's combined 1-file number runs in the same process right after a cold index
+(an 8 GB heap); the CLI on the same graph takes 15.5 s, resolve 12.6 s (same as Linux
+alone). Peak memory: +1.2 GB from holding a cold repo's references until they are
+resolved (CLI: 6.0 → 7.2 GB on Linux) and ~+0.8 GB from mimalloc vs the system heap.
+
+What's left, per the trace: ~40–50 s rebuilding 8 indexes + the FTS index after a cold
+load (SQLite `CREATE INDEX` is single-threaded and scan-bound), ~28 s of pure extraction
+CPU (tree-sitter parse ~16 s), ~13 s inserting edges, and on a 1-file re-index ~7 s
+loading all symbols and edges back because resolution is whole-repo. Going much further
+means a scoped re-resolve (only files whose edges can change) or keeping the resolver
+resident in `watch`/`mcp --watch`.
+
 ## Profile of the cold Linux index (baseline)
 
 Phase/sub-phase timers in a scratch copy of the crate (never committed); two runs: as-is,

@@ -8,6 +8,10 @@ mod scipdata;
 use std::path::PathBuf;
 
 use anyhow::Result;
+
+/// Same allocator as the shipped `codegraph` binary, so timings match what users run.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
