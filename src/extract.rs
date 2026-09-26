@@ -302,7 +302,10 @@ pub fn extract(lang: Lang, src: &[u8]) -> Result<FileFacts> {
         };
         if matches!(sym.kind, SymKind::Function | SymKind::Method) {
             sym.ret = infer.ret_of(node);
-        } else if matches!(sym.kind, SymKind::Struct | SymKind::Class) {
+        } else if matches!(
+            sym.kind,
+            SymKind::Struct | SymKind::Class | SymKind::Interface
+        ) {
             sym.fields = infer.fields_of(node);
         }
     }

@@ -896,6 +896,25 @@ impl<'a> Infer<'a> {
         }
         match self.lang {
             Lang::Go => {
+                if let Some(it) = def
+                    .child_by_field_name("type")
+                    .filter(|t| t.kind() == "interface_type")
+                {
+                    // Embedded interfaces (`io.Reader`, `Base`) complete the method set.
+                    let mut c = it.walk();
+                    for el in it.named_children(&mut c) {
+                        if el.kind() != "type_elem" {
+                            continue;
+                        }
+                        let mut c2 = el.walk();
+                        for ty in el.named_children(&mut c2) {
+                            let tys = squash(self.t(ty));
+                            let base = crate::extract::base_type_name(&tys);
+                            out.push((format!("~{base}"), format!("T:{tys}")));
+                        }
+                    }
+                    return out;
+                }
                 let Some(st) = def
                     .child_by_field_name("type")
                     .filter(|t| t.kind() == "struct_type")
@@ -950,7 +969,7 @@ impl<'a> Infer<'a> {
                 let members: Vec<Node<'_>> = body.named_children(&mut c).collect();
                 for m in members {
                     match m.kind() {
-                        "public_field_definition" | "field_definition" => {
+                        "public_field_definition" | "field_definition" | "property_signature" => {
                             let Some(n) = m
                                 .child_by_field_name("name")
                                 .or_else(|| m.child_by_field_name("property"))

@@ -79,3 +79,37 @@ fn rust_loop_vars_callbacks_reexports_and_test_modules() {
     // `mod common;` in an integration test.
     assert_edge(&ix, "tests/it.rs", 5, "setup", "setup", "exact");
 }
+
+fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
+    let mut st = ix
+        .store
+        .conn()
+        .prepare(
+            "SELECT f.qname FROM edges e JOIN symbols f ON f.id = e.from_symbol
+             JOIN symbols t ON t.id = e.to_symbol
+             WHERE e.kind = 'impl' AND t.name = ?1 ORDER BY f.qname",
+        )
+        .unwrap();
+    st.query_map([name], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn go_implicit_interfaces_and_typed_receivers() {
+    let ix = index_fixture("go_infer");
+    // Store has Get with the right shape; Cache gets it by embedding; Wrong's Get differs.
+    assert_eq!(impls(&ix, "Getter"), ["store.Cache", "store.Store"]);
+    // ReadGetter = io.Reader (stdlib, known) + Getter.
+    assert_eq!(impls(&ix, "ReadGetter"), ["store.Cache", "store.Store"]);
+    let a = "api/api.go";
+    assert_edge(&ix, a, 16, "Get", "store.Store.Get", "exact");
+    assert_edge(&ix, a, 17, "Get", "store.Store.Get", "exact");
+    // Interface-typed field: the interface method.
+    assert_edge(&ix, a, 18, "Get", "store.Getter.Get", "exact");
+    // http.ResponseWriter is stdlib: nothing, not a guess.
+    assert_eq!(edge(&ix.store, a, 19, "Set"), None);
+    // Promoted through the embedded *Store, from a range element.
+    assert_edge(&ix, a, 21, "Get", "store.Store.Get", "likely");
+}

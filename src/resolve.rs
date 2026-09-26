@@ -44,6 +44,8 @@ pub struct ResolveStats {
     pub imports_resolved: usize,
     /// Import edges.
     pub imports: usize,
+    /// Derived Go interface-satisfaction edges.
+    pub implicit_impls: usize,
 }
 
 struct F {
@@ -70,6 +72,8 @@ struct S {
     qkey: String,
     ret: Option<String>,
     fields: Vec<(String, String)>,
+    /// First line of the definition (Go method shapes for interface satisfaction).
+    sig: String,
 }
 
 struct E {
@@ -657,8 +661,15 @@ fn is_self_word(q: &str) -> bool {
     matches!(q, "self" | "this" | "Self" | "cls")
 }
 
+/// `edges.extra` of derived Go interface-satisfaction edges (rebuilt on every resolve).
+const IMPLICIT: &str = r#"{"implicit":true}"#;
+
 /// Resolve every edge of a repo and write the results.
 pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<ResolveStats> {
+    store.conn().execute(
+        "DELETE FROM edges WHERE repo_id = ?1 AND kind = 'impl' AND extra = ?2",
+        params![repo_id, IMPLICIT],
+    )?;
     let ctx_and_edges = load(store, repo_id, root)?;
     let (ctx, edges) = ctx_and_edges;
     let scopes: Vec<Scope> = (0..ctx.files.len()).map(|_| Scope::default()).collect();
@@ -762,6 +773,25 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
         for (id, to, conf, to_file, from) in &updates {
             st.execute(params![id, to, conf, to_file, from])?;
         }
+        let mut ins = tx.prepare_cached(
+            "INSERT INTO edges(repo_id, file_id, from_symbol, name, kind, line, col, to_symbol,
+                to_file, confidence, extra)
+             SELECT ?1, s.file_id, s.id, ?2, 'impl', s.start_line, s.start_col, ?3, ?4,
+                'likely', ?5
+             FROM symbols s WHERE s.id = ?6",
+        )?;
+        for (t, i) in ctx.go_implicit_impls() {
+            let iface = &ctx.syms[i];
+            ins.execute(params![
+                repo_id,
+                iface.name,
+                iface.id,
+                ctx.files[iface.file].id,
+                IMPLICIT,
+                ctx.syms[t].id
+            ])?;
+            stats.implicit_impls += 1;
+        }
     }
     tx.commit()?;
     Ok(stats)
@@ -841,7 +871,7 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
     {
         let mut st = conn.prepare(
             "SELECT id, file_id, parent_id, name, kind, container, exported, is_default, recv,
-                    end_line - start_line, qkey, ret, fields
+                    end_line - start_line, qkey, ret, fields, signature
              FROM symbols WHERE repo_id = ?1 ORDER BY id",
         )?;
         let rows = st.query_map([repo_id], |r| {
@@ -859,6 +889,7 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
                 r.get::<_, String>(10)?,
                 r.get::<_, Option<String>>(11)?,
                 r.get::<_, Option<String>>(12)?,
+                r.get::<_, String>(13)?,
             ))
         })?;
         for row in rows {
@@ -876,6 +907,7 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
                 qkey,
                 ret,
                 fields,
+                sig,
             ) = row?;
             let (Some(&file), Some(kind)) = (file_idx.get(&fid), SymKind::parse(&kind)) else {
                 continue;
@@ -896,6 +928,7 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
                 fields: fields
                     .and_then(|f| serde_json::from_str(&f).ok())
                     .unwrap_or_default(),
+                sig,
             });
         }
     }

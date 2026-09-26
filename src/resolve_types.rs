@@ -5,7 +5,7 @@
 //! repo (`External`: stdlib, a dependency, a primitive; the call then resolves to nothing
 //! instead of a same-named repo method), or `Unknown` (fall back to name rules).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::{Confidence, Ctx, EdgeKind, Lang, SymKind, E};
 
@@ -69,6 +69,101 @@ const SELF_CTORS: &[&str] = &[
     "clone",
     "with_capacity",
 ];
+/// Method name -> (parameter count, result count) when known.
+type MethodSet<'s> = HashMap<&'s str, Option<(usize, usize)>>;
+
+/// Method sets of stdlib interfaces commonly embedded in repo interfaces.
+fn std_iface(qualified: &str) -> Option<&'static [(&'static str, (usize, usize))]> {
+    Some(match qualified {
+        "http.ResponseWriter" => &[
+            ("Header", (0, 1)),
+            ("Write", (1, 2)),
+            ("WriteHeader", (1, 0)),
+        ],
+        "http.Handler" => &[("ServeHTTP", (2, 0))],
+        "http.Flusher" => &[("Flush", (0, 0))],
+        "http.Hijacker" => &[("Hijack", (0, 3))],
+        "io.Reader" => &[("Read", (1, 2))],
+        "io.Writer" => &[("Write", (1, 2))],
+        "io.Closer" => &[("Close", (0, 1))],
+        "io.ReadCloser" => &[("Read", (1, 2)), ("Close", (0, 1))],
+        "io.WriteCloser" => &[("Write", (1, 2)), ("Close", (0, 1))],
+        "io.ReadWriter" => &[("Read", (1, 2)), ("Write", (1, 2))],
+        "io.ReadWriteCloser" => &[("Read", (1, 2)), ("Write", (1, 2)), ("Close", (0, 1))],
+        "io.StringWriter" => &[("WriteString", (1, 2))],
+        "fmt.Stringer" => &[("String", (0, 1))],
+        "error" => &[("Error", (0, 1))],
+        "sort.Interface" => &[("Len", (0, 1)), ("Less", (2, 1)), ("Swap", (2, 0))],
+        "context.Context" => &[
+            ("Deadline", (0, 2)),
+            ("Done", (0, 1)),
+            ("Err", (0, 1)),
+            ("Value", (1, 1)),
+        ],
+        _ => return None,
+    })
+}
+
+/// Count of top-level comma-separated items in `s` (empty = 0).
+fn arity(s: &str) -> usize {
+    if s.trim().is_empty() {
+        0
+    } else {
+        split_top(s, ',').len()
+    }
+}
+
+/// (parameters, results) of a one-line Go method signature: `func (r *T) Name(a, b int)
+/// (int, error) {` or an interface element `Name(ctx context.Context) error`.
+fn go_shape(sig: &str, name: &str) -> Option<(usize, usize)> {
+    let at = sig.find(&format!("{name}("))? + name.len();
+    let rest = &sig[at..];
+    let mut depth = 0i32;
+    let mut close = None;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let close = close?;
+    let params = arity(&rest[1..close]);
+    let tail = rest[close + 1..].trim();
+    // Cut the body (`{`, `{}`, `{ return x }`): a brace at depth 0 after a space or at
+    // the start (`interface{}` in a result type has none).
+    let mut depth = 0i32;
+    let mut cut = tail.len();
+    let mut prev = ' ';
+    for (i, c) in tail.char_indices() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth -= 1,
+            '{' if depth == 0 && prev == ' ' => {
+                cut = i;
+                break;
+            }
+            _ => {}
+        }
+        prev = c;
+    }
+    let tail = tail[..cut].trim();
+    let results = if tail.is_empty() {
+        0
+    } else if let Some(inner) = tail.strip_prefix('(').and_then(|t| t.strip_suffix(')')) {
+        arity(inner)
+    } else {
+        1
+    };
+    Some((params, results))
+}
+
 /// Rust iterator adaptors whose items are the receiver's items.
 const RUST_ITER_SAME: &[&str] = &[
     "iter",
@@ -965,6 +1060,129 @@ impl Ctx {
         None
     }
 
+    /// Go implicit interface satisfaction: (type, interface) pairs where the type's
+    /// method set (own methods, both receivers, plus methods promoted from embedded
+    /// in-repo types) covers the interface's (own plus embedded in-repo interfaces),
+    /// comparing names and, when both signatures are on one line, parameter and result
+    /// counts. Interfaces embedding something outside the repo are skipped: their method
+    /// set is unknown, and a partial set would claim implementations that don't exist.
+    pub(super) fn go_implicit_impls(&self) -> Vec<(usize, usize)> {
+        let mut methods: HashMap<(&str, &str), MethodSet<'_>> = HashMap::new();
+        for s in &self.syms {
+            let f = &self.files[s.file];
+            if s.kind == SymKind::Method && f.lang == Lang::Go {
+                if let Some(c) = &s.container {
+                    methods
+                        .entry((f.package.as_str(), c.as_str()))
+                        .or_default()
+                        .insert(s.name.as_str(), go_shape(&s.sig, &s.name));
+                }
+            }
+        }
+        let mut ifaces: Vec<(usize, MethodSet<'_>)> = Vec::new();
+        for (i, s) in self.syms.iter().enumerate() {
+            if s.kind == SymKind::Interface && self.files[s.file].lang == Lang::Go {
+                if let Some(set) = self.iface_methods(i, &methods, &mut HashSet::new()) {
+                    if !set.is_empty() {
+                        ifaces.push((i, set));
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        if ifaces.is_empty() {
+            return out;
+        }
+        for (t, s) in self.syms.iter().enumerate() {
+            if !matches!(s.kind, SymKind::Struct | SymKind::Type)
+                || self.files[s.file].lang != Lang::Go
+            {
+                continue;
+            }
+            let mut mset = MethodSet::new();
+            self.type_methods(t, &methods, &mut mset, &mut HashSet::new());
+            if mset.is_empty() {
+                continue;
+            }
+            for (i, iset) in &ifaces {
+                let covers = iset.iter().all(|(name, ishape)| {
+                    mset.get(name).is_some_and(|tshape| match (ishape, tshape) {
+                        (Some(a), Some(b)) => a == b,
+                        _ => true,
+                    })
+                });
+                if covers {
+                    out.push((t, *i));
+                }
+            }
+        }
+        out
+    }
+
+    fn iface_methods<'s>(
+        &'s self,
+        i: usize,
+        methods: &HashMap<(&'s str, &'s str), MethodSet<'s>>,
+        seen: &mut HashSet<usize>,
+    ) -> Option<MethodSet<'s>> {
+        if !seen.insert(i) {
+            return Some(MethodSet::new());
+        }
+        let s = &self.syms[i];
+        let pkg = self.files[s.file].package.as_str();
+        let mut set = methods
+            .get(&(pkg, s.name.as_str()))
+            .cloned()
+            .unwrap_or_default();
+        for (k, h) in &s.fields {
+            if !k.starts_with('~') {
+                continue;
+            }
+            match self.bind_val(&self.eval_val(s.file, Some(s.id), h, 0), 0) {
+                Ty::Known(j) if self.syms[j].kind == SymKind::Interface => {
+                    set.extend(self.iface_methods(j, methods, seen)?);
+                }
+                _ => {
+                    let std = h.strip_prefix("T:").and_then(std_iface)?;
+                    set.extend(std.iter().map(|(n, sh)| (*n, Some(*sh))));
+                }
+            }
+        }
+        Some(set)
+    }
+
+    fn type_methods<'s>(
+        &'s self,
+        t: usize,
+        methods: &HashMap<(&'s str, &'s str), MethodSet<'s>>,
+        out: &mut MethodSet<'s>,
+        seen: &mut HashSet<usize>,
+    ) {
+        if !seen.insert(t) {
+            return;
+        }
+        let s = &self.syms[t];
+        let pkg = self.files[s.file].package.as_str();
+        if let Some(m) = methods.get(&(pkg, s.name.as_str())) {
+            for (k, v) in m {
+                out.entry(k).or_insert(*v);
+            }
+        }
+        for (k, h) in &s.fields {
+            if k.starts_with('~') {
+                if let Ty::Known(b) = self.bind_val(&self.eval_val(s.file, Some(s.id), h, 0), 0) {
+                    self.type_methods(b, methods, out, seen);
+                } else {
+                    // Embedding a stdlib interface promotes its methods.
+                    let t = h.strip_prefix("T:").map(|t| t.trim_start_matches('*'));
+                    for (n, sh) in t.and_then(std_iface).into_iter().flatten() {
+                        out.entry(n).or_insert(Some(*sh));
+                    }
+                }
+            }
+        }
+    }
+
     /// Resolve a receiver call through its type hint.
     pub(super) fn resolve_typed(&self, e: &E) -> Typed {
         let Some(hint) = e.hint.as_deref() else {
@@ -1015,6 +1233,36 @@ mod tests {
         assert_eq!(n("impl Backend+Send", false), "|Backend");
         assert_eq!(n("crate::a::Store<T>", false), "crate::a|Store");
         assert_eq!(n("Arc<Mutex<Store>>", false), "|Store");
+    }
+
+    #[test]
+    fn go_shapes() {
+        assert_eq!(
+            go_shape(
+                "func (n *Notifier) Send(ctx context.Context, m Message, sinks []string) error {",
+                "Send"
+            ),
+            Some((3, 1))
+        );
+        assert_eq!(go_shape("Flush() error", "Flush"), Some((0, 1)));
+        assert_eq!(
+            go_shape("func (f *flushWriter) Flush() {", "Flush"),
+            Some((0, 0))
+        );
+        assert_eq!(go_shape("Get(a, b int) (int, error)", "Get"), Some((2, 2)));
+        assert_eq!(go_shape("func (s *S) Run(", "Run"), None);
+        assert_eq!(
+            go_shape("func (testPrintLogger) Print(v ...any) {}", "Print"),
+            Some((1, 0))
+        );
+        assert_eq!(
+            go_shape("func f() (map[string]interface{}, error) {", "f"),
+            Some((0, 2))
+        );
+        assert_eq!(
+            go_shape("func (x T) Get() interface{} { return nil }", "Get"),
+            Some((0, 1))
+        );
     }
 
     #[test]

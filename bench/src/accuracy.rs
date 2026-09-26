@@ -742,6 +742,12 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
         c.impl_gt += 1;
         if cg_pairs.contains(p) {
             c.impl_hit += 1;
+        } else if report {
+            rep.misses.push(format!(
+                "ImplMiss	{} -> {}",
+                describe(Some(p.0)),
+                describe(Some(p.1))
+            ));
         }
     }
     for p in &cg_pairs {
