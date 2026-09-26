@@ -250,6 +250,9 @@ pub fn extract(lang: Lang, src: &[u8]) -> Result<FileFacts> {
             }
             Role::Ref(kind) => {
                 let Some(name) = name else { continue };
+                if lang == Lang::Rust && in_attribute_or_macro_def(name) {
+                    continue;
+                }
                 let cand = RefCand {
                     kind,
                     name,
@@ -347,6 +350,26 @@ pub fn extract(lang: Lang, src: &[u8]) -> Result<FileFacts> {
     }
 
     Ok(facts)
+}
+
+/// Rust tokens inside `#[attr(...)]` or a `macro_rules!` body are not calls even when they
+/// look like `f(..)` (only token-tree matches can land there).
+fn in_attribute_or_macro_def(name: Node<'_>) -> bool {
+    if name.parent().is_none_or(|p| p.kind() != "token_tree") {
+        return false;
+    }
+    let mut cur = name.parent();
+    while let Some(n) = cur {
+        match n.kind() {
+            "attribute_item" | "inner_attribute_item" | "attribute" | "macro_definition"
+            | "macro_rule" => {
+                return true;
+            }
+            "token_tree" | "macro_invocation" => cur = n.parent(),
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// Language builtins that can never resolve inside a repo; dropped at extraction to

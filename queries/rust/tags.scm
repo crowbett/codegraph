@@ -91,6 +91,31 @@
     type: (type_identifier) @name)
   type: (_) @impl_for) @reference.impl
 
+; calls inside macro arguments: token trees are not parsed as expressions, so
+; `assert_eq!(f(x), y)`, `vec![t(1)]`, `format!("{}", id.short())` are matched on tokens.
+(token_tree
+  (identifier) @name
+  .
+  (token_tree . "(")) @reference.call
+
+(token_tree
+  [(identifier) (self) (token_tree)] @qualifier
+  .
+  "."
+  .
+  (identifier) @name
+  .
+  (token_tree . "(")) @reference.call
+
+(token_tree
+  (identifier) @qualifier
+  .
+  "::"
+  .
+  (identifier) @name
+  .
+  (token_tree . "(")) @reference.call
+
 ; functions passed as values (`.map(Self::parse)`, `spawn(worker)`)
 (arguments
   (scoped_identifier
