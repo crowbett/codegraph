@@ -116,7 +116,10 @@ fn human_output_and_meta_commands() {
     let env = Env::new();
     let (code, out) = env.text(&["version"]);
     assert_eq!(code, 0);
-    assert!(out.starts_with("codegraph 0.1.0 ("), "{out}");
+    assert!(
+        out.starts_with(concat!("codegraph ", env!("CARGO_PKG_VERSION"), " (")),
+        "{out}"
+    );
 
     let (code, v) = env.json(&["config", "path"]);
     assert_eq!(code, 0);
