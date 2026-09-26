@@ -553,6 +553,16 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
             let Some((_, be)) = byte_range(line, o.start, o.end) else {
                 continue;
             };
+            // codegraph has a definition of this name starting on this line: an
+            // object-literal method (`run() {}`) that SCIP records as a reference to the
+            // interface member it implements, not a use site.
+            let cg_def_here = cg
+                .sym_by_file_name
+                .get(&(fid, name.clone()))
+                .is_some_and(|v| v.iter().any(|id| cg.syms[id].start == o.line + 1));
+            if cg_def_here {
+                continue;
+            }
             let call = class == Class::Callable && is_call(&line[be..]);
             let (bs, _) = byte_range(line, o.start, o.end).unwrap_or((0, 0));
             let edge = find_edge(&cg, fid, o.line + 1, bs as u32 + 1, &name);

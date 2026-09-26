@@ -55,7 +55,10 @@ impl Dirs {
         let bench = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         // Outside bench/ (its own Cargo workspace) so cloned Rust repos are not nested in a
         // workspace; `.cache/` at the repo root is gitignored.
-        let cache = bench.join("..").join(".cache").join("bench");
+        let cache = std::env::var_os("CODEGRAPH_BENCH_CACHE").map_or_else(
+            || bench.join("..").join(".cache").join("bench"),
+            PathBuf::from,
+        );
         Self { bench, cache }
     }
     pub fn corpus(&self, name: &str) -> PathBuf {

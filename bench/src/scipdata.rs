@@ -56,7 +56,9 @@ impl Scip {
                 }
                 let symbol = canonical(&p, &o.symbol);
                 let is_def = o.symbol_roles & 1 != 0;
-                if is_def {
+                // A constructor folded into its class keeps the class's own definition.
+                let folded = symbol != o.symbol && !is_local(&o.symbol);
+                if is_def && !folded {
                     out.defs.entry(symbol.clone()).or_insert(Def {
                         path: p.clone(),
                         line,
@@ -153,7 +155,10 @@ pub fn is_local(sym: &str) -> bool {
 fn canonical(path: &str, sym: &str) -> String {
     if is_local(sym) {
         format!("{sym}@{path}")
-    } else if let Some(class) = sym.strip_suffix("<constructor>().") {
+    } else if let Some(class) = sym
+        .strip_suffix("`<constructor>`().")
+        .or_else(|| sym.strip_suffix("<constructor>()."))
+    {
         class.to_string()
     } else {
         sym.to_string()
