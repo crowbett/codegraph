@@ -57,3 +57,23 @@ tasks:
   clean:
     cmds:
       - cargo clean
+
+  bench:prepare:
+    desc: Clone the pinned accuracy corpus and build SCIP ground truth into .cache/bench
+    dir: bench
+    cmds:
+      - cargo run --release -q -- prepare
+
+  bench:accuracy:
+    desc: Score codegraph against SCIP ground truth (delta vs the frozen baseline; misses in .cache/bench/report)
+    dir: bench
+    cmds:
+      - task: bench:prepare
+      - cargo run --release -q -- accuracy --report --baseline baseline/accuracy.json --out ../.cache/bench/results.json
+
+  bench:record:
+    desc: Record the current accuracy run in bench/results/accuracy.json and docs/ACCURACY.md
+    dir: bench
+    cmds:
+      - task: bench:prepare
+      - cargo run --release -q -- accuracy --baseline baseline/accuracy.json --out results/accuracy.json --write-docs

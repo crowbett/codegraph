@@ -1,0 +1,939 @@
+{
+  "codegraph": "8d20102",
+  "repos": {
+    "chi": {
+      "lang": "go",
+      "rev": "3d1777a1ef8881f7d1da0b02c76ca8f0a29cd2bc",
+      "counts": {
+        "files": 84,
+        "defs_gt": 384,
+        "defs_found": 384,
+        "calls": {
+          "gt": 1283,
+          "hit": 1107,
+          "dispatch": 157,
+          "wrong": 15,
+          "unresolved": 4,
+          "no_edge": 0,
+          "no_def": 0
+        },
+        "refs": {
+          "gt": 1777,
+          "hit": 1579,
+          "dispatch": 157,
+          "wrong": 16,
+          "unresolved": 4,
+          "no_edge": 21,
+          "no_def": 0
+        },
+        "call_edges": {
+          "resolved": 1633,
+          "judged": 1461,
+          "correct": 1110,
+          "dispatch": 157,
+          "false_edges": 194
+        },
+        "all_edges": {
+          "resolved": 2235,
+          "judged": 1929,
+          "correct": 1575,
+          "dispatch": 157,
+          "false_edges": 197
+        },
+        "conf": {
+          "exact": {
+            "resolved": 1105,
+            "judged": 1105,
+            "correct": 1105,
+            "dispatch": 0,
+            "false_edges": 0
+          },
+          "likely": {
+            "resolved": 309,
+            "judged": 309,
+            "correct": 186,
+            "dispatch": 38,
+            "false_edges": 85
+          },
+          "name_only": {
+            "resolved": 515,
+            "judged": 515,
+            "correct": 284,
+            "dispatch": 119,
+            "false_edges": 112
+          }
+        },
+        "impl_gt": 12,
+        "impl_hit": 0,
+        "impl_edges": {
+          "resolved": 0,
+          "judged": 0,
+          "correct": 0,
+          "dispatch": 0,
+          "false_edges": 0
+        },
+        "index_ms": 146
+      }
+    },
+    "devkit": {
+      "lang": "typescript",
+      "rev": "0995e63fe8197a0dce11d4fd17c214560bc71b30",
+      "counts": {
+        "files": 62,
+        "defs_gt": 306,
+        "defs_found": 306,
+        "calls": {
+          "gt": 749,
+          "hit": 695,
+          "dispatch": 0,
+          "wrong": 38,
+          "unresolved": 7,
+          "no_edge": 9,
+          "no_def": 0
+        },
+        "refs": {
+          "gt": 1239,
+          "hit": 997,
+          "dispatch": 0,
+          "wrong": 38,
+          "unresolved": 23,
+          "no_edge": 181,
+          "no_def": 0
+        },
+        "call_edges": {
+          "resolved": 970,
+          "judged": 741,
+          "correct": 703,
+          "dispatch": 0,
+          "false_edges": 38
+        },
+        "all_edges": {
+          "resolved": 1278,
+          "judged": 1039,
+          "correct": 996,
+          "dispatch": 0,
+          "false_edges": 43
+        },
+        "conf": {
+          "exact": {
+            "resolved": 997,
+            "judged": 997,
+            "correct": 956,
+            "dispatch": 0,
+            "false_edges": 41
+          },
+          "likely": {
+            "resolved": 41,
+            "judged": 41,
+            "correct": 39,
+            "dispatch": 0,
+            "false_edges": 2
+          },
+          "name_only": {
+            "resolved": 1,
+            "judged": 1,
+            "correct": 1,
+            "dispatch": 0,
+            "false_edges": 0
+          }
+        },
+        "impl_gt": 0,
+        "impl_hit": 0,
+        "impl_edges": {
+          "resolved": 1,
+          "judged": 1,
+          "correct": 0,
+          "dispatch": 0,
+          "false_edges": 1
+        },
+        "index_ms": 71
+      }
+    },
+    "fd": {
+      "lang": "rust",
+      "rev": "ce97e473ebaec49697c07daa50a7bc2b32f713d2",
+      "counts": {
+        "files": 24,
+        "defs_gt": 465,
+        "defs_found": 371,
+        "calls": {
+          "gt": 796,
+          "hit": 561,
+          "dispatch": 0,
+          "wrong": 17,
+          "unresolved": 92,
+          "no_edge": 126,
+          "no_def": 0
+        },
+        "refs": {
+          "gt": 1470,
+          "hit": 738,
+          "dispatch": 0,
+          "wrong": 17,
+          "unresolved": 94,
+          "no_edge": 621,
+          "no_def": 0
+        },
+        "call_edges": {
+          "resolved": 698,
+          "judged": 636,
+          "correct": 585,
+          "dispatch": 0,
+          "false_edges": 51
+        },
+        "all_edges": {
+          "resolved": 890,
+          "judged": 817,
+          "correct": 755,
+          "dispatch": 0,
+          "false_edges": 62
+        },
+        "conf": {
+          "exact": {
+            "resolved": 349,
+            "judged": 349,
+            "correct": 346,
+            "dispatch": 0,
+            "false_edges": 3
+          },
+          "likely": {
+            "resolved": 410,
+            "judged": 410,
+            "correct": 386,
+            "dispatch": 0,
+            "false_edges": 24
+          },
+          "name_only": {
+            "resolved": 58,
+            "judged": 58,
+            "correct": 23,
+            "dispatch": 0,
+            "false_edges": 35
+          }
+        },
+        "impl_gt": 0,
+        "impl_hit": 0,
+        "impl_edges": {
+          "resolved": 0,
+          "judged": 0,
+          "correct": 0,
+          "dispatch": 0,
+          "false_edges": 0
+        },
+        "index_ms": 106
+      }
+    },
+    "keep": {
+      "lang": "go",
+      "rev": "0d743de1dc96ed4f3583cae3944fc1d94cd8ab8d",
+      "counts": {
+        "files": 55,
+        "defs_gt": 596,
+        "defs_found": 596,
+        "calls": {
+          "gt": 1352,
+          "hit": 1315,
+          "dispatch": 5,
+          "wrong": 16,
+          "unresolved": 16,
+          "no_edge": 0,
+          "no_def": 0
+        },
+        "refs": {
+          "gt": 2182,
+          "hit": 2137,
+          "dispatch": 5,
+          "wrong": 16,
+          "unresolved": 20,
+          "no_edge": 4,
+          "no_def": 0
+        },
+        "call_edges": {
+          "resolved": 1517,
+          "judged": 1419,
+          "correct": 1316,
+          "dispatch": 5,
+          "false_edges": 98
+        },
+        "all_edges": {
+          "resolved": 2382,
+          "judged": 2279,
+          "correct": 2137,
+          "dispatch": 5,
+          "false_edges": 137
+        },
+        "conf": {
+          "exact": {
+            "resolved": 1845,
+            "judged": 1845,
+            "correct": 1844,
+            "dispatch": 0,
+            "false_edges": 1
+          },
+          "likely": {
+            "resolved": 266,
+            "judged": 266,
+            "correct": 231,
+            "dispatch": 0,
+            "false_edges": 35
+          },
+          "name_only": {
+            "resolved": 168,
+            "judged": 168,
+            "correct": 62,
+            "dispatch": 5,
+            "false_edges": 101
+          }
+        },
+        "impl_gt": 9,
+        "impl_hit": 0,
+        "impl_edges": {
+          "resolved": 0,
+          "judged": 0,
+          "correct": 0,
+          "dispatch": 0,
+          "false_edges": 0
+        },
+        "index_ms": 145
+      }
+    },
+    "ky": {
+      "lang": "typescript",
+      "rev": "0d59458a0a58e1c3d7c6db0ab17ed5c7cd671e47",
+      "counts": {
+        "files": 87,
+        "defs_gt": 86,
+        "defs_found": 86,
+        "calls": {
+          "gt": 165,
+          "hit": 138,
+          "dispatch": 0,
+          "wrong": 27,
+          "unresolved": 0,
+          "no_edge": 0,
+          "no_def": 0
+        },
+        "refs": {
+          "gt": 544,
+          "hit": 354,
+          "dispatch": 0,
+          "wrong": 27,
+          "unresolved": 7,
+          "no_edge": 156,
+          "no_def": 0
+        },
+        "call_edges": {
+          "resolved": 1266,
+          "judged": 166,
+          "correct": 139,
+          "dispatch": 0,
+          "false_edges": 27
+        },
+        "all_edges": {
+          "resolved": 2489,
+          "judged": 376,
+          "correct": 349,
+          "dispatch": 0,
+          "false_edges": 27
+        },
+        "conf": {
+          "exact": {
+            "resolved": 376,
+            "judged": 376,
+            "correct": 349,
+            "dispatch": 0,
+            "false_edges": 27
+          }
+        },
+        "impl_gt": 5,
+        "impl_hit": 5,
+        "impl_edges": {
+          "resolved": 6,
+          "judged": 5,
+          "correct": 5,
+          "dispatch": 0,
+          "false_edges": 0
+        },
+        "index_ms": 237
+      }
+    },
+    "ledger": {
+      "lang": "python",
+      "rev": "a90d437d57ef21eaad5ab4ae2b88d61198fe5cd2",
+      "counts": {
+        "files": 42,
+        "defs_gt": 427,
+        "defs_found": 427,
+        "calls": {
+          "gt": 913,
+          "hit": 910,
+          "dispatch": 0,
+          "wrong": 3,
+          "unresolved": 0,
+          "no_edge": 0,
+          "no_def": 0
+        },
+        "refs": {
+          "gt": 1527,
+          "hit": 1205,
+          "dispatch": 0,
+          "wrong": 14,
+          "unresolved": 30,
+          "no_edge": 278,
+          "no_def": 0
+        },
+        "call_edges": {
+          "resolved": 1122,
+          "judged": 1121,
+          "correct": 1113,
+          "dispatch": 0,
+          "false_edges": 8
+        },
+        "all_edges": {
+          "resolved": 1246,
+          "judged": 1245,
+          "correct": 1197,
+          "dispatch": 0,
+          "false_edges": 48
+        },
+        "conf": {
+          "exact": {
+            "resolved": 1101,
+            "judged": 1101,
+            "correct": 1061,
+            "dispatch": 0,
+            "false_edges": 40
+          },
+          "likely": {
+            "resolved": 72,
+            "judged": 72,
+            "correct": 70,
+            "dispatch": 0,
+            "false_edges": 2
+          },
+          "name_only": {
+            "resolved": 72,
+            "judged": 72,
+            "correct": 66,
+            "dispatch": 0,
+            "false_edges": 6
+          }
+        },
+        "impl_gt": 6,
+        "impl_hit": 6,
+        "impl_edges": {
+          "resolved": 6,
+          "judged": 6,
+          "correct": 6,
+          "dispatch": 0,
+          "false_edges": 0
+        },
+        "index_ms": 83
+      }
+    },
+    "pulse": {
+      "lang": "go",
+      "rev": "2398e3b9bb419d84e659722dcbfd3c4e8fdee92c",
+      "counts": {
+        "files": 54,
+        "defs_gt": 556,
+        "defs_found": 556,
+        "calls": {
+          "gt": 1131,
+          "hit": 1063,
+          "dispatch": 15,
+          "wrong": 27,
+          "unresolved": 26,
+          "no_edge": 0,
+          "no_def": 0
+        },
+        "refs": {
+          "gt": 2085,
+          "hit": 2006,
+          "dispatch": 15,
+          "wrong": 27,
+          "unresolved": 27,
+          "no_edge": 10,
+          "no_def": 0
+        },
+        "call_edges": {
+          "resolved": 1170,
+          "judged": 1149,
+          "correct": 1072,
+          "dispatch": 15,
+          "false_edges": 62
+        },
+        "all_edges": {
+          "resolved": 2185,
+          "judged": 2161,
+          "correct": 2010,
+          "dispatch": 15,
+          "false_edges": 136
+        },
+        "conf": {
+          "exact": {
+            "resolved": 1551,
+            "judged": 1551,
+            "correct": 1551,
+            "dispatch": 0,
+            "false_edges": 0
+          },
+          "likely": {
+            "resolved": 372,
+            "judged": 372,
+            "correct": 303,
+            "dispatch": 0,
+            "false_edges": 69
+          },
+          "name_only": {
+            "resolved": 238,
+            "judged": 238,
+            "correct": 156,
+            "dispatch": 15,
+            "false_edges": 67
+          }
+        },
+        "impl_gt": 13,
+        "impl_hit": 0,
+        "impl_edges": {
+          "resolved": 0,
+          "judged": 0,
+          "correct": 0,
+          "dispatch": 0,
+          "false_edges": 0
+        },
+        "index_ms": 111
+      }
+    },
+    "recall": {
+      "lang": "rust",
+      "rev": "7f913bdda58e2a3079ff78a25b3f33b4d1530971",
+      "counts": {
+        "files": 35,
+        "defs_gt": 379,
+        "defs_found": 379,
+        "calls": {
+          "gt": 715,
+          "hit": 519,
+          "dispatch": 0,
+          "wrong": 20,
+          "unresolved": 20,
+          "no_edge": 156,
+          "no_def": 0
+        },
+        "refs": {
+          "gt": 1428,
+          "hit": 869,
+          "dispatch": 0,
+          "wrong": 20,
+          "unresolved": 28,
+          "no_edge": 511,
+          "no_def": 0
+        },
+        "call_edges": {
+          "resolved": 664,
+          "judged": 644,
+          "correct": 519,
+          "dispatch": 0,
+          "false_edges": 125
+        },
+        "all_edges": {
+          "resolved": 1013,
+          "judged": 988,
+          "correct": 862,
+          "dispatch": 0,
+          "false_edges": 126
+        },
+        "conf": {
+          "exact": {
+            "resolved": 696,
+            "judged": 696,
+            "correct": 695,
+            "dispatch": 0,
+            "false_edges": 1
+          },
+          "likely": {
+            "resolved": 154,
+            "judged": 154,
+            "correct": 145,
+            "dispatch": 0,
+            "false_edges": 9
+          },
+          "name_only": {
+            "resolved": 138,
+            "judged": 138,
+            "correct": 22,
+            "dispatch": 0,
+            "false_edges": 116
+          }
+        },
+        "impl_gt": 0,
+        "impl_hit": 0,
+        "impl_edges": {
+          "resolved": 0,
+          "judged": 0,
+          "correct": 0,
+          "dispatch": 0,
+          "false_edges": 0
+        },
+        "index_ms": 77
+      }
+    },
+    "stash": {
+      "lang": "rust",
+      "rev": "1e48d51f0f2bc263887183149cabcb8f83465bdb",
+      "counts": {
+        "files": 34,
+        "defs_gt": 479,
+        "defs_found": 478,
+        "calls": {
+          "gt": 1326,
+          "hit": 836,
+          "dispatch": 0,
+          "wrong": 68,
+          "unresolved": 105,
+          "no_edge": 317,
+          "no_def": 0
+        },
+        "refs": {
+          "gt": 2860,
+          "hit": 1497,
+          "dispatch": 0,
+          "wrong": 68,
+          "unresolved": 109,
+          "no_edge": 1186,
+          "no_def": 0
+        },
+        "call_edges": {
+          "resolved": 973,
+          "judged": 973,
+          "correct": 851,
+          "dispatch": 0,
+          "false_edges": 122
+        },
+        "all_edges": {
+          "resolved": 1630,
+          "judged": 1630,
+          "correct": 1494,
+          "dispatch": 0,
+          "false_edges": 136
+        },
+        "conf": {
+          "exact": {
+            "resolved": 1288,
+            "judged": 1288,
+            "correct": 1261,
+            "dispatch": 0,
+            "false_edges": 27
+          },
+          "likely": {
+            "resolved": 193,
+            "judged": 193,
+            "correct": 178,
+            "dispatch": 0,
+            "false_edges": 15
+          },
+          "name_only": {
+            "resolved": 149,
+            "judged": 149,
+            "correct": 55,
+            "dispatch": 0,
+            "false_edges": 94
+          }
+        },
+        "impl_gt": 0,
+        "impl_hit": 0,
+        "impl_edges": {
+          "resolved": 0,
+          "judged": 0,
+          "correct": 0,
+          "dispatch": 0,
+          "false_edges": 0
+        },
+        "index_ms": 98
+      }
+    }
+  },
+  "langs": {
+    "go": {
+      "files": 192,
+      "defs_gt": 1536,
+      "defs_found": 1536,
+      "calls": {
+        "gt": 3766,
+        "hit": 3485,
+        "dispatch": 177,
+        "wrong": 58,
+        "unresolved": 46,
+        "no_edge": 0,
+        "no_def": 0
+      },
+      "refs": {
+        "gt": 6044,
+        "hit": 5722,
+        "dispatch": 177,
+        "wrong": 59,
+        "unresolved": 51,
+        "no_edge": 35,
+        "no_def": 0
+      },
+      "call_edges": {
+        "resolved": 4222,
+        "judged": 4029,
+        "correct": 3498,
+        "dispatch": 177,
+        "false_edges": 354
+      },
+      "all_edges": {
+        "resolved": 6703,
+        "judged": 6369,
+        "correct": 5722,
+        "dispatch": 177,
+        "false_edges": 470
+      },
+      "conf": {
+        "exact": {
+          "resolved": 4501,
+          "judged": 4501,
+          "correct": 4500,
+          "dispatch": 0,
+          "false_edges": 1
+        },
+        "likely": {
+          "resolved": 947,
+          "judged": 947,
+          "correct": 720,
+          "dispatch": 38,
+          "false_edges": 189
+        },
+        "name_only": {
+          "resolved": 921,
+          "judged": 921,
+          "correct": 502,
+          "dispatch": 139,
+          "false_edges": 280
+        }
+      },
+      "impl_gt": 34,
+      "impl_hit": 0,
+      "impl_edges": {
+        "resolved": 0,
+        "judged": 0,
+        "correct": 0,
+        "dispatch": 0,
+        "false_edges": 0
+      },
+      "index_ms": 402
+    },
+    "python": {
+      "files": 45,
+      "defs_gt": 427,
+      "defs_found": 427,
+      "calls": {
+        "gt": 913,
+        "hit": 910,
+        "dispatch": 0,
+        "wrong": 3,
+        "unresolved": 0,
+        "no_edge": 0,
+        "no_def": 0
+      },
+      "refs": {
+        "gt": 1527,
+        "hit": 1205,
+        "dispatch": 0,
+        "wrong": 14,
+        "unresolved": 30,
+        "no_edge": 278,
+        "no_def": 0
+      },
+      "call_edges": {
+        "resolved": 1142,
+        "judged": 1121,
+        "correct": 1113,
+        "dispatch": 0,
+        "false_edges": 8
+      },
+      "all_edges": {
+        "resolved": 1271,
+        "judged": 1245,
+        "correct": 1197,
+        "dispatch": 0,
+        "false_edges": 48
+      },
+      "conf": {
+        "exact": {
+          "resolved": 1101,
+          "judged": 1101,
+          "correct": 1061,
+          "dispatch": 0,
+          "false_edges": 40
+        },
+        "likely": {
+          "resolved": 72,
+          "judged": 72,
+          "correct": 70,
+          "dispatch": 0,
+          "false_edges": 2
+        },
+        "name_only": {
+          "resolved": 72,
+          "judged": 72,
+          "correct": 66,
+          "dispatch": 0,
+          "false_edges": 6
+        }
+      },
+      "impl_gt": 6,
+      "impl_hit": 6,
+      "impl_edges": {
+        "resolved": 6,
+        "judged": 6,
+        "correct": 6,
+        "dispatch": 0,
+        "false_edges": 0
+      },
+      "index_ms": 160
+    },
+    "rust": {
+      "files": 90,
+      "defs_gt": 1323,
+      "defs_found": 1228,
+      "calls": {
+        "gt": 2837,
+        "hit": 1916,
+        "dispatch": 0,
+        "wrong": 105,
+        "unresolved": 217,
+        "no_edge": 599,
+        "no_def": 0
+      },
+      "refs": {
+        "gt": 5758,
+        "hit": 3104,
+        "dispatch": 0,
+        "wrong": 105,
+        "unresolved": 231,
+        "no_edge": 2318,
+        "no_def": 0
+      },
+      "call_edges": {
+        "resolved": 2315,
+        "judged": 2253,
+        "correct": 1955,
+        "dispatch": 0,
+        "false_edges": 298
+      },
+      "all_edges": {
+        "resolved": 3508,
+        "judged": 3435,
+        "correct": 3111,
+        "dispatch": 0,
+        "false_edges": 324
+      },
+      "conf": {
+        "exact": {
+          "resolved": 2333,
+          "judged": 2333,
+          "correct": 2302,
+          "dispatch": 0,
+          "false_edges": 31
+        },
+        "likely": {
+          "resolved": 757,
+          "judged": 757,
+          "correct": 709,
+          "dispatch": 0,
+          "false_edges": 48
+        },
+        "name_only": {
+          "resolved": 345,
+          "judged": 345,
+          "correct": 100,
+          "dispatch": 0,
+          "false_edges": 245
+        }
+      },
+      "impl_gt": 0,
+      "impl_hit": 0,
+      "impl_edges": {
+        "resolved": 0,
+        "judged": 0,
+        "correct": 0,
+        "dispatch": 0,
+        "false_edges": 0
+      },
+      "index_ms": 204
+    },
+    "ts": {
+      "files": 150,
+      "defs_gt": 392,
+      "defs_found": 392,
+      "calls": {
+        "gt": 914,
+        "hit": 833,
+        "dispatch": 0,
+        "wrong": 65,
+        "unresolved": 7,
+        "no_edge": 9,
+        "no_def": 0
+      },
+      "refs": {
+        "gt": 1783,
+        "hit": 1351,
+        "dispatch": 0,
+        "wrong": 65,
+        "unresolved": 30,
+        "no_edge": 337,
+        "no_def": 0
+      },
+      "call_edges": {
+        "resolved": 2334,
+        "judged": 907,
+        "correct": 842,
+        "dispatch": 0,
+        "false_edges": 65
+      },
+      "all_edges": {
+        "resolved": 3866,
+        "judged": 1415,
+        "correct": 1345,
+        "dispatch": 0,
+        "false_edges": 70
+      },
+      "conf": {
+        "exact": {
+          "resolved": 1373,
+          "judged": 1373,
+          "correct": 1305,
+          "dispatch": 0,
+          "false_edges": 68
+        },
+        "likely": {
+          "resolved": 41,
+          "judged": 41,
+          "correct": 39,
+          "dispatch": 0,
+          "false_edges": 2
+        },
+        "name_only": {
+          "resolved": 1,
+          "judged": 1,
+          "correct": 1,
+          "dispatch": 0,
+          "false_edges": 0
+        }
+      },
+      "impl_gt": 5,
+      "impl_hit": 5,
+      "impl_edges": {
+        "resolved": 7,
+        "judged": 6,
+        "correct": 5,
+        "dispatch": 0,
+        "false_edges": 1
+      },
+      "index_ms": 308
+    }
+  }
+}

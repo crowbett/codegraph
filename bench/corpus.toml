@@ -1,0 +1,65 @@
+# Accuracy benchmark corpus. Every repo is pinned to a commit and cloned into
+# bench/.cache/corpus/<name> (gitignored); local repos are cloned from their working
+# copy, so the benchmark never writes into them. `lang` picks the SCIP indexer.
+
+[tools]
+scip-go = "v0.2.7"            # go install github.com/scip-code/scip-go/cmd/scip-go
+scip-typescript = "0.4.0"     # npm @sourcegraph/scip-typescript
+scip-python = "0.6.6"         # npm @sourcegraph/scip-python (Windows path.sep bug patched locally)
+# rust-analyzer comes from the active rustup toolchain (`rust-analyzer scip`).
+
+[[repo]]
+name = "chi"
+lang = "go"
+url = "https://github.com/go-chi/chi"
+rev = "3d1777a1ef8881f7d1da0b02c76ca8f0a29cd2bc"
+
+[[repo]]
+name = "pulse"
+lang = "go"
+local = "~/dev/go/pulse"
+rev = "2398e3b9bb419d84e659722dcbfd3c4e8fdee92c"
+
+[[repo]]
+name = "keep"
+lang = "go"
+local = "~/dev/go/keep"
+rev = "0d743de1dc96ed4f3583cae3944fc1d94cd8ab8d"
+
+[[repo]]
+name = "fd"
+lang = "rust"
+url = "https://github.com/sharkdp/fd"
+rev = "ce97e473ebaec49697c07daa50a7bc2b32f713d2"
+
+[[repo]]
+name = "stash"
+lang = "rust"
+local = "~/dev/rust/stash"
+rev = "1e48d51f0f2bc263887183149cabcb8f83465bdb"
+
+[[repo]]
+name = "recall"
+lang = "rust"
+local = "~/dev/rust/recall"
+rev = "7f913bdda58e2a3079ff78a25b3f33b4d1530971"
+
+[[repo]]
+name = "ky"
+lang = "typescript"
+url = "https://github.com/sindresorhus/ky"
+rev = "0d59458a0a58e1c3d7c6db0ab17ed5c7cd671e47"
+
+[[repo]]
+name = "devkit"
+lang = "typescript"
+local = "~/dev/web/devkit"
+rev = "0995e63fe8197a0dce11d4fd17c214560bc71b30"
+ts_projects = ["packages/core", "packages/cli", "apps/web"]
+
+[[repo]]
+name = "ledger"
+lang = "python"
+local = "~/dev/py/ledger"
+rev = "a90d437d57ef21eaad5ab4ae2b88d61198fe5cd2"
+py_extra_paths = ["src"]   # src layout: without it tests' imports resolve as locals
