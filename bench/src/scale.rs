@@ -123,7 +123,8 @@ pub struct RunResult {
     pub iterations: Vec<Iteration>,
     /// Medians over iterations.
     pub median: Iteration,
-    /// Peak working set of the bench process after this run (bytes; Windows only).
+    /// Peak working set of the bench process after this run (bytes; Windows only). It is a
+    /// process-lifetime peak: run one `--run` per invocation for per-run numbers.
     pub peak_working_set: Option<u64>,
 }
 
@@ -390,7 +391,25 @@ pub fn run(dirs: &Dirs, opts: &Opts) -> Result<()> {
         return Ok(());
     }
 
-    let mut results = Vec::new();
+    let out = opts
+        .out
+        .clone()
+        .unwrap_or_else(|| dirs.cache.join("scale.json"));
+    if let Some(p) = out.parent() {
+        std::fs::create_dir_all(p)?;
+    }
+    // Runs are merged into an existing results file by name, and written after each run,
+    // so `--run x` updates one row and an interrupted session keeps what it finished.
+    let mut report = std::fs::read_to_string(&out)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Report>(&t).ok())
+        .unwrap_or(Report {
+            codegraph: String::new(),
+            threads: 0,
+            runs: Vec::new(),
+        });
+    report.codegraph = codegraph::VERSION.to_string();
+    report.threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     for run in runs {
         let repos: Vec<&Repo> = run
             .repos
@@ -433,29 +452,27 @@ pub fn run(dirs: &Dirs, opts: &Opts) -> Result<()> {
                 .collect();
             its.push(it);
         }
-        results.push(RunResult {
+        let result = RunResult {
             name: run.name.clone(),
             repos: per_repo_files,
             median: median(&its),
             iterations: its,
             peak_working_set: peak_working_set(),
+        };
+        match report.runs.iter_mut().find(|r| r.name == result.name) {
+            Some(slot) => *slot = result,
+            None => report.runs.push(result),
+        }
+        let order: Vec<&str> = m.runs.iter().map(|r| r.name.as_str()).collect();
+        report.runs.sort_by_key(|r| {
+            order
+                .iter()
+                .position(|n| *n == r.name)
+                .unwrap_or(usize::MAX)
         });
+        std::fs::write(&out, serde_json::to_string_pretty(&report)?)?;
+        eprintln!("wrote {}", out.display());
     }
-
-    let report = Report {
-        codegraph: codegraph::VERSION.to_string(),
-        threads: std::thread::available_parallelism().map_or(1, std::num::NonZero::get),
-        runs: results,
-    };
-    let out = opts
-        .out
-        .clone()
-        .unwrap_or_else(|| dirs.cache.join("scale.json"));
-    if let Some(p) = out.parent() {
-        std::fs::create_dir_all(p)?;
-    }
-    std::fs::write(&out, serde_json::to_string_pretty(&report)?)?;
-    eprintln!("wrote {}", out.display());
     print!("{}", table(&report));
     Ok(())
 }
