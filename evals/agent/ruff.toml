@@ -1,0 +1,7 @@
+# Lint config for the agent-eval scripts (stdlib-only Python, not a package).
+#   uvx ruff check evals/agent
+line-length = 120
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "W", "B", "SIM", "UP", "I"]

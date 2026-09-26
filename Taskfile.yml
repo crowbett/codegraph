@@ -77,3 +77,14 @@ tasks:
     cmds:
       - task: bench:prepare
       - cargo run --release -q -- accuracy --baseline baseline/accuracy.json --out results/accuracy.json --write-docs
+
+  eval:agent:
+    desc: Agent eval (grep-only vs codegraph tools) via evalrig + its fake LLM; no API key, no spend; rewrites docs/AGENT-EVAL.md results
+    cmds:
+      - python evals/agent/run.py {{.CLI_ARGS}}
+
+  eval:agent:real:
+    desc: Agent eval against claude-haiku-4-5-20251001 (needs ANTHROPIC_API_KEY); prints a cost projection, then runs under a hard $5 proxy budget
+    cmds:
+      - python evals/agent/run.py --estimate
+      - python evals/agent/run.py --real --budget-usd 5 {{.CLI_ARGS}}
