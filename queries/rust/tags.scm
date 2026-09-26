@@ -116,6 +116,38 @@
   .
   (token_tree . "(")) @reference.call
 
+; turbofish calls in macro arguments with a one-token type: `from_str::<Value>(..)`,
+; `x.into_float::<f64>()` (longer generic arguments are not matched).
+(token_tree
+  (identifier) @name
+  .
+  "::"
+  .
+  "<"
+  .
+  (_)
+  .
+  ">"
+  .
+  (token_tree . "(")) @reference.call
+
+(token_tree
+  [(identifier) (self) (token_tree)] @qualifier
+  .
+  "."
+  .
+  (identifier) @name
+  .
+  "::"
+  .
+  "<"
+  .
+  (_)
+  .
+  ">"
+  .
+  (token_tree . "(")) @reference.call
+
 ; functions passed as values (`.map(Self::parse)`, `spawn(worker)`)
 (arguments
   (scoped_identifier
