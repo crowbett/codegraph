@@ -146,6 +146,8 @@ struct Ctx {
     files: Vec<F>,
     syms: Vec<S>,
     by_name: HashMap<String, Vec<usize>>,
+    /// (container, method name) -> methods, for typed receiver lookups.
+    by_member: HashMap<(String, String), Vec<usize>>,
     by_id: HashMap<i64, usize>,
     by_file: Vec<Vec<usize>>,
     go_pkgs: HashMap<String, Vec<usize>>,
@@ -1049,6 +1051,7 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
         files,
         syms,
         by_name: HashMap::new(),
+        by_member: HashMap::new(),
         by_id: HashMap::new(),
         go_pkgs: HashMap::new(),
         rust_mods: HashMap::new(),
@@ -1067,6 +1070,12 @@ fn load(store: &Store, repo_id: i64, root: &Path) -> Result<(Ctx, Vec<E>)> {
     };
     for (i, s) in ctx.syms.iter().enumerate() {
         ctx.by_name.entry(s.name.clone()).or_default().push(i);
+        if let (SymKind::Method, Some(c)) = (s.kind, &s.container) {
+            ctx.by_member
+                .entry((c.clone(), s.name.clone()))
+                .or_default()
+                .push(i);
+        }
         ctx.by_id.insert(s.id, i);
         ctx.by_file[s.file].push(i);
     }

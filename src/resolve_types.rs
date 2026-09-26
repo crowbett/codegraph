@@ -1081,17 +1081,15 @@ impl Ctx {
         let tf = &self.files[ts.file];
         let fam = |o: Lang| o == tf.lang || (tf.lang.is_js_family() && o.is_js_family());
         let own: Vec<usize> = self
-            .by_name
-            .get(name)
+            .by_member
+            .get(&(ts.name.clone(), name.to_string()))
             .into_iter()
             .flatten()
             .copied()
             .filter(|&s| {
                 let m = &self.syms[s];
                 let mf = &self.files[m.file];
-                m.kind == SymKind::Method
-                    && fam(mf.lang)
-                    && m.container.as_deref() == Some(ts.name.as_str())
+                fam(mf.lang)
                     && match tf.lang {
                         Lang::Go | Lang::Rust => mf.package == tf.package,
                         _ => m.parent == Some(ts.id),
