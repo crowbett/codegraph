@@ -7,6 +7,10 @@ last. Started 2026-09-25 ~21:45 local.
 
 - Decide public vs token-only installs: while the repo is private every install path needs
   auth (`GH_TOKEN` for the scripts, SSH for `cargo install --git`); scoop/winget/brew/curl 404.
+- Real agent-eval run (bar 2): needs `ANTHROPIC_API_KEY`; commands in docs/AGENT-EVAL.md.
+- Delete the stray evalrig worktree (see M4): `git -C ~/dev/py/evalrig worktree remove --force
+  .claude/worktrees/agent-abd2e738dc32c6eda` and `git -C ~/dev/py/evalrig branch -D
+  worktree-agent-abd2e738dc32c6eda`.
 - Cut the first multi-platform release (tag → draft release → publish), then fill the
   scoop/winget/brew hashes from its SHA256SUMS. npm publishing needs your npm login; brew needs
   a `homebrew-tap` repo.
@@ -105,6 +109,32 @@ Known remaining gaps: Rust refs recall 68% (type refs in qualifier position like
 `Error::Locked(..)` and `Type::f` paths are not edges); `#[cfg]` / build-tag twins (codegraph
 picks one variant, SCIP the host's); macro-generated items; the 2 "false" Go impl pairs are
 real cross-package implementations that scip-go does not record.
+
+## M4 — agent eval (done, fake provider only)
+
+Built by a worktree agent, re-run by me (identical numbers). `task eval:agent`: 31 questions
+(Go/Rust/TS/Python; callers, callees, impact, definitions, implementations, semantic), expected
+answers verified against SCIP (24) or source (7) — never from codegraph. evalrig is single-turn,
+so `evals/agent/proxy.py` is an OpenAI-compatible agent loop evalrig calls as provider
+`cgagent:grep` / `cgagent:codegraph`; tools execute for real over the pinned corpus (codegraph arm
+= real `codegraph mcp` + read_file/list_files, no grep).
+
+| arm | pass | tokens (messages) | median/question | tool calls/q | tokens incl. tool schemas (est.) |
+|---|---|---:|---:|---:|---:|
+| grep | 31/31 | 45,226 | 1,385 | 2.2 | 91,866 |
+| codegraph | 31/31 | 24,400 | 678 | 1.2 | 125,369 (was 165,167 before e4d18ce) |
+
+Honest reading: correctness is equal **by construction** (the fake answers correctly on both
+arms); the token column is real tool output along scripted paths. Content tokens favor codegraph
+0.54×, but its tool schemas are resent every turn, so raw totals are 1.36× grep (prompt caching
+would bill most of that at ~10%). The real-model run (correctness + real turn counts) is pending
+an API key: `python evals/agent/run.py --estimate`, then `--real --budget-usd 5` (proxy-enforced
+cap; estimate ≈ $0.41, ≤ $1.23 with a 3× margin).
+
+Side effect to clean up: the agent's worktree was created inside the evalrig repo
+(`~/dev/py/evalrig/.claude/worktrees/agent-abd2e738dc32c6eda`, branch
+`worktree-agent-abd2e738dc32c6eda`, containing an untracked `codegraph/` clone). No evalrig file
+was changed; I left it for you to delete rather than run destructive git in another repo.
 
 ## M5 — cross-platform (merged early, fee8a1e)
 
