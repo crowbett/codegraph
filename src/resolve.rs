@@ -1344,6 +1344,10 @@ impl Ctx {
                             .is_some_and(|&pi| self.syms[pi].kind == SymKind::Module)
                     })
                     && kind_ok(edge, self.syms[s].kind, self.files[self.syms[s].file].lang)
+                    // Go `pkg.F` never names a method.
+                    && (self.syms[s].kind != SymKind::Method
+                        || self.files[self.syms[s].file].lang != Lang::Go
+                        || !matches!(edge, EdgeKind::Call | EdgeKind::Value))
             })
             .collect();
         if !direct.is_empty() || depth == 0 {
@@ -1376,6 +1380,26 @@ impl Ctx {
             4
         };
         (tier, u32::MAX - self.syms[s].span, self.syms[s].id)
+    }
+
+    /// Same-file candidates ranked by lexical visibility from the symbol enclosing the
+    /// reference: defined in the innermost enclosing scope first, then outer scopes, then
+    /// top level; a definition nested in some other function is a last resort.
+    fn lexical_best(&self, from: Option<i64>, cands: &[usize]) -> Option<usize> {
+        let mut chain: Vec<i64> = Vec::new();
+        let mut cur = from;
+        while let Some(id) = cur {
+            chain.push(id);
+            cur = self.by_id.get(&id).and_then(|&i| self.syms[i].parent);
+        }
+        cands.iter().copied().min_by_key(|&s| {
+            let sym = &self.syms[s];
+            let rank = match sym.parent {
+                None => chain.len(),
+                Some(p) => chain.iter().position(|&c| c == p).unwrap_or(usize::MAX),
+            };
+            (rank, u32::MAX - sym.span, sym.id)
+        })
     }
 
     fn best(&self, fi: usize, cands: &[usize]) -> Option<usize> {
@@ -1721,14 +1745,16 @@ impl Ctx {
                 || (lang == Lang::Cpp && sym.container.is_some() && sym.container == self_ty)
                 || !matches!(e.kind, EdgeKind::Call | EdgeKind::Value)
         };
-        // 1. Same file.
+        // 1. Same file, innermost lexical scope first.
         let local: Vec<usize> = cands
             .iter()
             .copied()
             .filter(|&s| self.syms[s].file == fi && callable_bare(s))
             .collect();
         if !local.is_empty() {
-            return self.pick(fi, &local, Confidence::Exact, Confidence::Exact);
+            return self
+                .lexical_best(e.from_symbol, &local)
+                .map(|s| (s, Confidence::Exact));
         }
         // 2. Explicit import bindings.
         if let Some((orig, targets)) = scope.names.get(&e.name) {
