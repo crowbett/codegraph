@@ -2,38 +2,81 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'overnight/**']
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
-    runs-on: windows-latest
+  fmt:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+          components: rustfmt
       - name: fmt
         run: cargo fmt --all -- --check
+
+  check:
+    name: check (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            os: ubuntu-latest
+            exe: codegraph
+          - name: macos-arm64
+            os: macos-latest
+            exe: codegraph
+          - name: windows-amd64
+            os: windows-latest
+            exe: codegraph.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: test
         run: cargo test --all-targets
       - name: release build
         run: cargo build --release --locked
-      - name: package
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Compress-Archive -Force -Path target/release/codegraph.exe, README.md, LICENSE -DestinationPath dist/codegraph-0.1.1-windows-amd64.zip
+      - name: smoke
+        shell: bash
+        run: ./target/release/${{ matrix.exe }} version
       - uses: actions/upload-artifact@v4
         with:
-          name: codegraph-windows-amd64
-          path: dist/*.zip
+          name: codegraph-${{ matrix.name }}
+          path: |
+            target/release/${{ matrix.exe }}
+            README.md
+            LICENSE
+          if-no-files-found: error
+
+  bench:
+    name: bench crate builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            bench -> target
+      - name: build bench
+        run: cargo build --locked --manifest-path bench/Cargo.toml
