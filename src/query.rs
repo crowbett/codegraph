@@ -535,6 +535,10 @@ pub struct Def {
     /// Lines omitted at the end (0 = complete).
     #[serde(skip_serializing_if = "is_zero")]
     pub truncated_lines: u32,
+    /// Why `source` is empty: the file on disk is no longer the one that was indexed
+    /// ([`STALE_NOTE`]). Absent when the source was read normally.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -542,10 +546,52 @@ fn is_zero(n: &u32) -> bool {
     *n == 0
 }
 
-fn read_lines(path: &str) -> Option<Vec<String>> {
-    let bytes = std::fs::read(path).ok()?;
+/// Note attached to a `def`/`refs` answer whose file no longer matches the index.
+pub const STALE_NOTE: &str = "stale: file changed since indexing, re-index";
+
+/// Hard cap on a source file re-read for `def`/`refs` snippets.
+const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// What the index recorded about a file: repo root (as stored), repo-relative path,
+/// content hash and size.
+struct Indexed {
+    root: String,
+    rel: String,
+    hash: String,
+    size: i64,
+}
+
+/// Re-read an indexed file for snippets, but only if it is still the file that was
+/// indexed: a regular file (not a symlink) under the repo root, no larger than the
+/// indexed size, with the indexed content hash. Anything else (a file swapped for a
+/// symlink to a secret, a FIFO, an edit since indexing) yields `None`.
+fn read_lines(f: &Indexed) -> Option<Vec<String>> {
+    let root = Path::new(&f.root);
+    let max = u64::try_from(f.size).ok()?.min(MAX_SOURCE_BYTES);
+    let bytes = util::read_repo_bytes(root, &root.join(&f.rel), max)?;
+    if crate::index::content_hash(&bytes) != f.hash {
+        return None;
+    }
     let text = String::from_utf8_lossy(&bytes);
     Some(text.lines().map(str::to_string).collect())
+}
+
+fn indexed_file_of(conn: &Connection, sym_id: i64) -> Result<Option<Indexed>> {
+    Ok(conn
+        .prepare_cached(
+            "SELECT r.root, f.path, f.hash, f.size FROM symbols s
+             JOIN files f ON f.id = s.file_id JOIN repos r ON r.id = s.repo_id
+             WHERE s.id = ?1",
+        )?
+        .query_row([sym_id], |r| {
+            Ok(Indexed {
+                root: r.get(0)?,
+                rel: r.get(1)?,
+                hash: r.get(2)?,
+                size: r.get(3)?,
+            })
+        })
+        .optional()?)
 }
 
 fn is_doc_line(l: &str) -> bool {
@@ -569,7 +615,11 @@ pub fn def(
     let targets = resolve_target(store, spec, filter)?;
     let mut out = Vec::new();
     for sym in targets.into_iter().take(max_defs.max(1)) {
-        let lines = read_lines(&sym.file).unwrap_or_default();
+        let read = indexed_file_of(store.conn(), sym.id)?
+            .as_ref()
+            .and_then(read_lines);
+        let note = read.is_none().then(|| STALE_NOTE.to_string());
+        let lines = read.unwrap_or_default();
         let start0 = (sym.line as usize).saturating_sub(1);
         let mut first = start0;
         while first > 0
@@ -595,6 +645,7 @@ pub fn def(
             truncated_lines: end0.saturating_sub(shown_end) as u32,
             source,
             sym,
+            note,
         });
     }
     Ok(out)
@@ -620,6 +671,9 @@ pub struct RefSite {
     pub from: Option<String>,
     /// The source line, trimmed.
     pub text: String,
+    /// Why `text` is empty: the file no longer matches the index ([`STALE_NOTE`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     /// Repo-relative path (text rendering).
     #[serde(skip)]
     pub rel: String,
@@ -644,15 +698,15 @@ pub struct References {
 struct Lines(HashMap<String, Option<Vec<String>>>);
 
 impl Lines {
-    fn get(&mut self, file: &str, line: u32) -> String {
-        let v = self
-            .0
-            .entry(file.to_string())
-            .or_insert_with(|| read_lines(file));
-        v.as_ref()
-            .and_then(|l| l.get((line as usize).saturating_sub(1)))
-            .map(|s| extract::clip(s.trim(), 140))
-            .unwrap_or_default()
+    /// The trimmed line, or `None` when the file is stale (see [`read_lines`]).
+    fn get(&mut self, f: &Indexed, line: u32) -> Option<String> {
+        let key = format!("{}\0{}", f.root, f.rel);
+        let v = self.0.entry(key).or_insert_with(|| read_lines(f));
+        v.as_ref().map(|l| {
+            l.get((line as usize).saturating_sub(1))
+                .map(|s| extract::clip(s.trim(), 140))
+                .unwrap_or_default()
+        })
     }
 }
 
@@ -669,7 +723,7 @@ pub fn refs(
     let targets: Vec<Sym> = targets.into_iter().take(10).collect();
     let ids: Vec<String> = targets.iter().map(|t| t.id.to_string()).collect();
     let mut sql = format!(
-        "SELECT r.root, f.path, e.line, e.kind, e.confidence, e.from_symbol
+        "SELECT r.root, f.path, e.line, e.kind, e.confidence, e.from_symbol, f.hash, f.size
          FROM edges e JOIN files f ON f.id = e.file_id JOIN repos r ON r.id = e.repo_id
          WHERE e.to_symbol IN ({}) AND e.kind != 'import'",
         ids.join(",")
@@ -692,6 +746,8 @@ pub fn refs(
             r.get::<_, String>(3)?,
             r.get::<_, Option<String>>(4)?,
             r.get::<_, Option<i64>>(5)?,
+            r.get::<_, String>(6)?,
+            r.get::<_, i64>(7)?,
         ))
     })?;
     let all: Vec<_> = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -699,15 +755,25 @@ pub fn refs(
     let mut lines = Lines::default();
     let mut qn = conn.prepare_cached("SELECT qname FROM symbols WHERE id = ?1")?;
     let mut out = Vec::new();
-    for (root, path, line, kind, conf, from) in all.into_iter().take(limit.max(1)) {
-        let root = root.replace('\\', "/");
+    for (raw_root, path, line, kind, conf, from, hash, size) in all.into_iter().take(limit.max(1)) {
+        let text = lines.get(
+            &Indexed {
+                root: raw_root.clone(),
+                rel: path.clone(),
+                hash,
+                size,
+            },
+            line,
+        );
+        let root = raw_root.replace('\\', "/");
         let file = format!("{}/{}", root.trim_end_matches('/'), path);
         let from = match from {
             Some(id) => qn.query_row([id], |r| r.get::<_, String>(0)).optional()?,
             None => None,
         };
         out.push(RefSite {
-            text: lines.get(&file, line),
+            note: text.is_none().then(|| STALE_NOTE.to_string()),
+            text: text.unwrap_or_default(),
             file,
             line,
             kind,
