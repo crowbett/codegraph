@@ -84,18 +84,19 @@ CREATE TABLE IF NOT EXISTS edges(
     confidence TEXT,
     extra TEXT
 );
-CREATE INDEX IF NOT EXISTS edges_to ON edges(to_symbol);
-CREATE INDEX IF NOT EXISTS edges_from ON edges(from_symbol);
 CREATE INDEX IF NOT EXISTS edges_file ON edges(file_id);
-CREATE INDEX IF NOT EXISTS edges_to_file ON edges(to_file);
 CREATE INDEX IF NOT EXISTS edges_repo ON edges(repo_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     name, qname, doc, content='symbols', content_rowid='id', tokenize='trigram'
 );
 ";
 
-/// Triggers keeping `symbols_fts` in sync row by row (suspended during bulk loads).
+/// Query-side edge indexes and the triggers keeping `symbols_fts` in sync row by row;
+/// both are dropped during bulk loads and rebuilt once at the end.
 const FTS_TRIGGERS: &str = r"
+CREATE INDEX IF NOT EXISTS edges_to ON edges(to_symbol);
+CREATE INDEX IF NOT EXISTS edges_from ON edges(from_symbol);
+CREATE INDEX IF NOT EXISTS edges_to_file ON edges(to_file);
 CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
     INSERT INTO symbols_fts(rowid, name, qname, doc) VALUES (new.id, new.name, new.qname, new.doc);
 END;
@@ -238,6 +239,8 @@ impl Store {
         self.conn.execute_batch(
             "BEGIN;
              DROP TRIGGER IF EXISTS symbols_ai; DROP TRIGGER IF EXISTS symbols_ad;
+             DROP INDEX IF EXISTS edges_to; DROP INDEX IF EXISTS edges_from;
+             DROP INDEX IF EXISTS edges_to_file;
              INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_dirty', '1');
              COMMIT;",
         )?;
