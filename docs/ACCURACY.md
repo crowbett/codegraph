@@ -72,15 +72,15 @@ the v0.1.1 baseline was re-scored with the fixed harness so deltas stay comparab
 harness on the current corpus; `bench/results/accuracy.json` is the latest recorded run.
 
 <!-- results:start -->
-codegraph `c01b911`
+codegraph `9f5bf03`
 
 | language | files | defs found | callers recall | callers precision | false call edges | refs recall | refs precision | impl recall | impl precision |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | Go | 364 | 100.0% | 98.9% | 98.9% | 1.1% | 98.6% | 99.4% | 87.5% | 79.5% |
 | Python | 124 | 100.0% | 96.0% | 98.1% | 1.9% | 76.4% | 98.3% | 100.0% | 91.4% |
-| Rust | 195 | 94.7% | 85.1% | 97.3% | 2.7% | 64.6% | 92.7% | – | – |
+| Rust | 195 | 94.7% | 88.3% | 97.4% | 2.6% | 66.9% | 92.9% | – | – |
 | TypeScript/JS | 396 | 99.9% | 94.3% | 98.4% | 1.6% | 72.9% | 98.2% | 50.0% | 28.6% |
-| **all** | 1079 | 98.4% | 94.2% | 98.3% | 1.7% | 81.9% | 97.5% | 87.5% | 74.8% |
+| **all** | 1079 | 98.4% | 95.0% | 98.3% | 1.7% | 82.6% | 97.5% | 87.5% | 74.8% |
 
 Confidence calibration (share of judged edges that are correct):
 
@@ -88,9 +88,9 @@ Confidence calibration (share of judged edges that are correct):
 |---|---:|---:|---:|
 | Go | 100.0% (18673/18673) | 67.7% (65/96) | 49.1% (82/167) |
 | Python | 99.7% (4222/4236) | 97.9% (508/519) | 69.8% (132/189) |
-| Rust | 94.9% (7726/8143) | 89.4% (897/1003) | 7.7% (13/168) |
+| Rust | 95.0% (7902/8319) | 90.1% (1014/1126) | 7.7% (13/168) |
 | TypeScript/JS | 98.9% (4894/4946) | 96.1% (199/207) | 87.6% (276/315) |
-| all | 98.7% (35515/35998) | 91.5% (1669/1825) | 60.0% (503/839) |
+| all | 98.7% (35691/36174) | 91.7% (1786/1948) | 60.0% (503/839) |
 
 Per repo:
 
@@ -108,7 +108,7 @@ Per repo:
 | mobx | typescript | 91.7% | 98.5% | 2285 | 7820 | 67.5% |
 | pulse | go | 99.6% | 99.5% | 1131 | 1151 | 99.3% |
 | recall | rust | 93.6% | 99.3% | 715 | 693 | 71.9% |
-| serde-json | rust | 73.4% | 96.7% | 1892 | 2241 | 58.8% |
+| serde-json | rust | 83.5% | 97.0% | 1892 | 2435 | 65.1% |
 | stash | rust | 95.7% | 99.2% | 1326 | 1301 | 67.8% |
 | urfave-cli | go | 97.5% | 98.3% | 2515 | 2509 | 98.0% |
 | zustand | typescript | 99.3% | 94.2% | 276 | 385 | 83.9% |
