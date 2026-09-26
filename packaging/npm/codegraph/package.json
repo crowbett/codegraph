@@ -1,0 +1,30 @@
+{
+  "name": "@crowbett/codegraph",
+  "version": "0.1.1",
+  "description": "A tree-sitter symbol + call graph of every repo you own, served to AI agents over MCP.",
+  "license": "MIT",
+  "author": "crowbett",
+  "homepage": "https://github.com/crowbett/codegraph",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/crowbett/codegraph.git"
+  },
+  "keywords": ["tree-sitter", "call-graph", "mcp", "code-navigation", "cli"],
+  "bin": {
+    "codegraph": "bin/codegraph.js"
+  },
+  "files": ["bin/codegraph.js", "README.md", "LICENSE"],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "@crowbett/codegraph-win32-x64": "0.1.1",
+    "@crowbett/codegraph-linux-x64": "0.1.1",
+    "@crowbett/codegraph-linux-arm64": "0.1.1",
+    "@crowbett/codegraph-darwin-x64": "0.1.1",
+    "@crowbett/codegraph-darwin-arm64": "0.1.1"
+  },
+  "publishConfig": {
+    "access": "restricted"
+  }
+}

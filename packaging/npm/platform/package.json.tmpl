@@ -1,0 +1,19 @@
+{
+  "name": "@crowbett/codegraph-{{platform}}-{{arch}}",
+  "version": "{{version}}",
+  "description": "codegraph native binary for {{platform}}-{{arch}}. Install @crowbett/codegraph instead.",
+  "license": "MIT",
+  "author": "crowbett",
+  "homepage": "https://github.com/crowbett/codegraph",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/crowbett/codegraph.git"
+  },
+  "os": ["{{platform}}"],
+  "cpu": ["{{arch}}"],
+  "files": ["bin/{{exe}}", "README.md", "LICENSE"],
+  "preferUnplugged": true,
+  "publishConfig": {
+    "access": "restricted"
+  }
+}

@@ -9,3 +9,6 @@
 .idea/
 /.cache/
 /bench/target/
+
+# The global gitignore excludes bin/ and dist/; the npm shim lives in a bin/ dir.
+!packaging/npm/codegraph/bin/
