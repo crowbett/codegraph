@@ -13,12 +13,16 @@ use crate::query::{
     References, Status, Sym,
 };
 
-/// Replace C0/C1 control characters (ESC, CR, BEL, U+0080..U+009F, ...) from
-/// source text with U+FFFD so snippets cannot drive a terminal. Tabs are kept.
+/// Replace C0/C1 control characters (ESC, CR, BEL, U+0080..U+009F, ...) and bidi
+/// embedding/override/isolate controls (U+202A..U+202E, U+2066..U+2069, "Trojan
+/// Source") with U+FFFD so repo-controlled text (source snippets, file and repo
+/// names, paths) cannot drive a terminal or visually reorder output. Tabs are kept.
 pub fn clean(s: &str) -> String {
     s.chars()
         .map(|c| {
-            if c.is_control() && c != '\t' {
+            if (c.is_control() && c != '\t')
+                || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+            {
                 '\u{FFFD}'
             } else {
                 c
@@ -54,16 +58,21 @@ fn conf_mark(c: Option<&str>) -> &'static str {
 }
 
 /// Strip `root/` from an absolute `root/path:line` string.
+/// Strip `root/` from an absolute `root/path:line` string (sanitized for display).
 fn rel_to(root: &str, abs: &str) -> String {
     let r = root.trim_end_matches('/');
-    match abs.strip_prefix(r) {
-        Some(rest) if rest.starts_with('/') => rest[1..].to_string(),
-        _ => abs.to_string(),
-    }
+    clean(match abs.strip_prefix(r) {
+        Some(rest) if rest.starts_with('/') => &rest[1..],
+        _ => abs,
+    })
 }
 
 fn repo_header(s: Style, repo: &str, root: &str) -> String {
-    format!("{} {}\n", s.bold(&format!("# {repo}")), s.dim(root))
+    format!(
+        "{} {}\n",
+        s.bold(&format!("# {}", clean(repo))),
+        s.dim(&clean(root))
+    )
 }
 
 /// `find` results.
@@ -82,13 +91,13 @@ pub fn find(hits: &[Hit], s: Style) -> String {
             Cell::styled(short_kind(&h.sym.kind), kind_color(&h.sym.kind)),
             Cell::styled(
                 if matches!(h.how, "exact" | "qualified" | "prefix") {
-                    h.sym.qname.clone()
+                    clean(&h.sym.qname)
                 } else {
-                    format!("{} ({})", h.sym.qname, h.how)
+                    format!("{} ({})", clean(&h.sym.qname), h.how)
                 },
                 code::BOLD,
             ),
-            Cell::plain(h.sym.rel_loc()),
+            Cell::plain(clean(&h.sym.rel_loc())),
             Cell::styled(clean(&clip(&h.sym.signature, 90)), code::DIM),
         ]);
     }
@@ -106,10 +115,18 @@ pub fn defs(defs: &[Def], s: Style) -> String {
         let _ = writeln!(
             out,
             "{} {} {}",
-            s.bold(&d.sym.qname),
+            s.bold(&clean(&d.sym.qname)),
             s.paint(kind_color(&d.sym.kind), &d.sym.kind),
-            s.dim(&format!("{}:{}-{}", d.sym.file, d.sym.line, d.sym.end_line))
+            s.dim(&format!(
+                "{}:{}-{}",
+                clean(&d.sym.file),
+                d.sym.line,
+                d.sym.end_line
+            ))
         );
+        if let Some(note) = &d.note {
+            let _ = writeln!(out, "{}", s.yellow(&format!("  ({note})")));
+        }
         let width = (d.source_line as usize + d.source.lines().count())
             .to_string()
             .len();
@@ -137,7 +154,7 @@ pub fn refs(r: &References, s: Style) -> String {
     let names: Vec<String> = r
         .targets
         .iter()
-        .map(|t| format!("{} ({})", t.qname, t.rel_loc()))
+        .map(|t| format!("{} ({})", clean(&t.qname), clean(&t.rel_loc())))
         .collect();
     let _ = writeln!(
         out,
@@ -164,12 +181,16 @@ pub fn refs(r: &References, s: Style) -> String {
         }
         if x.rel != cur_file {
             cur_file.clone_from(&x.rel);
-            let _ = writeln!(out, "  {}", s.cyan(&x.rel));
+            let _ = writeln!(out, "  {}", s.cyan(&clean(&x.rel)));
         }
         let from = x
             .from
             .as_deref()
-            .map_or(String::new(), |f| format!(" in {f}"));
+            .map_or(String::new(), |f| format!(" in {}", clean(f)));
+        let text = match &x.note {
+            Some(n) => s.yellow(&format!("({n})")),
+            None => clean(&x.text),
+        };
         let _ = writeln!(
             out,
             "    {:>5} {}{}{}  {}",
@@ -177,7 +198,7 @@ pub fn refs(r: &References, s: Style) -> String {
             x.kind,
             conf_mark(Some(&x.confidence)),
             s.dim(&from),
-            clean(&x.text)
+            text
         );
     }
     out
@@ -193,14 +214,14 @@ fn node_label(n: &CallNode, callers: bool, root: &str, s: Style) -> String {
             } else {
                 rel_to(root, &sym.loc())
             };
-            format!("{}  {}", s.bold(&sym.qname), s.dim(&loc))
+            format!("{}  {}", s.bold(&clean(&sym.qname)), s.dim(&clean(&loc)))
         }
         (None, Some(x)) => {
             let at = n
                 .site
                 .as_deref()
                 .map_or(String::new(), |x| format!("  {}", rel_to(root, x)));
-            format!("{}{}", s.yellow(x), s.dim(&at))
+            format!("{}{}", s.yellow(&clean(x)), s.dim(&at))
         }
         (None, None) => "?".into(),
     };
@@ -209,7 +230,7 @@ fn node_label(n: &CallNode, callers: bool, root: &str, s: Style) -> String {
         let _ = write!(line, " {}", s.dim(&format!("×{}", n.sites)));
     }
     if let Some(v) = &n.via {
-        line.push_str(&format!(" {}", s.dim(&format!("[via {v}]"))));
+        line.push_str(&format!(" {}", s.dim(&format!("[via {}]", clean(v)))));
     }
     if n.as_value {
         line.push_str(&format!(" {}", s.dim("[as value]")));
@@ -250,9 +271,9 @@ pub fn tree(t: &CallTree, s: Style) -> String {
         let _ = writeln!(
             out,
             "{} {}  {}",
-            s.bold(&sym.qname),
+            s.bold(&clean(&sym.qname)),
             s.dim(&format!("({})", sym.kind)),
-            s.dim(&sym.loc())
+            s.dim(&clean(&sym.loc()))
         );
         if r.children.is_empty() && r.more == 0 {
             let _ = writeln!(out, "   {}", s.dim(&format!("(no {} found)", t.direction)));
@@ -284,7 +305,7 @@ fn outline_rec(nodes: &[OutlineNode], depth: usize, sigs: bool, s: Style, out: &
             "{:>9}  {indent}{} {}{sig}",
             lines,
             s.paint(kind_color(&n.kind), short_kind(&n.kind)),
-            s.bold(&n.name)
+            s.bold(&clean(&n.name))
         );
         outline_rec(&n.children, depth + 1, sigs, s, out);
     }
@@ -294,7 +315,7 @@ fn outline_rec(nodes: &[OutlineNode], depth: usize, sigs: bool, s: Style, out: &
 pub fn outline(o: &Outline, sigs: bool, s: Style) -> String {
     let mut out = format!(
         "{} {}\n",
-        s.bold(&o.file),
+        s.bold(&clean(&o.file)),
         s.dim(&format!(
             "({}, {} lines{})",
             o.lang,
@@ -320,8 +341,8 @@ pub fn path(p: &CallPath, s: Style) -> String {
             out,
             "{:>3}. {}  {}{}",
             i + 1,
-            s.bold(&h.sym.qname),
-            s.dim(&h.sym.rel_loc()),
+            s.bold(&clean(&h.sym.qname)),
+            s.dim(&clean(&h.sym.rel_loc())),
             s.dim(&at)
         );
     }
@@ -332,7 +353,7 @@ pub fn path(p: &CallPath, s: Style) -> String {
 pub fn impact(i: &Impact, s: Style) -> String {
     let mut out = format!(
         "impact of {}: {} dependent symbol(s) in {} file(s) within depth {} ({} seed symbol(s)){}\n",
-        s.bold(&i.target),
+        s.bold(&clean(&i.target)),
         i.total,
         i.files.len(),
         i.depth,
@@ -342,7 +363,7 @@ pub fn impact(i: &Impact, s: Style) -> String {
     if !i.importers.is_empty() {
         let _ = writeln!(out, "imported by {} file(s):", i.importers.len());
         for f in i.importers.iter().take(50) {
-            let _ = writeln!(out, "  {f}");
+            let _ = writeln!(out, "  {}", clean(f));
         }
     }
     let mut cur = 0;
@@ -362,15 +383,21 @@ pub fn impact(i: &Impact, s: Style) -> String {
             out,
             "  {} {}  {}  {}",
             s.paint(kind_color(&d.sym.kind), short_kind(&d.sym.kind)),
-            s.bold(&d.sym.qname),
+            s.bold(&clean(&d.sym.qname)),
             s.dim(&rel_to(&d.sym.root, &d.site)),
-            s.dim(&format!("via {}", d.via))
+            s.dim(&format!("via {}", clean(&d.via)))
         );
     }
     if !i.files.is_empty() {
         let _ = writeln!(out, "{}", s.bold("files"));
         for f in i.files.iter().take(40) {
-            let _ = writeln!(out, "  {:>4}  d{}  {}", f.count, f.min_depth, f.file);
+            let _ = writeln!(
+                out,
+                "  {:>4}  d{}  {}",
+                f.count,
+                f.min_depth,
+                clean(&f.file)
+            );
         }
     }
     out
@@ -388,8 +415,11 @@ fn ranked_table(title: &str, rows: &[Ranked], metric: &str, s: Style) -> String 
         t.row(vec![
             Cell::plain(format!("{} {metric}{extra}", r.count)),
             Cell::styled(short_kind(&r.sym.kind), kind_color(&r.sym.kind)),
-            Cell::styled(r.sym.qname.clone(), code::BOLD),
-            Cell::styled(format!("{}  {}", r.sym.repo, r.sym.rel_loc()), code::DIM),
+            Cell::styled(clean(&r.sym.qname), code::BOLD),
+            Cell::styled(
+                format!("{}  {}", clean(&r.sym.repo), clean(&r.sym.rel_loc())),
+                code::DIM,
+            ),
         ]);
     }
     out.push_str(&t.render(s, 2));
@@ -457,14 +487,14 @@ pub fn status(st: &Status, s: Style) -> String {
     let _ = writeln!(
         out,
         "db: {} ({:.1} MB)",
-        st.db,
+        clean(&st.db),
         st.db_bytes as f64 / 1_048_576.0
     );
     if !st.repo_list.is_empty() {
         let mut t = Table::new(&["REPO", "FILES", "SYMBOLS", "EDGES", "RESOLVED", "INDEXED"]);
         for r in &st.repo_list {
             t.row(vec![
-                Cell::styled(r.name.clone(), code::BOLD),
+                Cell::styled(clean(&r.name), code::BOLD),
                 Cell::plain(human_count(r.files)),
                 Cell::plain(human_count(r.symbols)),
                 Cell::plain(human_count(r.edges)),
@@ -531,7 +561,7 @@ pub fn index(st: &IndexStats, verbose: bool, s: Style) -> String {
             let _ = writeln!(
                 out,
                 "  {}  {} files, {} parsed, {} removed{}",
-                s.bold(&r.name),
+                s.bold(&clean(&r.name)),
                 r.files,
                 r.parsed,
                 r.removed,
@@ -548,16 +578,16 @@ pub fn config(v: &ConfigView) -> String {
     let _ = writeln!(
         out,
         "path              {}{}",
-        v.path,
+        clean(&v.path),
         if v.exists {
             ""
         } else {
             " (not found; defaults)"
         }
     );
-    let _ = writeln!(out, "db                {}", v.db);
-    let _ = writeln!(out, "roots             {}", v.roots.join(", "));
-    let _ = writeln!(out, "skip_dirs         {}", v.skip_dirs.join(", "));
+    let _ = writeln!(out, "db                {}", clean(&v.db));
+    let _ = writeln!(out, "roots             {}", clean(&v.roots.join(", ")));
+    let _ = writeln!(out, "skip_dirs         {}", clean(&v.skip_dirs.join(", ")));
     let _ = writeln!(out, "max_file_kb       {}", v.max_file_kb);
     let langs: Vec<&str> = v.languages.iter().map(|l| l.as_str()).collect();
     let _ = writeln!(out, "languages         {}", langs.join(", "));
@@ -569,7 +599,7 @@ pub fn config(v: &ConfigView) -> String {
 
 /// One-line symbol label (`qname  file:line`).
 pub fn sym_line(sym: &Sym) -> String {
-    format!("{}  {}", sym.qname, sym.loc())
+    format!("{}  {}", clean(&sym.qname), clean(&sym.loc()))
 }
 
 #[cfg(test)]
@@ -587,9 +617,81 @@ mod tests {
             source_line: 1,
             source: evil.to_string(),
             truncated_lines: 0,
+            note: None,
         };
         let out = defs(&[d], Style::plain());
         assert!(!out.contains('\u{1b}') && !out.contains('\u{9b}') && !out.contains('\r'));
+    }
+
+    #[test]
+    fn bidi_controls_are_neutralized() {
+        for ch in [
+            '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}',
+            '\u{2068}', '\u{2069}',
+        ] {
+            let c = clean(&format!("a{ch}b"));
+            assert_eq!(c, "a\u{FFFD}b", "{ch:?}");
+        }
+        // Neighbours of the ranges and ordinary non-ASCII text are untouched.
+        assert_eq!(
+            clean("\u{2029}\u{202F}\u{2065}\u{206A}é名"),
+            "\u{2029}\u{202F}\u{2065}\u{206A}é名"
+        );
+    }
+
+    fn assert_clean(out: &str) {
+        for bad in ['\u{1b}', '\u{9b}', '\u{7}', '\r', '\u{202E}', '\u{2066}'] {
+            assert!(!out.contains(bad), "{bad:?} leaked into {out:?}");
+        }
+    }
+
+    #[test]
+    fn paths_and_names_are_sanitized() {
+        let evil = "a\u{1b}]0;pwned\u{7}\u{202E}b\r\u{9b}2J\u{2066}";
+        let mut sym = crate::query::test_sym();
+        sym.qname = format!("m.{evil}");
+        sym.repo = format!("repo{evil}");
+        sym.root = format!("C:/{evil}");
+        sym.rel = format!("{evil}.go");
+        sym.file = format!("{}/{}", sym.root, sym.rel);
+        let s = Style::plain();
+
+        let hit = Hit {
+            sym: sym.clone(),
+            how: "exact",
+        };
+        assert_clean(&find(&[hit], s));
+        let d = Def {
+            sym: sym.clone(),
+            source_line: 1,
+            source: String::new(),
+            truncated_lines: 0,
+            note: Some(crate::query::STALE_NOTE.into()),
+        };
+        let out = defs(&[d], s);
+        assert_clean(&out);
+        assert!(out.contains("re-index"), "{out}");
+        let r = References {
+            targets: vec![sym.clone()],
+            refs: vec![crate::query::RefSite {
+                file: sym.file.clone(),
+                line: 1,
+                kind: "call".into(),
+                confidence: "exact".into(),
+                from: Some(evil.into()),
+                text: String::new(),
+                note: Some(crate::query::STALE_NOTE.into()),
+                rel: sym.rel.clone(),
+                root: sym.root.clone(),
+            }],
+            total: 1,
+        };
+        let out = refs(&r, s);
+        assert_clean(&out);
+        assert!(out.contains("re-index"), "{out}");
+        assert_clean(&sym_line(&sym));
+        assert_clean(&rel_to("C:/x", &format!("C:/x/{evil}")));
+        assert_clean(&repo_header(s, evil, evil));
     }
 
     #[test]

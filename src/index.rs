@@ -285,6 +285,12 @@ fn hash_hex(bytes: &[u8]) -> String {
     format!("{:016x}", xxhash_rust::xxh3::xxh3_64(bytes))
 }
 
+/// The content hash stored in `files.hash` (xxh3-64, hex), for callers that need to
+/// check a file on disk is still the one that was indexed.
+pub(crate) fn content_hash(bytes: &[u8]) -> String {
+    hash_hex(bytes)
+}
+
 /// Index every configured root.
 pub fn index_all(store: &mut Store, cfg: &Config, opts: &IndexOptions) -> Result<IndexStats> {
     let roots: Vec<PathBuf> = cfg.roots.clone();

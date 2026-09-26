@@ -33,6 +33,64 @@ const INVALID_PARAMS: i64 = -32602;
 /// Minimum gap between two refreshes of the same repo.
 const REFRESH_EVERY: Duration = Duration::from_secs(3);
 
+/// Longest accepted JSON-RPC request line (bytes, excluding the newline). Longer
+/// lines get a parse error and are skipped without being buffered.
+pub const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
+
+/// One line read by [`read_line_bounded`].
+#[derive(Debug, PartialEq, Eq)]
+enum Line {
+    /// A complete line (newline stripped) is in the buffer.
+    Ok,
+    /// The line exceeded the cap; it was consumed through its newline (or EOF).
+    TooLong,
+    /// End of input with nothing read.
+    Eof,
+}
+
+/// Read one `\n`-terminated line into `buf` (cleared first), holding at most `max`
+/// bytes: an overlong line is drained to its newline without buffering it.
+fn read_line_bounded(r: &mut impl BufRead, buf: &mut Vec<u8>, max: usize) -> io::Result<Line> {
+    buf.clear();
+    let mut too_long = false;
+    let mut any = false;
+    loop {
+        let chunk = match r.fill_buf() {
+            Ok(c) => c,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if chunk.is_empty() {
+            return Ok(match (any, too_long) {
+                (false, _) => Line::Eof,
+                (true, true) => Line::TooLong,
+                (true, false) => Line::Ok,
+            });
+        }
+        any = true;
+        let (part, done) = match chunk.iter().position(|&b| b == b'\n') {
+            Some(i) => (&chunk[..i], Some(i + 1)),
+            None => (chunk, None),
+        };
+        if !too_long {
+            if buf.len() + part.len() > max {
+                too_long = true;
+                buf.clear();
+            } else {
+                buf.extend_from_slice(part);
+            }
+        }
+        let used = done.unwrap_or(chunk.len());
+        r.consume(used);
+        if done.is_some() {
+            if buf.last() == Some(&b'\r') {
+                buf.pop();
+            }
+            return Ok(if too_long { Line::TooLong } else { Line::Ok });
+        }
+    }
+}
+
 const INSTRUCTIONS: &str = "codegraph is a precomputed symbol + call graph (tree-sitter, heuristic resolution) of the user's repos. \
 Prefer it over grep for structural questions: where is X defined (codegraph_def), who calls X (codegraph_callers), \
 what does X call (codegraph_callees), what breaks if I change this file/function (codegraph_impact), \
@@ -329,7 +387,9 @@ impl Server {
         if self.cfg.refresh_budget_ms == 0 {
             return;
         }
-        let budget = Duration::from_millis(self.cfg.refresh_budget_ms);
+        // One budget for the whole call, shared by every matched repo (a `repo`
+        // filter can match many), not a fresh budget per repo.
+        let deadline = Instant::now() + Duration::from_millis(self.cfg.refresh_budget_ms);
         for (root, name) in self.refresh_targets(args) {
             if self
                 .last_refresh
@@ -338,9 +398,14 @@ impl Server {
             {
                 continue;
             }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                eprintln!("codegraph mcp: refresh budget spent, skipping {name}");
+                continue;
+            }
             let opts = IndexOptions {
                 full: false,
-                budget: Some(budget),
+                budget: Some(left),
             };
             match index::refresh_repo(&mut self.store, &self.cfg, &root, &name, &opts) {
                 Ok(st) => {
@@ -520,12 +585,27 @@ impl Server {
             "codegraph mcp: serving on stdio (protocol {PROTOCOL_VERSION}, db {})",
             self.store.path().display()
         );
-        for line in reader.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
+        let mut reader = reader;
+        let mut line = Vec::new();
+        loop {
+            match read_line_bounded(&mut reader, &mut line, MAX_LINE_BYTES)? {
+                Line::Eof => break,
+                Line::TooLong => {
+                    let r = rpc_error(
+                        &Value::Null,
+                        PARSE_ERROR,
+                        &format!("parse error: request line exceeds {MAX_LINE_BYTES} bytes"),
+                    );
+                    writeln!(writer, "{r}")?;
+                    writer.flush()?;
+                    continue;
+                }
+                Line::Ok => {}
+            }
+            if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
-            let resp = match serde_json::from_str::<Value>(&line) {
+            let resp = match serde_json::from_slice::<Value>(&line) {
                 Ok(Value::Array(_)) => Some(rpc_error(
                     &Value::Null,
                     INVALID_REQUEST,
@@ -715,6 +795,71 @@ mod tests {
         assert_eq!(r["result"]["structuredContent"]["symbols"][0]["name"], "Ok");
         assert_eq!(out("big.go")["result"]["isError"], true);
         assert_eq!(out("secrets.go")["result"]["isError"], true);
+    }
+
+    #[test]
+    fn bounded_line_reader() {
+        let read_all = |input: &[u8], max: usize| {
+            let mut r = io::BufReader::with_capacity(4, input);
+            let mut buf = Vec::new();
+            let mut out = Vec::new();
+            loop {
+                let l = read_line_bounded(&mut r, &mut buf, max).unwrap();
+                if l == Line::Eof {
+                    break;
+                }
+                out.push((l, String::from_utf8(buf.clone()).unwrap()));
+            }
+            out
+        };
+        assert_eq!(
+            read_all(b"abc\r\n0123456789\nxy\nlast", 5),
+            [
+                (Line::Ok, "abc".to_string()),
+                (Line::TooLong, String::new()),
+                (Line::Ok, "xy".to_string()),
+                (Line::Ok, "last".to_string()),
+            ]
+        );
+        assert_eq!(
+            read_all(b"12345\n123456", 5),
+            [
+                (Line::Ok, "12345".to_string()),
+                (Line::TooLong, String::new())
+            ]
+        );
+        assert!(read_all(b"", 5).is_empty());
+    }
+
+    #[test]
+    fn serve_loop_caps_line_length() {
+        let (_d, mut s) = server();
+        // An overlong request (valid JSON, but huge) followed by a normal one.
+        let mut input = format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"pad\":\"{}\"}}\n",
+            "x".repeat(MAX_LINE_BYTES)
+        )
+        .into_bytes();
+        input.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n");
+        // Invalid UTF-8 is a parse error, not a fatal I/O error.
+        input.extend_from_slice(b"\xff\xfe\n{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}\n");
+        let mut out = Vec::new();
+        s.serve(&input[..], &mut out).unwrap();
+        let lines: Vec<Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 4, "{lines:?}");
+        assert_eq!(lines[0]["error"]["code"], PARSE_ERROR);
+        assert!(lines[0]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("exceeds"));
+        assert_eq!(lines[1]["id"], 2);
+        assert_eq!(lines[1]["result"], json!({}));
+        assert_eq!(lines[2]["error"]["code"], PARSE_ERROR);
+        assert_eq!(lines[3]["id"], 3);
     }
 
     #[test]

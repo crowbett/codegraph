@@ -87,8 +87,8 @@ impl Layout {
         } else {
             root.join(dir).join(marker)
         };
-        let here = std::fs::read_to_string(&path)
-            .ok()
+        // Repo-controlled: no symlinks/devices/UNC targets, bounded size.
+        let here = crate::util::read_repo_file(root, &path, crate::util::MAX_REPO_FILE_BYTES)
             .and_then(|t| parse(&t))
             .map(|v| (dir.to_string(), v));
         let found = match here {
@@ -244,6 +244,35 @@ mod tests {
             l.unit("svc/tests/it.rs", Lang::Rust, None).package,
             "my_svc@tests/it"
         );
+    }
+
+    #[test]
+    fn marker_files_are_read_defensively() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("big")).unwrap();
+        std::fs::create_dir_all(root.join("linked")).unwrap();
+        std::fs::write(root.join("go.mod"), "module example.com/top\n").unwrap();
+        // Oversize go.mod: ignored, so the lookup falls through to the parent.
+        let mut big = b"module example.com/big\n".to_vec();
+        big.resize((crate::util::MAX_REPO_FILE_BYTES + 1) as usize, b'\n');
+        std::fs::write(root.join("big/go.mod"), big).unwrap();
+        let mut l = Layout::new(root);
+        assert_eq!(
+            l.unit("big/x.go", Lang::Go, Some("x")).package,
+            "example.com/top/big"
+        );
+        // go.mod symlinked to a file outside the repo: ignored as well.
+        let outside = other.path().join("go.mod");
+        std::fs::write(&outside, "module evil.example/outside\n").unwrap();
+        if crate::util::try_symlink(&outside, &root.join("linked/go.mod")) {
+            let mut l = Layout::new(root);
+            assert_eq!(
+                l.unit("linked/x.go", Lang::Go, Some("x")).package,
+                "example.com/top/linked"
+            );
+        }
     }
 
     #[test]
