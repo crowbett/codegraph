@@ -51,13 +51,25 @@ that don't have them. Public repos, pinned to release-tag commits:
   `impl`/`inherit` edges.
 - *calibration*: precision of all judged edges per confidence tier.
 
-Local symbols (nested functions) are matched by position, and a TS `new C()` that SCIP
-attributes to `C`'s constructor counts as `C`.
+Scoring rules that keep the ground truth fair (each found by reading miss reports; each time
+the v0.1.1 baseline was re-scored with the fixed harness so deltas stay comparable):
+
+- Local symbols (nested functions) are matched by position.
+- A TS `new C()` that SCIP attributes to `C`'s constructor counts as `C` (also for classes
+  declared inside functions, whose constructors are SCIP locals).
+- A symbol with several definition sites (TS overloads, rust-analyzer `#[cfg]` twins,
+  scip-python `@overload` stubs) accepts any of them as the target.
+- Object-literal method definitions (`run() {}`) that SCIP records as references to the
+  interface member they implement are definition sites, not call sites.
+- A site whose SCIP symbol is an unresolved import (scip-typescript can't see a workspace
+  package whose types point at an unbuilt `dist/`) is left unjudged instead of counted false.
+- Fields and Rust enum variants are not codegraph symbols and are excluded; rust-analyzer emits
+  no implementation relationships, so Rust impl edges are unscored.
 
 ## Results
 
-`bench/baseline/accuracy.json` is the frozen baseline from before any resolver work (v0.1.1,
-commit 8d20102); `bench/results/accuracy.json` is the latest recorded run.
+`bench/baseline/accuracy.json` is the v0.1.1 resolver (commit 8d20102) scored by the current
+harness on the current corpus; `bench/results/accuracy.json` is the latest recorded run.
 
 <!-- results:start -->
 codegraph `e625f09`
