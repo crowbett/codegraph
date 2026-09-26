@@ -5,15 +5,33 @@
 //! Everything here is file-local; cross-file resolution happens in [`crate::resolve`].
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, QueryCursor};
 
 use crate::error::Result;
-use crate::infer::Infer;
+use crate::infer::{Infer, Nav};
 use crate::lang::Lang;
 use crate::model::{EdgeKind, SymKind};
+
+/// Per-file time budget for receiver-type hints, measured from the start of
+/// [`extract`]. Past it the remaining references are still emitted, without hints, so a
+/// hostile file cannot stall indexing (or the single-threaded MCP refresh). Real files
+/// finish in milliseconds.
+const HINT_BUDGET: Duration = Duration::from_secs(2);
+/// References between two checks of [`HINT_BUDGET`].
+const BUDGET_EVERY: usize = 256;
+/// In-progress query matches tree-sitter may keep; bounds the query cursor on
+/// pathological nesting (real files stay far below it). Past it tree-sitter drops the
+/// oldest in-progress matches, so an absurd chain loses some of its outer calls.
+const MATCH_LIMIT: u32 = 256;
+/// Files whose syntax tree is nested deeper than this are not extracted at all (only
+/// `lines`/`has_errors`, with `limited` set). tree-sitter's query cursor stops making
+/// progress somewhere past a depth of 65 535 (a ~250 KB `x.b().b()…` chain), whatever the
+/// match limit; real code never comes near this.
+const MAX_TREE_DEPTH: usize = 4096;
 
 /// Longest signature line kept.
 const MAX_SIG: usize = 200;
@@ -140,6 +158,11 @@ pub struct FileFacts {
     pub lines: u32,
     /// tree-sitter reported syntax errors (extraction still ran).
     pub has_errors: bool,
+    /// Extraction was bounded: receiver hints were skipped for all or part of the file
+    /// (nesting deeper than `infer::MAX_INFER_DEPTH`, or [`HINT_BUDGET`] ran out), or the
+    /// query hit its match limit (symbols and edges are still extracted, a few may be
+    /// missing); or the tree is deeper than [`MAX_TREE_DEPTH`] and nothing was extracted.
+    pub limited: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -188,6 +211,7 @@ pub(crate) fn clip(s: &str, max: usize) -> String {
 
 /// Parse `src` as `lang` and extract symbols, references and imports.
 pub fn extract(lang: Lang, src: &[u8]) -> Result<FileFacts> {
+    let start = Instant::now();
     // TS: retry with signature separators when the grammar trips (see tsfix).
     if matches!(lang, Lang::TypeScript | Lang::Tsx) {
         if let Some(patched) = crate::tsfix::separate_signatures(src) {
@@ -198,12 +222,12 @@ pub fn extract(lang: Lang, src: &[u8]) -> Result<FileFacts> {
             };
             if let (Some(before), Some(after)) = (errs(src)?, errs(&patched)?) {
                 if after < before {
-                    return extract_inner(lang, &patched);
+                    return extract_inner(lang, &patched, start);
                 }
             }
         }
     }
-    extract_inner(lang, src)
+    extract_inner(lang, src, start)
 }
 
 /// ERROR / MISSING nodes in a tree.
@@ -232,13 +256,49 @@ fn count_errors(root: Node<'_>) -> usize {
     }
 }
 
-fn extract_inner(lang: Lang, src: &[u8]) -> Result<FileFacts> {
+/// Whether any node sits more than `max` levels below `root` (one cursor walk, stops early).
+fn deeper_than(root: Node<'_>, max: usize) -> bool {
+    let mut cur = root.walk();
+    let mut depth = 0usize;
+    loop {
+        if cur.goto_first_child() {
+            depth += 1;
+            if depth > max {
+                return true;
+            }
+            continue;
+        }
+        loop {
+            if cur.goto_next_sibling() {
+                break;
+            }
+            if !cur.goto_parent() {
+                return false;
+            }
+            depth -= 1;
+        }
+    }
+}
+
+/// `start`: when extraction of this file began (the [`HINT_BUDGET`] clock).
+fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
     let query = lang.query()?;
     let Some(tree) = lang.with_parser(|p| p.parse(src, None))? else {
         return Ok(FileFacts::default());
     };
     let root = tree.root_node();
+    if deeper_than(root, MAX_TREE_DEPTH) {
+        return Ok(FileFacts {
+            lines: count_lines(src),
+            has_errors: root.has_error(),
+            limited: true,
+            ..FileFacts::default()
+        });
+    }
     let names = query.capture_names();
+    // O(1) parent/sibling links: `Node::parent` & co. are O(depth) in tree-sitter 0.27.
+    let nav = Nav::new(lang, root);
+    let mut macro_memo: HashMap<usize, bool> = HashMap::new();
 
     let mut defs: Vec<DefCand<'_>> = Vec::new();
     let mut def_seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
@@ -248,6 +308,7 @@ fn extract_inner(lang: Lang, src: &[u8]) -> Result<FileFacts> {
     let mut package = None;
 
     let mut cursor = QueryCursor::new();
+    cursor.set_match_limit(MATCH_LIMIT);
     let mut matches = cursor.matches(query, root, src);
     while let Some(m) = matches.next() {
         let mut role: Option<(Role, Node<'_>)> = None;
@@ -305,7 +366,7 @@ fn extract_inner(lang: Lang, src: &[u8]) -> Result<FileFacts> {
             }
             Role::Ref(kind) => {
                 let Some(name) = name else { continue };
-                if lang == Lang::Rust && in_attribute_or_macro_def(name) {
+                if lang == Lang::Rust && in_attribute_or_macro_def(&nav, name, &mut macro_memo) {
                     continue;
                 }
                 let cand = RefCand {
@@ -325,6 +386,7 @@ fn extract_inner(lang: Lang, src: &[u8]) -> Result<FileFacts> {
             }
         }
     }
+    let match_limited = cursor.did_exceed_match_limit();
 
     let mut facts = FileFacts {
         package,
@@ -333,10 +395,10 @@ fn extract_inner(lang: Lang, src: &[u8]) -> Result<FileFacts> {
         ..FileFacts::default()
     };
 
-    build_symbols(lang, src, &mut defs, &mut facts);
+    build_symbols(lang, src, &nav, &mut defs, &mut facts);
     apply_exports(lang, src, &export_nodes, &defs, &mut facts.symbols);
 
-    let mut infer = Infer::new(lang, root, src);
+    let mut infer = Infer::new(lang, root, src, &nav);
     let def_nodes: HashMap<(usize, usize), Node<'_>> = defs
         .iter()
         .map(|d| ((d.node.start_byte(), d.node.end_byte()), d.node))
@@ -390,7 +452,10 @@ fn extract_inner(lang: Lang, src: &[u8]) -> Result<FileFacts> {
         .filter(|r| !def_names.contains(&r.name.start_byte()))
         .collect();
     ref_list.sort_by_key(|r| r.name.start_byte());
-    for r in ref_list {
+    for (i, r) in ref_list.into_iter().enumerate() {
+        if i % BUDGET_EVERY == 0 && infer.hints_enabled() && start.elapsed() > HINT_BUDGET {
+            infer.disable_hints();
+        }
         let name = text(r.name, src).to_string();
         if name.is_empty()
             || name == "_"
@@ -415,13 +480,13 @@ fn extract_inner(lang: Lang, src: &[u8]) -> Result<FileFacts> {
         let (hint, dot) = if matches!(r.kind, EdgeKind::Call | EdgeKind::Value) {
             match r.qualifier {
                 // A Rust path qualifier (`m::f`, `Type::f`) is never a value.
-                Some(q) if lang == Lang::Rust && !is_dot_receiver(q) => (None, false),
-                Some(q) if q.parent().is_some_and(|p| p.kind() == "token_tree") => {
+                Some(q) if lang == Lang::Rust && !is_dot_receiver(&nav, q) => (None, false),
+                Some(q) if nav.parent(q).is_some_and(|p| p.kind() == "token_tree") => {
                     (infer.token_receiver_hint(q), true)
                 }
                 Some(q) => (
                     infer.qualifier_hint(q),
-                    lang == Lang::Rust && is_dot_receiver(q),
+                    lang == Lang::Rust && is_dot_receiver(&nav, q),
                 ),
                 None => (infer.bare_is_local(r.name).then(|| "L".to_string()), false),
             }
@@ -440,40 +505,56 @@ fn extract_inner(lang: Lang, src: &[u8]) -> Result<FileFacts> {
             dot,
         });
     }
+    facts.limited = match_limited || !infer.hints_enabled();
 
     Ok(facts)
 }
 
 /// `x` in `x.f()` (a field expression or a `.` token in a macro token tree).
-fn is_dot_receiver(q: Node<'_>) -> bool {
-    match q.parent() {
+fn is_dot_receiver<'t>(nav: &Nav<'t>, q: Node<'t>) -> bool {
+    match nav.parent(q) {
         Some(p) if p.kind() == "field_expression" => true,
-        Some(p) if p.kind() == "token_tree" => q.next_sibling().is_some_and(|n| n.kind() == "."),
+        Some(p) if p.kind() == "token_tree" => nav.next_sibling(q).is_some_and(|n| n.kind() == "."),
         _ => false,
     }
 }
 
 /// Rust tokens inside `#[attr(...)]` or a `macro_rules!` body are not calls even when they
-/// look like `f(..)` (only token-tree matches can land there).
-fn in_attribute_or_macro_def(name: Node<'_>) -> bool {
-    if name.parent().is_none_or(|p| p.kind() != "token_tree") {
+/// look like `f(..)` (only token-tree matches can land there). `memo` caches the answer
+/// per token tree so deeply nested macro arguments stay linear.
+fn in_attribute_or_macro_def<'t>(
+    nav: &Nav<'t>,
+    name: Node<'t>,
+    memo: &mut HashMap<usize, bool>,
+) -> bool {
+    let first = nav.parent(name);
+    if first.is_none_or(|p| p.kind() != "token_tree") {
         return false;
     }
-    let mut cur = name.parent();
-    while let Some(n) = cur {
+    let mut seen: Vec<usize> = Vec::new();
+    let mut cur = first;
+    let found = loop {
+        let Some(n) = cur else { break false };
+        if let Some(&r) = memo.get(&n.id()) {
+            break r;
+        }
         match n.kind() {
             "attribute_item"
             | "inner_attribute_item"
             | "attribute"
             | "macro_definition"
-            | "macro_rule" => {
-                return true;
+            | "macro_rule" => break true,
+            "token_tree" | "macro_invocation" => {
+                seen.push(n.id());
+                cur = nav.parent(n);
             }
-            "token_tree" | "macro_invocation" => cur = n.parent(),
-            _ => return false,
+            _ => break false,
         }
+    };
+    for id in seen {
+        memo.insert(id, found);
     }
-    false
+    found
 }
 
 /// Language builtins that can never resolve inside a repo; dropped at extraction to
@@ -895,7 +976,7 @@ fn first_doc_line(block: &str) -> Option<String> {
         .map(|l| clip(l, MAX_DOC))
 }
 
-fn doc_for(lang: Lang, node: Node<'_>, src: &[u8]) -> Option<String> {
+fn doc_for<'t>(lang: Lang, nav: &Nav<'t>, node: Node<'t>, src: &[u8]) -> Option<String> {
     if lang == Lang::Python {
         let body = node.child_by_field_name("body")?;
         let first = body.named_child(0)?;
@@ -915,18 +996,18 @@ fn doc_for(lang: Lang, node: Node<'_>, src: &[u8]) -> Option<String> {
         return None;
     }
     let mut anchor = node;
-    while let Some(p) = anchor.parent() {
+    while let Some(p) = nav.parent(anchor) {
         if WRAPPERS.contains(&p.kind()) {
             anchor = p;
         } else {
             break;
         }
     }
-    let mut sib = anchor.prev_sibling();
+    let mut sib = nav.prev_sibling(anchor);
     // Skip attributes / decorators between the doc and the item.
     while let Some(s) = sib {
         if matches!(s.kind(), "attribute_item" | "decorator" | "attribute") {
-            sib = s.prev_sibling();
+            sib = nav.prev_sibling(s);
         } else {
             break;
         }
@@ -944,7 +1025,7 @@ fn doc_for(lang: Lang, node: Node<'_>, src: &[u8]) -> Option<String> {
         }
         top = Some(s);
         next_row = s.start_position().row;
-        sib = s.prev_sibling();
+        sib = nav.prev_sibling(s);
     }
     let top = top?;
     // Collect the block from `top` down to the anchor and return its first line.
@@ -1008,12 +1089,12 @@ fn go_receiver(recv: &str) -> (String, Option<String>) {
 }
 
 /// Rust: the `impl` block a function sits directly in -> (type name, is trait impl).
-fn rust_impl_of(node: Node<'_>, src: &[u8]) -> Option<(String, bool)> {
-    let list = node.parent()?;
+fn rust_impl_of<'t>(nav: &Nav<'t>, node: Node<'t>, src: &[u8]) -> Option<(String, bool)> {
+    let list = nav.parent(node)?;
     if list.kind() != "declaration_list" {
         return None;
     }
-    let imp = list.parent()?;
+    let imp = nav.parent(list)?;
     if imp.kind() != "impl_item" {
         return None;
     }
@@ -1032,7 +1113,13 @@ fn join(prefix: &str, sep: &str, name: &str) -> String {
     }
 }
 
-fn build_symbols(lang: Lang, src: &[u8], defs: &mut [DefCand<'_>], facts: &mut FileFacts) {
+fn build_symbols<'t>(
+    lang: Lang,
+    src: &[u8],
+    nav: &Nav<'t>,
+    defs: &mut [DefCand<'t>],
+    facts: &mut FileFacts,
+) {
     defs.sort_by(|a, b| {
         a.node
             .start_byte()
@@ -1068,7 +1155,7 @@ fn build_symbols(lang: Lang, src: &[u8], defs: &mut [DefCand<'_>], facts: &mut F
             recv = var;
         }
         if lang == Lang::Rust && kind == SymKind::Function {
-            if let Some((ty, is_trait)) = rust_impl_of(d.node, src) {
+            if let Some((ty, is_trait)) = rust_impl_of(nav, d.node, src) {
                 kind = SymKind::Method;
                 exported |= is_trait;
                 explicit_scope = Some(ty.clone());
@@ -1122,10 +1209,9 @@ fn build_symbols(lang: Lang, src: &[u8], defs: &mut [DefCand<'_>], facts: &mut F
         }
         if lang.is_js_family() && kind == SymKind::Const && !name.chars().any(char::is_uppercase) {
             // Plain lowercase top-level values are too noisy; keep CONSTS and exported ones.
-            let exported_decl = d
-                .node
-                .parent()
-                .and_then(|p| p.parent())
+            let exported_decl = nav
+                .parent(d.node)
+                .and_then(|p| nav.parent(p))
                 .is_some_and(|gp| gp.kind() == "export_statement");
             if !exported_decl {
                 continue;
@@ -1139,7 +1225,7 @@ fn build_symbols(lang: Lang, src: &[u8], defs: &mut [DefCand<'_>], facts: &mut F
         let local_qname = join(&prefix, sep, &name);
         let sp = d.node.start_position();
         let ep = d.node.end_position();
-        let doc = doc_for(lang, d.node, src);
+        let doc = doc_for(lang, nav, d.node, src);
         let signature = signature_line(d.node, src);
         facts.symbols.push(RawSymbol {
             name,

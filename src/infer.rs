@@ -18,8 +18,21 @@
 //! Evidence comes from parameters, `let`/`:=`/`const`/assignments, struct and class
 //! fields and function return types. Everything is best effort: an unknown expression
 //! yields no hint and the resolver falls back to name-based rules.
+//!
+//! ## Cost
+//!
+//! In tree-sitter 0.27 `Node::parent`, `prev_sibling` and `next_sibling` walk down from
+//! the root (O(depth) each, O(width) for siblings), so calling them per reference makes a
+//! long method chain (`a.b().b()…`, every call one level deeper) quadratic or worse.
+//! Extraction therefore navigates through [`Nav`], built in one cursor walk per file:
+//! parent / sibling / enclosing-function links in O(1). Two guards bound what is left:
+//! files nested deeper than [`MAX_INFER_DEPTH`] get no receiver hints at all (symbols
+//! and edges are still extracted), and `extract` stops computing hints once a file has
+//! used its time budget (see `extract::HINT_BUDGET`). Either sets
+//! `FileFacts::limited`.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use tree_sitter::Node;
 
@@ -29,6 +42,164 @@ use crate::lang::Lang;
 const MAX_DEPTH: u8 = 6;
 /// Longest hint kept.
 const MAX_HINT: usize = 200;
+/// Syntax trees nested deeper than this get no receiver-type hints (real code stays far
+/// below it; generated or hostile files — thousand-call chains — do not).
+pub(crate) const MAX_INFER_DEPTH: usize = 512;
+
+/// Hasher for tree-sitter node ids (pointers: already unique, only need mixing).
+#[derive(Default)]
+struct IdHasher(u64);
+
+impl Hasher for IdHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(8) ^ u64::from(b)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+    }
+    fn write_usize(&mut self, n: usize) {
+        let h = (n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.0 = h ^ (h >> 32);
+    }
+}
+
+type IdMap<V> = HashMap<usize, V, BuildHasherDefault<IdHasher>>;
+
+const NONE: u32 = u32::MAX;
+
+/// O(1) tree navigation for one file: parent, siblings and the nearest enclosing
+/// function of every node, recorded in a single cursor walk (see the module doc).
+pub(crate) struct Nav<'a> {
+    nodes: Vec<Node<'a>>,
+    index: IdMap<u32>,
+    parent: Vec<u32>,
+    prev: Vec<u32>,
+    next: Vec<u32>,
+    /// Nearest strict ancestor that is function-like for the language.
+    func: Vec<u32>,
+    max_depth: usize,
+}
+
+impl<'a> Nav<'a> {
+    pub(crate) fn new(lang: Lang, root: Node<'a>) -> Self {
+        let mut nav = Nav {
+            nodes: Vec::new(),
+            index: IdMap::default(),
+            parent: Vec::new(),
+            prev: Vec::new(),
+            next: Vec::new(),
+            func: Vec::new(),
+            max_depth: 0,
+        };
+        // Ancestors of the cursor's node: (index, enclosing function for its children,
+        // last child recorded so far).
+        let mut stack: Vec<(u32, u32, u32)> = Vec::new();
+        let mut cur = root.walk();
+        loop {
+            let n = cur.node();
+            let i = nav.nodes.len() as u32;
+            let (p, f, pr) = stack.last().map_or((NONE, NONE, NONE), |e| *e);
+            nav.nodes.push(n);
+            nav.index.insert(n.id(), i);
+            nav.parent.push(p);
+            nav.func.push(f);
+            nav.prev.push(pr);
+            nav.next.push(NONE);
+            if pr != NONE {
+                nav.next[pr as usize] = i;
+            }
+            if let Some(e) = stack.last_mut() {
+                e.2 = i;
+            }
+            nav.max_depth = nav.max_depth.max(stack.len());
+            if cur.goto_first_child() {
+                let fc = if is_function(lang, n) { i } else { f };
+                stack.push((i, fc, NONE));
+                continue;
+            }
+            loop {
+                if cur.goto_next_sibling() {
+                    break;
+                }
+                if !cur.goto_parent() {
+                    return nav;
+                }
+                stack.pop();
+            }
+        }
+    }
+
+    /// `links[n]` for a node recorded in the walk: `Ok(None)` when it has no such
+    /// neighbour, `Err(())` when `n` is not from this tree (callers fall back to the
+    /// O(depth) tree-sitter call).
+    fn link(&self, n: Node<'_>, links: &[u32]) -> Result<Option<Node<'a>>, ()> {
+        let &i = self.index.get(&n.id()).ok_or(())?;
+        let j = links[i as usize];
+        Ok((j != NONE).then(|| self.nodes[j as usize]))
+    }
+
+    /// `n.parent()` in O(1).
+    pub(crate) fn parent(&self, n: Node<'a>) -> Option<Node<'a>> {
+        self.link(n, &self.parent).unwrap_or_else(|()| n.parent())
+    }
+
+    /// `n.prev_sibling()` in O(1).
+    pub(crate) fn prev_sibling(&self, n: Node<'a>) -> Option<Node<'a>> {
+        self.link(n, &self.prev)
+            .unwrap_or_else(|()| n.prev_sibling())
+    }
+
+    /// `n.next_sibling()` in O(1).
+    pub(crate) fn next_sibling(&self, n: Node<'a>) -> Option<Node<'a>> {
+        self.link(n, &self.next)
+            .unwrap_or_else(|()| n.next_sibling())
+    }
+
+    /// Nearest function-like strict ancestor of `n`.
+    fn enclosing_fn(&self, lang: Lang, n: Node<'a>) -> Option<Node<'a>> {
+        self.link(n, &self.func).unwrap_or_else(|()| {
+            let mut cur = n.parent();
+            while let Some(p) = cur {
+                if is_function(lang, p) {
+                    return Some(p);
+                }
+                cur = p.parent();
+            }
+            None
+        })
+    }
+
+    /// Deepest nesting level in the tree (root = 0).
+    pub(crate) fn max_depth(&self) -> usize {
+        self.max_depth
+    }
+}
+
+/// Function-like nodes whose parameters and body form a lookup environment.
+fn is_function(lang: Lang, n: Node<'_>) -> bool {
+    let k = n.kind();
+    match lang {
+        Lang::Go => matches!(
+            k,
+            "function_declaration" | "method_declaration" | "func_literal"
+        ),
+        Lang::Rust => matches!(k, "function_item" | "closure_expression"),
+        Lang::TypeScript | Lang::Tsx | Lang::JavaScript => matches!(
+            k,
+            "function_declaration"
+                | "function_expression"
+                | "function"
+                | "arrow_function"
+                | "method_definition"
+                | "generator_function_declaration"
+                | "generator_function"
+        ),
+        Lang::Python => matches!(k, "function_definition" | "lambda"),
+        Lang::C | Lang::Cpp => false,
+    }
+}
 
 #[derive(Clone)]
 struct Decl<'a> {
@@ -55,6 +226,9 @@ pub(crate) struct Infer<'a> {
     /// Evaluated initializers: (value node id, element-of) -> hint.
     memo: HashMap<(usize, bool), Option<String>>,
     root: Node<'a>,
+    nav: &'a Nav<'a>,
+    /// Receiver hints are computed (off for over-deep files or past the time budget).
+    hints: bool,
 }
 
 fn text<'a>(n: Node<'_>, src: &'a [u8]) -> &'a str {
@@ -87,7 +261,8 @@ fn mk(prefix: &str, inner: &str) -> Option<String> {
 }
 
 impl<'a> Infer<'a> {
-    pub(crate) fn new(lang: Lang, root: Node<'a>, src: &'a [u8]) -> Self {
+    /// Receiver hints are off when the tree is nested deeper than [`MAX_INFER_DEPTH`].
+    pub(crate) fn new(lang: Lang, root: Node<'a>, src: &'a [u8], nav: &'a Nav<'a>) -> Self {
         Self {
             lang,
             src,
@@ -95,7 +270,19 @@ impl<'a> Infer<'a> {
             globals: None,
             memo: HashMap::new(),
             root,
+            nav,
+            hints: nav.max_depth() <= MAX_INFER_DEPTH,
         }
+    }
+
+    /// Whether receiver hints are being computed.
+    pub(crate) fn hints_enabled(&self) -> bool {
+        self.hints
+    }
+
+    /// Stop computing receiver hints for the rest of the file.
+    pub(crate) fn disable_hints(&mut self) {
+        self.hints = false;
     }
 
     fn t(&self, n: Node<'_>) -> &'a str {
@@ -103,31 +290,12 @@ impl<'a> Infer<'a> {
     }
 
     fn is_function(&self, n: Node<'_>) -> bool {
-        let k = n.kind();
-        match self.lang {
-            Lang::Go => matches!(
-                k,
-                "function_declaration" | "method_declaration" | "func_literal"
-            ),
-            Lang::Rust => matches!(k, "function_item" | "closure_expression"),
-            Lang::TypeScript | Lang::Tsx | Lang::JavaScript => matches!(
-                k,
-                "function_declaration"
-                    | "function_expression"
-                    | "function"
-                    | "arrow_function"
-                    | "method_definition"
-                    | "generator_function_declaration"
-                    | "generator_function"
-            ),
-            Lang::Python => matches!(k, "function_definition" | "lambda"),
-            Lang::C | Lang::Cpp => false,
-        }
+        is_function(self.lang, n)
     }
 
     /// Receiver hint for a qualifier expression (`x` in `x.f()`).
     pub(crate) fn qualifier_hint(&mut self, q: Node<'a>) -> Option<String> {
-        if !self.supported() {
+        if !self.supported() || !self.hints {
             return None;
         }
         self.eval(q, 0)
@@ -137,7 +305,7 @@ impl<'a> Infer<'a> {
     /// before the `.`: rebuild the chain from raw tokens (`repo.backend().exists(..)`,
     /// `k.id.short()`).
     pub(crate) fn token_receiver_hint(&mut self, q: Node<'a>) -> Option<String> {
-        if !self.supported() {
+        if !self.supported() || !self.hints {
             return None;
         }
         self.token_chain(q, 0)
@@ -147,12 +315,13 @@ impl<'a> Infer<'a> {
         if depth > MAX_DEPTH {
             return None;
         }
-        let prev = q.prev_sibling();
+        let nav = self.nav;
+        let prev = nav.prev_sibling(q);
         match q.kind() {
             "self" => Some("S".into()),
             "identifier" => {
                 if prev.is_some_and(|p| p.kind() == ".") {
-                    let base = self.token_chain(prev?.prev_sibling()?, depth + 1)?;
+                    let base = self.token_chain(nav.prev_sibling(prev?)?, depth + 1)?;
                     return mk(&format!("F:{}@", self.t(q)), &base);
                 }
                 if prev.is_some_and(|p| p.kind() == "::") {
@@ -163,19 +332,19 @@ impl<'a> Infer<'a> {
             "token_tree" if self.t(q).starts_with('(') => {
                 // `<recv>.m(args)` / `path::f(args)` / `f(args)`
                 let m = prev.filter(|p| p.kind() == "identifier")?;
-                let before = m.prev_sibling();
+                let before = nav.prev_sibling(m);
                 match before.map(|b| b.kind()) {
                     Some(".") => {
-                        let base = self.token_chain(before?.prev_sibling()?, depth + 1)?;
+                        let base = self.token_chain(nav.prev_sibling(before?)?, depth + 1)?;
                         mk(&format!("M:{}@", self.t(m)), &base)
                     }
                     Some("::") => {
                         let mut parts = vec![self.t(m).to_string()];
                         let mut cur = before;
                         while let Some(sep) = cur.filter(|c| c.kind() == "::") {
-                            let seg = sep.prev_sibling().filter(|s| s.kind() == "identifier")?;
+                            let seg = nav.prev_sibling(sep).filter(|s| s.kind() == "identifier")?;
                             parts.push(self.t(seg).to_string());
-                            cur = seg.prev_sibling();
+                            cur = nav.prev_sibling(seg);
                         }
                         parts.reverse();
                         mk("C:", &parts.join("::"))
@@ -190,7 +359,7 @@ impl<'a> Infer<'a> {
     /// Whether a bare identifier used as a call/value is a local variable or parameter
     /// (not a function): such a name never refers to a repo-level symbol.
     pub(crate) fn bare_is_local(&mut self, name: Node<'a>) -> bool {
-        if !self.supported() {
+        if !self.supported() || !self.hints {
             return false;
         }
         let n = self.t(name).to_string();
@@ -205,20 +374,19 @@ impl<'a> Infer<'a> {
 
     fn lookup_local(&mut self, name: &str, at: Node<'a>) -> Option<Decl<'a>> {
         let pos = at.start_byte();
-        let mut cur = at.parent();
+        let nav = self.nav;
+        let mut cur = nav.enclosing_fn(self.lang, at);
         while let Some(n) = cur {
-            if self.is_function(n) {
-                let env = self.env(n);
-                if let Some(d) = env
-                    .iter()
-                    .filter(|d| d.name == name && d.at <= pos)
-                    .max_by_key(|d| d.at)
-                    .cloned()
-                {
-                    return Some(d);
-                }
+            let env = self.env(n);
+            if let Some(d) = env
+                .iter()
+                .filter(|d| d.name == name && d.at <= pos)
+                .max_by_key(|d| d.at)
+                .cloned()
+            {
+                return Some(d);
             }
-            cur = n.parent();
+            cur = nav.enclosing_fn(self.lang, n);
         }
         None
     }
@@ -300,8 +468,11 @@ impl<'a> Infer<'a> {
     /// Collection whose elements a callback's first parameter receives:
     /// `xs.map(|x| ..)`, `xs.forEach(x => ..)`, `opt.and_then(|x| ..)`.
     fn callback_source(&self, f: Node<'a>) -> Option<Node<'a>> {
-        let args = f.parent().filter(|p| p.kind() == "arguments")?;
-        let call = args.parent().filter(|p| p.kind() == "call_expression")?;
+        let args = self.nav.parent(f).filter(|p| p.kind() == "arguments")?;
+        let call = self
+            .nav
+            .parent(args)
+            .filter(|p| p.kind() == "call_expression")?;
         let func = call.child_by_field_name("function")?;
         let (obj, field) = Self::member_parts(func)?;
         let m = self.t(field);
@@ -779,7 +950,7 @@ impl<'a> Infer<'a> {
     /// receiver): name -> its single meaningful bound (`B: Backend`, `T Getter`,
     /// `T extends Base`), or `None` when unbounded or ambiguous (`T: Clone + Debug`), in
     /// which case a parameter of that type gets no hint rather than a wrong one.
-    fn generics(&self, f: Node<'_>) -> Vec<(String, Option<String>)> {
+    fn generics(&self, f: Node<'a>) -> Vec<(String, Option<String>)> {
         let mut acc: Vec<(String, Vec<String>)> = Vec::new();
         let mut add = |name: &str, bound: Option<String>| {
             let slot = if let Some(i) = acc.iter().position(|(n, _)| n == name) {
@@ -795,9 +966,10 @@ impl<'a> Infer<'a> {
         match self.lang {
             Lang::Rust => {
                 let mut scopes = vec![f];
-                if let Some(imp) = f
-                    .parent()
-                    .and_then(|p| p.parent())
+                if let Some(imp) = self
+                    .nav
+                    .parent(f)
+                    .and_then(|p| self.nav.parent(p))
                     .filter(|p| p.kind() == "impl_item")
                 {
                     scopes.push(imp);
@@ -1071,7 +1243,7 @@ impl<'a> Infer<'a> {
     // ---- symbol facts --------------------------------------------------------
 
     /// Return type hint of a function/method definition node.
-    pub(crate) fn ret_of(&self, def: Node<'_>) -> Option<String> {
+    pub(crate) fn ret_of(&self, def: Node<'a>) -> Option<String> {
         if !self.supported() {
             return None;
         }
