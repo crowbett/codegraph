@@ -67,17 +67,32 @@ What the misses say (input for M2):
 - TS false edges: few; recall misses are mostly `Unresolved`/`Wrong` receivers.
 - Python: nested `def render` shadowed by a module-level `render` (lexical scope ignored).
 
-## M2 — resolver upgrades (in progress)
+## M2 — resolver upgrades (done)
 
 Every change measured with `task bench:accuracy`; kept only if it improved the numbers.
 
-| commit | change | effect |
+| commit | change | effect (callers recall / precision unless noted) |
 |---|---|---|
 | b4caff1 | Rust: calls inside macro token trees (`assert_eq!(f(x))`, `vec![t(1)]`) | Rust recall 67.5 → 84.5 |
 | d672acb | lexical scoping for same-file names; Go `pkg.F` never a method | Go precision +0.2 |
-| 82d9323 | **type-aware receivers** (`src/infer.rs` hints + `src/resolve_types.rs`), schema v2 | Go precision 91.4 → 99.3, recall 99.8; Rust recall 84.6 → 89.3, precision 87.9 → 93.5 |
+| 82d9323 | **type-aware receivers** (`src/infer.rs` hints + `src/resolve_types.rs`), schema v2 | Go 97.5/91.4 → 99.8/99.3; Rust 84.6/87.9 → 89.3/93.5 |
 | d1bf02a | TS/JS workspace packages (`@scope/pkg` → its sources) | TS recall 99.0 → 99.8 |
-| e63efa0 | element types (loops, callbacks, if-let), Rust `pub use`, `mod` outside src/, no Rust name-only method guesses | Rust recall 92.4 → 94.8, precision 95.0 → 98.6 |
+| e63efa0 | element types (loops, callbacks, if-let), Rust `pub use`, `mod` outside src/, no Rust name-only method guesses | Rust 92.4/95.0 → 94.8/98.6 |
+| 49d60ef | **Go implicit interface satisfaction** edges (method sets incl. embedding + stdlib ifaces, arity check) | Go impl recall 0 → 100%, precision 94.4% |
+| c92b64a | Rust receivers inside macros, `Arc::new(x)`, path qualifiers never typed | Rust recall 94.8 → 95.6 |
+| e625f09 | `callers`/`impact` follow dynamic dispatch (`[via Backend::list]`) | query feature (Rust trait + Go iface + class dispatch) |
+| 36c5c02 | no name guessing for value refs (`f(r.Name)`) | Go likely-tier calibration 45.8 → 75.9 |
+
+Final (36c5c02) vs baseline (8d20102):
+
+| language | callers recall | callers precision | false call edges | impl recall |
+|---|---:|---:|---:|---:|
+| Go | 97.3 → **99.9%** | 91.2 → **99.3%** | 8.8 → **0.7%** | 0 → **100%** |
+| Rust | 67.5 → **95.6%** | 86.8 → **98.6%** | 13.2 → **1.4%** | – (RA has no GT) |
+| TypeScript/JS | 99.3 → **99.8%** | 99.8 → **99.8%** | 0.2 → **0.2%** | 100% |
+| Python | 99.7 → **100%** | 99.3 → **99.7%** | 0.7 → **0.3%** | 100% |
+
+Calibration: `exact` 99.9% correct (12228/12237), `likely` 85.9%, `name_only` 71.6%.
 
 Note: 82d9323's message quotes the Rust "before" numbers wrong (80.0/88.1); the real ones are
 84.6/87.9 (history not rewritten).
@@ -86,8 +101,10 @@ Dead ends: excluding methods from every module-qualified lookup (only right for 
 4.5 pp because `repo.load_tree()` was resolving through a *module* named `repo`, which the
 dot-call rule in 82d9323 then fixed properly).
 
-Current (e63efa0): Go 99.9% / 99.3% · Rust 94.8% / 98.6% · TS 99.8% / 99.8% · Python 100% /
-99.7% (callers recall / precision).
+Known remaining gaps: Rust refs recall 68% (type refs in qualifier position like
+`Error::Locked(..)` and `Type::f` paths are not edges); `#[cfg]` / build-tag twins (codegraph
+picks one variant, SCIP the host's); macro-generated items; the 2 "false" Go impl pairs are
+real cross-package implementations that scip-go does not record.
 
 ## M5 — cross-platform (merged early, fee8a1e)
 
