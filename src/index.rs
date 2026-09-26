@@ -301,6 +301,34 @@ pub fn index_roots(
     let start = Instant::now();
     let mut stats = IndexStats::default();
     let mut seen_repos: HashSet<PathBuf> = HashSet::new();
+    // Cold or full runs rewrite (nearly) everything: build the search index once at the
+    // end instead of row by row.
+    let empty = store
+        .conn()
+        .query_row("SELECT count(*) FROM files", [], |r| r.get::<_, i64>(0))?
+        == 0;
+    let bulk = opts.full || empty;
+    if bulk {
+        store.suspend_fts()?;
+    }
+    let result = index_roots_inner(store, cfg, roots, opts, start, &mut stats, &mut seen_repos);
+    if bulk {
+        store.resume_fts()?;
+    }
+    result?;
+    finish(store, &mut stats, start)?;
+    Ok(stats)
+}
+
+fn index_roots_inner(
+    store: &mut Store,
+    cfg: &Config,
+    roots: &[PathBuf],
+    opts: &IndexOptions,
+    start: Instant,
+    stats: &mut IndexStats,
+    seen_repos: &mut HashSet<PathBuf>,
+) -> Result<()> {
     for root in roots {
         let root = util::absolute(root);
         if !root.is_dir() {
@@ -316,9 +344,7 @@ pub fn index_roots(
         for (repo_root, files) in repos {
             seen_repos.insert(repo_root.clone());
             let name = repo_name(&root, &repo_root);
-            index_repo(
-                store, cfg, &name, &repo_root, files, opts, start, &mut stats,
-            )?;
+            index_repo(store, cfg, &name, &repo_root, files, opts, start, stats)?;
         }
         // Repos under this root that no longer have any source files.
         for r in store.repos()? {
@@ -333,8 +359,7 @@ pub fn index_roots(
             }
         }
     }
-    finish(store, &mut stats, start)?;
-    Ok(stats)
+    Ok(())
 }
 
 /// Refresh one repo (MCP auto-refresh / on-demand indexing of the cwd repo).

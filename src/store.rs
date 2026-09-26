@@ -92,6 +92,10 @@ CREATE INDEX IF NOT EXISTS edges_repo ON edges(repo_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     name, qname, doc, content='symbols', content_rowid='id', tokenize='trigram'
 );
+";
+
+/// Triggers keeping `symbols_fts` in sync row by row (suspended during bulk loads).
+const FTS_TRIGGERS: &str = r"
 CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
     INSERT INTO symbols_fts(rowid, name, qname, doc) VALUES (new.id, new.name, new.qname, new.doc);
 END;
@@ -213,6 +217,42 @@ impl Store {
             "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema', ?1)",
             [SCHEMA_VERSION.to_string()],
         )?;
+        // A bulk load that never finished (crash, kill) left the search index stale.
+        let dirty: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = 'fts_dirty'", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if dirty.is_some() {
+            self.resume_fts()?;
+        } else {
+            self.conn.execute_batch(FTS_TRIGGERS)?;
+        }
+        Ok(())
+    }
+
+    /// Stop maintaining the symbol search index row by row (bulk loads); marks it dirty
+    /// until [`Store::resume_fts`] rebuilds it in one pass (about 5x cheaper).
+    pub fn suspend_fts(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "BEGIN;
+             DROP TRIGGER IF EXISTS symbols_ai; DROP TRIGGER IF EXISTS symbols_ad;
+             INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_dirty', '1');
+             COMMIT;",
+        )?;
+        Ok(())
+    }
+
+    /// Rebuild the symbol search index from `symbols` and restore the row triggers.
+    pub fn resume_fts(&self) -> Result<()> {
+        self.conn.execute_batch(&format!(
+            "BEGIN;
+             INSERT INTO symbols_fts(symbols_fts) VALUES ('rebuild');
+             {FTS_TRIGGERS}
+             DELETE FROM meta WHERE key = 'fts_dirty';
+             COMMIT;"
+        ))?;
         Ok(())
     }
 
@@ -446,5 +486,54 @@ mod tests {
         let id = s.upsert_repo("r", Path::new("C:/r")).unwrap();
         assert_eq!(s.upsert_repo("r2", Path::new("C:/r")).unwrap(), id);
         assert_eq!(s.repos().unwrap()[0].name, "r2");
+    }
+
+    fn fts_hits(s: &Store, q: &str) -> i64 {
+        s.conn()
+            .query_row(
+                "SELECT count(*) FROM symbols_fts WHERE symbols_fts MATCH ?1",
+                [q],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    fn add_symbol(s: &Store, name: &str) {
+        s.conn()
+            .execute(
+                "INSERT INTO symbols(file_id, repo_id, name, kind, qname, qkey, start_line,
+                    start_col, end_line, end_col, signature, exported, is_default)
+                 VALUES (1, 1, ?1, 'function', ?1, ?1, 1, 1, 1, 1, '', 1, 0)",
+                [name],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn fts_bulk_mode_recovers_after_a_crash() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("g.db");
+        {
+            let s = Store::open(&db).unwrap();
+            s.conn()
+                .execute_batch(
+                    "INSERT INTO repos(id, name, root) VALUES (1, 'r', 'C:/r');
+                     INSERT INTO files(id, repo_id, path, lang, hash, mtime, size, lines,
+                        module, package) VALUES (1, 1, 'a.go', 'go', 'h', 0, 0, 1, '', '');",
+                )
+                .unwrap();
+            s.suspend_fts().unwrap();
+            add_symbol(&s, "NeedleOne");
+            assert_eq!(fts_hits(&s, "edleOn"), 0, "suspended: not indexed yet");
+            // No resume_fts: simulated crash.
+        }
+        let s = Store::open(&db).unwrap();
+        assert_eq!(fts_hits(&s, "edleOn"), 1, "rebuilt on open");
+        add_symbol(&s, "HaystackTwo");
+        assert_eq!(fts_hits(&s, "ystackTw"), 1, "row triggers restored");
+        s.suspend_fts().unwrap();
+        add_symbol(&s, "ThirdThing");
+        s.resume_fts().unwrap();
+        assert_eq!(fts_hits(&s, "irdThin"), 1);
     }
 }
