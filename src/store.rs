@@ -218,19 +218,39 @@ impl Store {
             "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema', ?1)",
             [SCHEMA_VERSION.to_string()],
         )?;
-        // A bulk load that never finished (crash, kill) left the search index stale.
-        let dirty: Option<String> = self
-            .conn
-            .query_row("SELECT value FROM meta WHERE key = 'fts_dirty'", [], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        if dirty.is_some() {
-            self.resume_fts()?;
-        } else {
+        // While a bulk load runs (or after one died) the search index is marked dirty and
+        // its triggers/indexes are absent on purpose: readers tolerate that, and only
+        // writers repair it (`recover_fts`), so opening the graph never blocks on a rebuild.
+        if !self.fts_dirty()? {
             self.conn.execute_batch(FTS_TRIGGERS)?;
         }
         Ok(())
+    }
+
+    fn fts_dirty(&self) -> Result<bool> {
+        Ok(self.fts_dirty_age()?.is_some())
+    }
+
+    /// Seconds since a bulk load marked the search index dirty.
+    fn fts_dirty_age(&self) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT unixepoch() - CAST(value AS INTEGER) FROM meta WHERE key = 'fts_dirty'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?)
+    }
+
+    /// Writers call this first: finish the search index a killed bulk load left behind.
+    /// `force` (an explicit `index`) repairs at once; background refreshes only when the
+    /// mark is older than 15 minutes, so they don't rebuild under a running bulk load.
+    pub fn recover_fts(&self, force: bool) -> Result<()> {
+        match self.fts_dirty_age()? {
+            Some(age) if force || age > 900 => self.resume_fts(),
+            _ => Ok(()),
+        }
     }
 
     /// Stop maintaining the symbol search index row by row (bulk loads); marks it dirty
@@ -242,7 +262,7 @@ impl Store {
              DROP INDEX IF EXISTS edges_to; DROP INDEX IF EXISTS edges_from;
              DROP INDEX IF EXISTS edges_to_file; DROP INDEX IF EXISTS symbols_name;
              DROP INDEX IF EXISTS symbols_name_nocase; DROP INDEX IF EXISTS symbols_qkey;
-             INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_dirty', '1');
+             INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_dirty', CAST(unixepoch() AS TEXT));
              COMMIT;",
         )?;
         Ok(())
@@ -532,7 +552,15 @@ mod tests {
             // No resume_fts: simulated crash.
         }
         let s = Store::open(&db).unwrap();
-        assert_eq!(fts_hits(&s, "edleOn"), 1, "rebuilt on open");
+        assert_eq!(fts_hits(&s, "edleOn"), 0, "readers never rebuild");
+        s.recover_fts(false).unwrap();
+        assert_eq!(
+            fts_hits(&s, "edleOn"),
+            0,
+            "a fresh mark is left to its bulk load"
+        );
+        s.recover_fts(true).unwrap();
+        assert_eq!(fts_hits(&s, "edleOn"), 1, "the next writer rebuilds");
         add_symbol(&s, "HaystackTwo");
         assert_eq!(fts_hits(&s, "ystackTw"), 1, "row triggers restored");
         s.suspend_fts().unwrap();

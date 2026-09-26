@@ -310,12 +310,19 @@ pub fn index_roots(
     let bulk = opts.full || empty;
     if bulk {
         store.suspend_fts()?;
+    } else {
+        store.recover_fts(true)?;
     }
     let result = index_roots_inner(store, cfg, roots, opts, start, &mut stats, &mut seen_repos);
     if bulk {
-        store.resume_fts()?;
+        // Keep the indexing error if both fail; a failed rebuild stays marked dirty and is
+        // repaired by the next writer.
+        let resumed = store.resume_fts();
+        result?;
+        resumed?;
+    } else {
+        result?;
     }
-    result?;
     finish(store, &mut stats, start)?;
     Ok(stats)
 }
@@ -372,6 +379,7 @@ pub fn refresh_repo(
 ) -> Result<IndexStats> {
     let start = Instant::now();
     let mut stats = IndexStats::default();
+    store.recover_fts(false)?;
     let files = walk(repo_root, cfg);
     // Drop files that belong to nested repos.
     let mut memo = HashMap::new();

@@ -814,8 +814,11 @@ struct Step {
 pub fn dispatch_parents(conn: &Connection, id: i64) -> Result<Vec<(i64, String)>> {
     let mut st = conn.prepare_cached(
         "SELECT DISTINCT am.id, am.qname FROM symbols m
+         JOIN files mf ON mf.id = m.file_id
          JOIN symbols t ON t.repo_id = m.repo_id AND t.name = m.container
               AND t.kind IN ('struct', 'class', 'type', 'enum')
+              AND (m.parent_id IS NULL OR m.parent_id = t.id OR mf.lang = 'rust')
+         JOIN files tf ON tf.id = t.file_id AND tf.package = mf.package
          JOIN edges ie ON ie.from_symbol = t.id AND ie.kind IN ('impl', 'inherit')
          JOIN symbols i ON i.id = ie.to_symbol
          JOIN symbols am ON am.parent_id = i.id AND am.name = m.name AND am.kind = 'method'

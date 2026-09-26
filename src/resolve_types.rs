@@ -728,8 +728,23 @@ impl Ctx {
         match tag {
             "M:" => {
                 let lang = self.files[fi].lang;
+                let bv = self.eval_val(fi, from, base, d);
+                let bt = self.bind_val(&bv, d);
+                // The receiver's own method wins over the name-based shortcuts below
+                // (`Db::read`, `Bag.values` are not std's).
+                if let Ty::Known(t) = bt {
+                    if let Some((m, _)) = self.method_on(t, name, &mut HashSet::new(), d) {
+                        return match self.syms[m].ret.clone() {
+                            Some(r) => {
+                                let mf = self.syms[m].file;
+                                self.eval_val(mf, Some(self.syms[m].id), &r, d)
+                            }
+                            None => Val::Ty(Ty::Unknown),
+                        };
+                    }
+                }
                 if lang == Lang::Rust && PASSTHROUGH.contains(&name) {
-                    return self.eval_val(fi, from, base, d);
+                    return bv;
                 }
                 // Iterator adaptors keep the element type: track the collection itself.
                 let same_elems = match lang {
@@ -739,26 +754,32 @@ impl Ctx {
                     }
                     _ => false,
                 };
-                if same_elems {
-                    let v = self.eval_val(fi, from, base, d);
-                    if matches!(v, Val::Text { elem: false, .. }) {
-                        return v;
-                    }
+                if same_elems && matches!(bv, Val::Text { elem: false, .. }) {
+                    return bv;
                 }
                 if lang == Lang::Rust && UNWRAP.contains(&name) {
-                    return self.eval_val(fi, from, &format!("Q:{base}"), d);
+                    if let Val::Text {
+                        fi,
+                        from,
+                        text,
+                        awaited,
+                        elem,
+                        ..
+                    } = bv
+                    {
+                        return Val::Text {
+                            fi,
+                            from,
+                            text,
+                            unwrap: true,
+                            awaited,
+                            elem,
+                        };
+                    }
+                    return bv;
                 }
-                match self.bind_val(&self.eval_val(fi, from, base, d), d) {
-                    Ty::Known(t) => match self.method_on(t, name, &mut HashSet::new(), d) {
-                        Some((m, _)) => match self.syms[m].ret.clone() {
-                            Some(r) => {
-                                let mf = self.syms[m].file;
-                                self.eval_val(mf, Some(self.syms[m].id), &r, d)
-                            }
-                            None => Val::Ty(Ty::Unknown),
-                        },
-                        None => Val::Ty(Ty::External),
-                    },
+                match bt {
+                    Ty::Known(_) => Val::Ty(Ty::External),
                     other => Val::Ty(other),
                 }
             }
@@ -1062,6 +1083,23 @@ impl Ctx {
                     }
             })
             .collect();
+        // Several types share this name in the unit (`x::Config`, `y::Config`): keep the
+        // methods whose qualified name sits under this type's.
+        let own = if own.len() > 1 {
+            let prefix = format!("{}.", ts.qkey);
+            let under: Vec<usize> = own
+                .iter()
+                .copied()
+                .filter(|&m| self.syms[m].qkey.starts_with(&prefix))
+                .collect();
+            if under.is_empty() {
+                own
+            } else {
+                under
+            }
+        } else {
+            own
+        };
         if let Some(b) = self.best(ts.file, &own) {
             return Some((b, false));
         }

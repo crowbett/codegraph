@@ -335,6 +335,7 @@ impl<'a> Infer<'a> {
 
     fn params(&mut self, f: Node<'a>, out: &mut Vec<Decl<'a>>) {
         let at = f.start_byte();
+        let gens = self.generics(f);
         match self.lang {
             Lang::Go => {
                 if let Some(r) = f.child_by_field_name("receiver") {
@@ -351,7 +352,8 @@ impl<'a> Infer<'a> {
                     for p in ps.named_children(&mut c) {
                         let ty = p
                             .child_by_field_name("type")
-                            .and_then(|t| mk("T:", &squash(self.t(t))));
+                            .and_then(|t| subst(&squash(self.t(t)), &gens))
+                            .and_then(|t| mk("T:", &t));
                         let mut c2 = p.walk();
                         for n in p.children_by_field_name("name", &mut c2) {
                             Self::decl(out, self.t(n), at, ty.clone(), false);
@@ -360,33 +362,45 @@ impl<'a> Infer<'a> {
                 }
             }
             Lang::Rust => {
-                let bounds = self.rust_bounds(f);
-                let Some(ps) = f
-                    .child_by_field_name("parameters")
-                    .or_else(|| f.child_by_field_name("parameters"))
-                else {
+                let bounds = &gens;
+                let Some(ps) = f.child_by_field_name("parameters") else {
                     return;
                 };
                 let mut c = ps.walk();
                 for p in ps.named_children(&mut c) {
                     match p.kind() {
+                        "self_parameter" => {}
                         "parameter" => {
                             let ty = p
                                 .child_by_field_name("type")
-                                .and_then(|t| mk("T:", &subst(&squash(self.t(t)), &bounds)));
+                                .and_then(|t| subst(&squash(self.t(t)), bounds))
+                                .and_then(|t| mk("T:", &t));
                             if let Some(pat) = p.child_by_field_name("pattern") {
                                 for n in pattern_names(pat) {
                                     Self::decl(out, self.t(n), at, ty.clone(), false);
                                 }
                             }
                         }
-                        "identifier" => match self.callback_source(f) {
-                            Some(src) if first_param(ps, p) => {
-                                Self::decl_elem(out, self.t(p), at, src);
+                        "identifier" | "mut_pattern" | "ref_pattern" => {
+                            let names = pattern_names(p);
+                            match self.callback_source(f) {
+                                Some(src) if first_param(ps, p) && names.len() == 1 => {
+                                    Self::decl_elem(out, self.t(names[0]), at, src);
+                                }
+                                _ => {
+                                    for n in names {
+                                        Self::decl(out, self.t(n), at, None, false);
+                                    }
+                                }
                             }
-                            _ => Self::decl(out, self.t(p), at, None, false),
-                        },
-                        _ => {}
+                        }
+                        // Tuple / struct patterns (`|(repo, _)|`): bound, type unknown, and
+                        // they shadow any outer variable of the same name.
+                        _ => {
+                            for n in pattern_names(p) {
+                                Self::decl(out, self.t(n), at, None, false);
+                            }
+                        }
                     }
                 }
             }
@@ -404,7 +418,8 @@ impl<'a> Infer<'a> {
                         let ty = p
                             .child_by_field_name("type")
                             .and_then(|t| t.named_child(0))
-                            .and_then(|t| mk("T:", &squash(self.t(t))));
+                            .and_then(|t| subst(&squash(self.t(t)), &gens))
+                            .and_then(|t| mk("T:", &t));
                         let pat = p.child_by_field_name("pattern").unwrap_or(p);
                         if let (Some(s), None, "identifier") = (src, &ty, pat.kind()) {
                             if first_param(ps, p) {
@@ -565,7 +580,7 @@ impl<'a> Infer<'a> {
                         match right {
                             // `for _, v := range xs`: v is an element.
                             Some(r) if i == 1 => {
-                                Self::decl_elem(out, self.t(*x), n.start_byte(), r);
+                                Self::decl_elem(out, self.t(*x), r.end_byte(), r);
                             }
                             _ => Self::decl(out, self.t(*x), n.start_byte(), None, false),
                         }
@@ -610,7 +625,7 @@ impl<'a> Infer<'a> {
                 };
                 if matches!(p.kind(), "identifier" | "mut_pattern") {
                     for x in pattern_names(p) {
-                        Self::decl_elem(out, self.t(x), n.start_byte(), v);
+                        Self::decl_elem(out, self.t(x), v.end_byte(), v);
                     }
                 } else {
                     for x in pattern_names(p) {
@@ -641,7 +656,7 @@ impl<'a> Infer<'a> {
                     })
                     .filter(|x| x.kind() == "identifier" && p.named_child_count() == 2);
                 match (inner, v) {
-                    (Some(x), Some(v)) => Self::decl_elem(out, self.t(x), n.start_byte(), v),
+                    (Some(x), Some(v)) => Self::decl_elem(out, self.t(x), v.end_byte(), v),
                     _ => {
                         for x in pattern_names(p) {
                             Self::decl(out, self.t(x), n.start_byte(), None, false);
@@ -649,11 +664,8 @@ impl<'a> Infer<'a> {
                     }
                 }
             }
-            (Lang::Rust, "match_arm" | "closure_parameters") => {
-                let pat = n
-                    .child_by_field_name("pattern")
-                    .or_else(|| (n.kind() == "closure_parameters").then_some(n));
-                if let Some(p) = pat {
+            (Lang::Rust, "match_arm") => {
+                if let Some(p) = n.child_by_field_name("pattern") {
                     for x in pattern_names(p) {
                         Self::decl(out, self.t(x), n.start_byte(), None, false);
                     }
@@ -688,7 +700,7 @@ impl<'a> Infer<'a> {
                     return;
                 };
                 if l.kind() == "identifier" {
-                    Self::decl_elem(out, self.t(l), n.start_byte(), r);
+                    Self::decl_elem(out, self.t(l), r.end_byte(), r);
                 } else {
                     for x in pattern_names(l) {
                         Self::decl(out, self.t(x), n.start_byte(), None, false);
@@ -733,7 +745,7 @@ impl<'a> Infer<'a> {
                     n.child_by_field_name("left"),
                     n.child_by_field_name("right"),
                 ) {
-                    Self::decl_elem(out, self.t(l), n.start_byte(), r);
+                    Self::decl_elem(out, self.t(l), r.end_byte(), r);
                 }
             }
             (Lang::Python, "for_statement" | "with_item" | "for_in_clause" | "except_clause") => {
@@ -763,59 +775,153 @@ impl<'a> Infer<'a> {
         }
     }
 
-    /// Rust generic parameters with trait bounds (`<B: Backend>`, `where B: Backend`) of a
-    /// function and its enclosing `impl`: name -> first bound.
-    fn rust_bounds(&self, f: Node<'_>) -> Vec<(String, String)> {
-        let mut out = Vec::new();
-        let add_params = |tp: Node<'_>, out: &mut Vec<(String, String)>| {
-            let mut c = tp.walk();
-            for p in tp.named_children(&mut c) {
-                if p.kind() != "type_parameter" {
-                    continue;
-                }
-                let (Some(n), Some(b)) = (
-                    p.child_by_field_name("name"),
-                    p.child_by_field_name("bounds"),
-                ) else {
-                    continue;
-                };
-                if let Some(first) = b.named_child(0) {
-                    out.push((self.t(n).to_string(), squash(self.t(first))));
-                }
+    /// Generic type parameters in scope of function `f` (and its Rust `impl`, Go generic
+    /// receiver): name -> its single meaningful bound (`B: Backend`, `T Getter`,
+    /// `T extends Base`), or `None` when unbounded or ambiguous (`T: Clone + Debug`), in
+    /// which case a parameter of that type gets no hint rather than a wrong one.
+    fn generics(&self, f: Node<'_>) -> Vec<(String, Option<String>)> {
+        let mut acc: Vec<(String, Vec<String>)> = Vec::new();
+        let mut add = |name: &str, bound: Option<String>| {
+            let slot = if let Some(i) = acc.iter().position(|(n, _)| n == name) {
+                i
+            } else {
+                acc.push((name.to_string(), Vec::new()));
+                acc.len() - 1
+            };
+            if let Some(b) = bound {
+                acc[slot].1.push(b);
             }
         };
-        let mut scopes = vec![f];
-        if let Some(imp) = f
-            .parent()
-            .and_then(|p| p.parent())
-            .filter(|p| p.kind() == "impl_item")
-        {
-            scopes.push(imp);
-        }
-        for s in scopes {
-            if let Some(tp) = s.child_by_field_name("type_parameters") {
-                add_params(tp, &mut out);
-            }
-            let mut c = s.walk();
-            for ch in s.named_children(&mut c) {
-                if ch.kind() != "where_clause" {
-                    continue;
+        match self.lang {
+            Lang::Rust => {
+                let mut scopes = vec![f];
+                if let Some(imp) = f
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .filter(|p| p.kind() == "impl_item")
+                {
+                    scopes.push(imp);
                 }
-                let mut c2 = ch.walk();
-                for wp in ch.named_children(&mut c2) {
-                    let (Some(l), Some(b)) = (
-                        wp.child_by_field_name("left"),
-                        wp.child_by_field_name("bounds"),
-                    ) else {
-                        continue;
-                    };
-                    if let Some(first) = b.named_child(0) {
-                        out.push((self.t(l).to_string(), squash(self.t(first))));
+                for sc in scopes {
+                    if let Some(tp) = sc.child_by_field_name("type_parameters") {
+                        for p in named(tp) {
+                            if p.kind() != "type_parameter" {
+                                continue;
+                            }
+                            let Some(n) = p.child_by_field_name("name") else {
+                                continue;
+                            };
+                            add(self.t(n), None);
+                            if let Some(b) = p.child_by_field_name("bounds") {
+                                for bb in self.rust_bound_list(b) {
+                                    add(self.t(n), Some(bb));
+                                }
+                            }
+                        }
+                    }
+                    for ch in named(sc) {
+                        if ch.kind() != "where_clause" {
+                            continue;
+                        }
+                        for wp in named(ch) {
+                            let (Some(l), Some(b)) = (
+                                wp.child_by_field_name("left"),
+                                wp.child_by_field_name("bounds"),
+                            ) else {
+                                continue;
+                            };
+                            for bb in self.rust_bound_list(b) {
+                                add(self.t(l), Some(bb));
+                            }
+                        }
                     }
                 }
             }
+            Lang::Go => {
+                if let Some(tp) = f.child_by_field_name("type_parameters") {
+                    for d in named(tp) {
+                        let bound = d
+                            .child_by_field_name("type")
+                            .map(|t| squash(self.t(t)))
+                            .filter(|t| {
+                                simple_bound(t) && !matches!(t.as_str(), "any" | "comparable")
+                            });
+                        let mut c = d.walk();
+                        let names: Vec<Node<'_>> =
+                            d.children_by_field_name("name", &mut c).collect();
+                        for n in names {
+                            add(self.t(n), bound.clone());
+                        }
+                    }
+                }
+                // `func (s *Set[T]) Add(v T)`: T is the receiver type's parameter.
+                if let Some(r) = f.child_by_field_name("receiver") {
+                    let text = squash(self.t(r));
+                    if let (Some(a), Some(b)) = (text.find('['), text.rfind(']')) {
+                        for n in text[a + 1..b].split(',') {
+                            add(n.trim(), None);
+                        }
+                    }
+                }
+            }
+            Lang::TypeScript | Lang::Tsx | Lang::JavaScript => {
+                if let Some(tp) = f.child_by_field_name("type_parameters") {
+                    for p in named(tp) {
+                        let Some(n) = p.child_by_field_name("name") else {
+                            continue;
+                        };
+                        let bound = p
+                            .child_by_field_name("constraint")
+                            .and_then(|c| c.named_child(0))
+                            .map(|t| squash(self.t(t)))
+                            .filter(|t| simple_bound(t));
+                        add(self.t(n), bound);
+                    }
+                }
+            }
+            _ => {}
         }
-        out
+        acc.into_iter()
+            .map(|(n, mut b)| {
+                b.sort();
+                b.dedup();
+                (n, (b.len() == 1).then(|| b.remove(0)))
+            })
+            .collect()
+    }
+
+    /// Meaningful Rust trait bounds: no lifetimes, `?Sized` or std marker traits.
+    fn rust_bound_list(&self, b: Node<'_>) -> Vec<String> {
+        named(b)
+            .into_iter()
+            .filter(|x| !matches!(x.kind(), "lifetime" | "removed_trait_bound"))
+            .map(|x| squash(self.t(x)))
+            .filter(|t| {
+                let head = t.split('<').next().unwrap_or(t);
+                let head = head.rsplit("::").next().unwrap_or(head);
+                !t.starts_with('?')
+                    && !t.starts_with('\'')
+                    && !matches!(
+                        head,
+                        "Send"
+                            | "Sync"
+                            | "Clone"
+                            | "Copy"
+                            | "Debug"
+                            | "Default"
+                            | "Sized"
+                            | "Unpin"
+                            | "Display"
+                            | "Eq"
+                            | "PartialEq"
+                            | "Hash"
+                            | "Ord"
+                            | "PartialOrd"
+                            | "Serialize"
+                            | "Deserialize"
+                    )
+            })
+            .collect()
     }
 
     // ---- expressions ---------------------------------------------------------
@@ -980,8 +1086,8 @@ impl<'a> Infer<'a> {
             }
             Lang::Rust => {
                 let r = def.child_by_field_name("return_type")?;
-                let b = self.rust_bounds(def);
-                return mk("T:", &subst(&squash(self.t(r)), &b));
+                let b = self.generics(def);
+                return subst(&squash(self.t(r)), &b).and_then(|t| mk("T:", &t));
             }
             Lang::TypeScript | Lang::Tsx | Lang::JavaScript => {
                 let r = def.child_by_field_name("return_type")?;
@@ -1325,17 +1431,28 @@ fn strip_generics(s: &str) -> String {
     out.replace("::::", "::")
 }
 
-/// Replace a bare generic parameter (`B`, `&B`, `&mut B`) with its first bound.
-fn subst(ty: &str, bounds: &[(String, String)]) -> String {
-    let core = ty.trim_start_matches('&');
+/// Replace a bare generic parameter (`B`, `&B`, `&mut B`, `*T`) with its bound; `None`
+/// when the parameter has no single meaningful bound (no hint beats a wrong one).
+fn subst(ty: &str, gens: &[(String, Option<String>)]) -> Option<String> {
+    let core = ty.trim_start_matches(['&', '*']);
     let core = core
         .strip_prefix("mut ")
         .unwrap_or(core)
-        .trim_start_matches('&');
-    match bounds.iter().find(|(n, _)| n == core) {
+        .trim_start_matches(['&', '*']);
+    match gens.iter().find(|(n, _)| n == core) {
         Some((_, b)) => b.clone(),
-        None => ty.to_string(),
+        None => Some(ty.to_string()),
     }
+}
+
+/// A bound we can resolve: a plain (possibly qualified or generic) type name, not a
+/// union, intersection, literal or anonymous interface.
+fn simple_bound(t: &str) -> bool {
+    !t.is_empty()
+        && !t.contains(['|', '&', '{', '(', '~', '"', '\''])
+        && t.chars()
+            .next()
+            .is_some_and(|c| c.is_alphabetic() || c == '_')
 }
 
 #[cfg(test)]
@@ -1345,14 +1462,16 @@ mod tests {
     #[test]
     fn helpers() {
         assert_eq!(strip_generics("Vec::<u8>::new"), "Vec::new");
-        assert_eq!(subst("&B", &[("B".into(), "Backend".into())]), "Backend");
+        let g = |b: Option<&str>| vec![("B".to_string(), b.map(str::to_string))];
+        assert_eq!(subst("&B", &g(Some("Backend"))).as_deref(), Some("Backend"));
+        assert_eq!(subst("&B", &g(None)), None);
         assert_eq!(
-            subst("&mut B", &[("B".into(), "Backend".into())]),
-            "Backend"
+            subst("&mut B", &g(Some("Backend"))).as_deref(),
+            Some("Backend")
         );
         assert_eq!(squash("&'a  Repo"), "&'a Repo");
         assert_eq!(squash("Box< dyn Backend >"), "Box<dyn Backend>");
         assert_eq!(squash("impl Backend + Send"), "impl Backend+Send");
-        assert_eq!(subst("Foo", &[("B".into(), "Backend".into())]), "Foo");
+        assert_eq!(subst("Foo", &g(Some("Backend"))).as_deref(), Some("Foo"));
     }
 }

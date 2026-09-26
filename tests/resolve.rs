@@ -161,3 +161,55 @@ fn callers_include_dynamic_dispatch() {
         Some("backend::Backend::list")
     );
 }
+
+// Regressions from the overnight review (each was a confirmed wrong or missing edge).
+#[test]
+fn review_regressions_rust() {
+    let ix = index_fixture("review/rs");
+    let f = "src/lib.rs";
+    // H1: the receiver's own `read` wins over the std passthrough shortcut.
+    assert_edge(&ix, f, 28, "get", "Snap::get", "exact");
+    // H2: a tuple closure parameter shadows the outer `repo`.
+    assert_ne!(
+        edge(&ix.store, f, 32, "save").map(|e| e.0),
+        Some("Db::save".to_string())
+    );
+    assert_edge(&ix, f, 33, "save", "Db::save", "exact");
+    // M1: `if let Some(node) = node.parent()` binds after its initializer.
+    assert_edge(&ix, f, 37, "parent", "Snap::parent", "exact");
+    assert_edge(&ix, f, 38, "save", "Snap::save", "exact");
+    // H3: `?Sized` / marker bounds are skipped.
+    assert_edge(&ix, f, 43, "put", "Put::put", "exact");
+    assert_edge(&ix, f, 47, "put", "Put::put", "exact");
+    // H4: same-named types in two modules keep their own methods.
+    assert_edge(&ix, f, 51, "only_x", "x::Config::only_x", "exact");
+}
+
+#[test]
+fn review_regressions_go_and_ts() {
+    use codegraph::query::{call_tree, Dir, Filter};
+    let ix = index_fixture("review/gox");
+    // H3: a type parameter constrained by an interface.
+    assert_edge(&ix, "a/a.go", 8, "Get", "a.Getter.Get", "exact");
+    // H4: a.Server.Close is not reached through b.OpenCloser.
+    let t = call_tree(
+        &ix.store,
+        "a.Server.Close",
+        &Filter::default(),
+        Dir::Callers,
+        1,
+        false,
+    )
+    .unwrap();
+    assert!(
+        t.roots
+            .iter()
+            .all(|r| r.children.iter().all(|c| c.via.is_none())),
+        "{:?}",
+        t.roots
+    );
+    let ix = index_fixture("review/ts");
+    assert_edge(&ix, "main.ts", 23, "run", "main.Base.run", "exact");
+    // H1 (TS): Bag.values is the repo's own method, not Array.prototype.values.
+    assert_edge(&ix, "main.ts", 27, "go", "main.Item.go", "exact");
+}
