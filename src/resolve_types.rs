@@ -1180,6 +1180,10 @@ impl Ctx {
         if ifaces.is_empty() {
             return out;
         }
+        // Method sets of every concrete type, then an inverted index: method name -> types.
+        // Each interface only checks the types that have its rarest method, instead of
+        // every type (types x interfaces blows up on large Go repos).
+        let mut tsets: Vec<(usize, MethodSet<'_>)> = Vec::new();
         for (t, s) in self.syms.iter().enumerate() {
             if !matches!(s.kind, SymKind::Struct | SymKind::Type)
                 || self.files[s.file].lang != Lang::Go
@@ -1188,10 +1192,25 @@ impl Ctx {
             }
             let mut mset = MethodSet::new();
             self.type_methods(t, &methods, &mut mset, &mut HashSet::new());
-            if mset.is_empty() {
-                continue;
+            if !mset.is_empty() {
+                tsets.push((t, mset));
             }
-            for (i, iset) in &ifaces {
+        }
+        let mut by_method: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (k, (_, mset)) in tsets.iter().enumerate() {
+            for name in mset.keys() {
+                by_method.entry(name).or_default().push(k);
+            }
+        }
+        for (i, iset) in &ifaces {
+            let Some(rarest) = iset
+                .keys()
+                .min_by_key(|n| by_method.get(*n).map_or(0, Vec::len))
+            else {
+                continue;
+            };
+            for &k in by_method.get(rarest).into_iter().flatten() {
+                let (t, mset) = &tsets[k];
                 let covers = iset.iter().all(|(name, ishape)| {
                     mset.get(name).is_some_and(|tshape| match (ishape, tshape) {
                         (Some(a), Some(b)) => a == b,
@@ -1199,10 +1218,11 @@ impl Ctx {
                     })
                 });
                 if covers {
-                    out.push((t, *i));
+                    out.push((*t, *i));
                 }
             }
         }
+        out.sort_unstable();
         out
     }
 
