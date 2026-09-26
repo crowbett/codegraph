@@ -351,10 +351,12 @@ error rates — read them before trusting an edge blindly, especially `likely` a
 - **Interface/trait/base-class dispatch** points `callers`/`impact` at all known
   implementations via `[via ...]` annotations, but a resolved call still targets one
   concrete symbol (or the abstract method) per edge, not a fan-out to every implementer.
-- **Rust refs recall is ~68%,** not a bug in the same sense as a false edge: type references
-  in qualifier position (`Error::Locked(..)`, a bare `Type::` path used as a value) are not
-  extracted as edges at all yet. Rust callers recall (95.6%) and precision (98.6%) are not
-  affected.
+- **Rust is the weakest language: 85% callers recall on the corpus** (94–97% on the author's
+  own Rust tools, 71–82% on generic- and macro-heavy libraries like serde-json and bytes).
+  Receivers typed only by trait bounds of an `impl` (`self.read.peek()` with `R: Read`), calls
+  written with a turbofish inside macros, and macro-generated items are the main misses. Rust
+  refs recall is ~65%: type references in qualifier position (`Error::Locked(..)`) are not
+  edges. False edges stay low (2.7%).
 - **`#[cfg]` / build-tag twins**: codegraph picks one variant of a `#[cfg]`-gated or
   build-tag-gated definition; SCIP (and the compiler) pick the host's. This shows up as
   scoring noise on gated code, not as a systematic blind spot.
