@@ -1884,18 +1884,42 @@ pub fn status(store: &Store, filter: &Filter) -> Result<Status> {
 
 /// Repo (id, name, root) containing an absolute path, if indexed.
 pub fn repo_containing(store: &Store, path: &Path) -> Result<Option<(i64, String, PathBuf)>> {
+    let repos = store.repos()?;
+    if let Some(hit) = deepest_repo(&repos, path, |root| Some(root.to_path_buf())) {
+        return Ok(Some(hit));
+    }
+    // Roots are stored as given, while `path` may be canonical (the cwd, or a confined
+    // argument): compare canonical forms too, so symlinked roots still match (macOS
+    // /var -> /private/var, a symlinked ~/dev). Remote roots are never touched.
+    let Ok(canon) = std::fs::canonicalize(path).map(util::strip_verbatim) else {
+        return Ok(None);
+    };
+    Ok(deepest_repo(&repos, &canon, |root| {
+        if util::is_remote_path(&root.to_string_lossy()) {
+            return None;
+        }
+        std::fs::canonicalize(root).ok().map(util::strip_verbatim)
+    }))
+}
+
+/// The repo with the longest root containing `path`, comparing against `root_of(root)`.
+fn deepest_repo(
+    repos: &[crate::store::RepoRow],
+    path: &Path,
+    root_of: impl Fn(&Path) -> Option<PathBuf>,
+) -> Option<(i64, String, PathBuf)> {
     let mut best: Option<(i64, String, PathBuf)> = None;
-    for r in store.repos()? {
-        if util::rel_under(&r.root, path).is_some() {
+    for r in repos {
+        if root_of(&r.root).is_some_and(|root| util::rel_under(&root, path).is_some()) {
             let longer = best
                 .as_ref()
                 .is_none_or(|(_, _, b)| r.root.as_os_str().len() > b.as_os_str().len());
             if longer {
-                best = Some((r.id, r.name, r.root));
+                best = Some((r.id, r.name.clone(), r.root.clone()));
             }
         }
     }
-    Ok(best)
+    best
 }
 
 /// Bind a list of ids as SQL parameters (helper for ad-hoc queries in tests).

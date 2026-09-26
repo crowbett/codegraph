@@ -1,54 +1,149 @@
 name: release
 
+# A pushed `v*` tag builds every target and creates a DRAFT GitHub release with the
+# archives and SHA256SUMS; publishing the draft is a manual step (see docs/INSTALL.md).
+# workflow_dispatch builds the same archives as workflow artifacts only (dry run).
+
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and upload artifacts only; never create a release
+        type: boolean
+        default: true
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  release:
-    runs-on: windows-latest
+  build:
+    name: build (${{ matrix.os }}-${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            os: windows
+            arch: amd64
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            os: linux
+            arch: amd64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            os: linux
+            arch: arm64
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            os: macos
+            arch: arm64
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            os: macos
+            arch: amd64
+    runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: install musl toolchain
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: install aarch64 cross toolchain
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+          {
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
+            echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
+            echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar"
+          } >> "$GITHUB_ENV"
+
+      - name: version
+        id: ver
+        shell: bash
+        run: |
+          crate=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            version=${GITHUB_REF_NAME#v}
+            if [ "$version" != "$crate" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $crate"
+              exit 1
+            fi
+          else
+            version=$crate
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: build
-        run: cargo build --release --locked
-      - name: package
-        id: pkg
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: package (zip)
+        if: matrix.os == 'windows'
         shell: pwsh
         run: |
-          $crate = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
-          if ($env:GITHUB_REF_TYPE -eq 'tag') {
-            $version = $env:GITHUB_REF_NAME -replace '^v', ''
-            if ($version -ne $crate) { throw "tag $env:GITHUB_REF_NAME does not match Cargo.toml version $crate" }
-          } else {
-            $version = $crate
-          }
-          $zip = "codegraph-$version-windows-amd64.zip"
+          $name = "codegraph-${{ steps.ver.outputs.version }}-windows-amd64.zip"
           New-Item -ItemType Directory -Force dist | Out-Null
-          Compress-Archive -Force -Path target/release/codegraph.exe, README.md, LICENSE -DestinationPath "dist/$zip"
-          $hash = (Get-FileHash "dist/$zip" -Algorithm SHA256).Hash.ToLowerInvariant()
-          [IO.File]::WriteAllText("dist/$zip.sha256", "$hash  $zip`n")
-          Get-Content "dist/$zip.sha256"
-          "zip=dist/$zip" >> $env:GITHUB_OUTPUT
-      - name: upload artifact
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
+          Copy-Item target/${{ matrix.target }}/release/codegraph.exe .
+          Compress-Archive -Force -Path codegraph.exe, README.md, LICENSE -DestinationPath "dist/$name"
+          & ./codegraph.exe version
+
+      - name: package (tar.gz)
+        if: matrix.os != 'windows'
+        shell: bash
+        run: |
+          name="codegraph-${{ steps.ver.outputs.version }}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
+          mkdir -p dist stage
+          cp "target/${{ matrix.target }}/release/codegraph" README.md LICENSE stage/
+          tar -C stage -czf "dist/$name" codegraph README.md LICENSE
+          file stage/codegraph || true
+          # Run it where the host can (x86_64 macOS runs under Rosetta on arm64 runners).
+          if [ "${{ matrix.target }}" != "aarch64-unknown-linux-gnu" ]; then stage/codegraph version; fi
+
+      - uses: actions/upload-artifact@v4
         with:
-          name: codegraph-windows-amd64
-          path: ${{ steps.pkg.outputs.zip }}
-      - name: github release
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+          name: codegraph-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: codegraph-*
+          merge-multiple: true
+      - name: checksums
+        working-directory: dist
+        run: |
+          sha256sum codegraph-* > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SHA256SUMS
+          path: dist/SHA256SUMS
+      - name: draft GitHub release
+        if: github.ref_type == 'tag' && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
         uses: softprops/action-gh-release@v2
         with:
+          draft: true
           files: |
-            ${{ steps.pkg.outputs.zip }}
-            ${{ steps.pkg.outputs.zip }}.sha256
+            dist/codegraph-*
+            dist/SHA256SUMS
           generate_release_notes: true
