@@ -43,18 +43,18 @@ The repo you ask about is re-indexed automatically before each answer.";
 /// Tool definitions for `tools/list`.
 pub fn tool_list() -> Value {
     let ro = json!({"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false});
-    let repo = json!({"type": "string", "description": "Restrict to one repo: name as shown by codegraph_status (e.g. \"go/pulse\"), its last segment (\"pulse\"), or its root path. Defaults to all repos."});
-    let symbol = json!({"type": "string", "description": "Symbol: simple name (\"Evaluate\"), qualified name (\"rules.Engine.Evaluate\", \"store::Store::open\"), or location \"path/to/file.go:42\" (the innermost symbol enclosing that line)."});
+    let repo = json!({"type": "string", "description": "Repo name (\"go/pulse\" or \"pulse\") or root path. Default: all."});
+    let symbol = json!({"type": "string", "description": "Name, qualified name (Engine.Eval, store::Store::open) or file:line."});
     json!([
         {
             "name": "codegraph_find",
             "title": "Find symbols",
-            "description": "Search function/type/const definitions by name across all indexed repos. Ranks exact name > qualified-name suffix > prefix > substring > doc-comment text > fuzzy subsequence. Returns kind, qualified name, file:line and signature. Use this first when you only know part of a name; then codegraph_def to read it.",
+            "description": "Find definitions by name or fragment (exact > suffix > prefix > substring > doc text > fuzzy): kind, qualified name, file:line, signature.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Name, qualified name, or fragment (e.g. \"Evaluate\", \"Engine.Eval\", \"hndlreq\")."},
-                    "kind": {"type": "string", "description": "Optional kind filter: fn (functions+methods), method, class, struct, interface, trait, enum, type, types (all type-like), const, module, macro."},
+                    "query": {"type": "string", "description": "Name or fragment."},
+                    "kind": {"type": "string", "description": "fn, method, class, struct, interface, trait, enum, type, types, const, module, macro."},
                     "repo": repo,
                     "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20}
                 },
@@ -66,13 +66,13 @@ pub fn tool_list() -> Value {
         {
             "name": "codegraph_def",
             "title": "Go to definition",
-            "description": "Definition of a symbol with its source code (plus the doc comment above it), line-numbered, and its exact file:line range. Cheaper and more precise than reading the whole file. Ambiguous names return up to `max_defs` definitions.",
+            "description": "Source of a definition (with its doc comment), line-numbered. Cheaper than reading the file.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "symbol": symbol,
                     "repo": repo,
-                    "max_lines": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 80, "description": "Max source lines per definition."},
+                    "max_lines": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 80, "description": "Lines per definition."},
                     "max_defs": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3}
                 },
                 "required": ["symbol"],
@@ -83,12 +83,12 @@ pub fn tool_list() -> Value {
         {
             "name": "codegraph_refs",
             "title": "Find references",
-            "description": "Every place a symbol is used: calls, type references, impls/implements, inheritance — with file:line, the enclosing function, the source line, and resolution confidence. Use before renaming or changing a signature.",
+            "description": "Every use of a symbol (calls, type refs, impls, inheritance) with file:line, enclosing function and source line.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "symbol": symbol,
-                    "kind": {"type": "string", "enum": ["call", "ref", "impl", "inherit"], "description": "Only this reference kind."},
+                    "kind": {"type": "string", "enum": ["call", "ref", "impl", "inherit"], "description": "Only this kind."},
                     "repo": repo,
                     "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 60}
                 },
@@ -100,7 +100,7 @@ pub fn tool_list() -> Value {
         {
             "name": "codegraph_callers",
             "title": "Callers (call hierarchy up)",
-            "description": "Who calls this function/method, as a tree `depth` levels up (callers of callers...). Each node shows the caller's qualified name and the call site file:line; cycles and repeats are marked. Answers \"how is this reached?\".",
+            "description": "Call tree up: who calls this, `depth` levels, with call sites. Includes calls through interfaces/traits it implements.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -116,13 +116,13 @@ pub fn tool_list() -> Value {
         {
             "name": "codegraph_callees",
             "title": "Callees (call hierarchy down)",
-            "description": "What this function/method calls, as a tree `depth` levels down. In-repo callees show their definition file:line; calls into the stdlib/dependencies are listed as external names. Answers \"what does this do / touch?\".",
+            "description": "Call tree down: what this calls, `depth` levels; stdlib/dependency calls listed by name.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "symbol": symbol,
                     "depth": {"type": "integer", "minimum": 1, "maximum": 6, "default": 1},
-                    "external": {"type": "boolean", "default": true, "description": "Include calls that resolve outside the graph."},
+                    "external": {"type": "boolean", "default": true, "description": "Include external calls."},
                     "repo": repo
                 },
                 "required": ["symbol"],
@@ -133,11 +133,11 @@ pub fn tool_list() -> Value {
         {
             "name": "codegraph_outline",
             "title": "File outline",
-            "description": "Nested outline of one source file: types, functions, methods, consts with line ranges and signatures. Use instead of reading a large file to decide which part to read. Works on unindexed files too (parsed on the fly).",
+            "description": "Nested outline of a file (symbols, line ranges, signatures); use before reading a large file.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "file": {"type": "string", "description": "Absolute path, path relative to the working directory, or a repo-relative suffix like \"internal/rules/engine.go\"."},
+                    "file": {"type": "string", "description": "Path, or repo-relative suffix (internal/rules/engine.go)."},
                     "signatures": {"type": "boolean", "default": true}
                 },
                 "required": ["file"],
@@ -148,11 +148,11 @@ pub fn tool_list() -> Value {
         {
             "name": "codegraph_impact",
             "title": "Change impact",
-            "description": "What transitively depends on a file or symbol — \"what breaks if I change X\". Walks reverse call/type/impl/inherit edges `depth` levels and lists dependent symbols by distance plus the affected files (and, for a file, the files importing it). Use before refactors to find code and tests to update.",
+            "description": "What breaks if X changes: symbols depending on a file or symbol, by distance, plus affected files.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "target": {"type": "string", "description": "A file path (every symbol in it) or a symbol (name, qualified name, file:line)."},
+                    "target": {"type": "string", "description": "File path or symbol."},
                     "depth": {"type": "integer", "minimum": 1, "maximum": 8, "default": 3},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100},
                     "repo": repo
@@ -165,7 +165,7 @@ pub fn tool_list() -> Value {
         {
             "name": "codegraph_status",
             "title": "Graph status",
-            "description": "Which repos are indexed, their size (files/symbols/edges), share of edges resolved and by what confidence, and when each was last indexed.",
+            "description": "Indexed repos: size, resolution rates, last indexed.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"repo": repo},

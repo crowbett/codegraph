@@ -93,14 +93,14 @@ What that does and does not show:
 ## Results
 
 <!-- results:start -->
-Run `20260926-064959-a77b` · mode **fake** · upstream `fake_llm (scripted, fake-rules.json)` · 31 questions × 2 arms · 2026-09-25 23:50
+Run `20260926-065449-30ee` · mode **fake** · upstream `fake_llm (scripted, fake-rules.json)` · 31 questions × 2 arms · 2026-09-25 23:54
 
 | arm | pass rate | tokens total | tokens / question (median) | tool calls / question (mean) | turns / question (mean) | tool output chars (total) | tokens incl. tool schemas (est.) |
 |---|---|---|---|---|---|---|---|
 | grep | 31/31 (100%) | 45,226 | 1,385 | 2.2 | 2.8 | 85,901 | 91,866 |
-| codegraph | 31/31 (100%) | 24,400 | 678 | 1.2 | 2.2 | 22,101 | 165,167 |
+| codegraph | 31/31 (100%) | 24,400 | 678 | 1.2 | 2.2 | 22,101 | 125,369 |
 
-codegraph / grep total tokens: **0.54×** (tool schemas per turn, est.: grep 530, codegraph 2,101 tokens)
+codegraph / grep total tokens: **0.54×** (tool schemas per turn, est.: grep 530, codegraph 1,507 tokens)
 
 | Q | lang | kind | grep tokens | codegraph tokens | cg/grep | grep calls | cg calls | grep pass | cg pass |
 |---|---|---|---|---|---|---|---|---|---|
