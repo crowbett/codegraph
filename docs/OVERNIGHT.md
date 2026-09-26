@@ -11,6 +11,10 @@ last. Started 2026-09-25 ~21:45 local.
 - Delete the stray evalrig worktree (see M4): `git -C ~/dev/py/evalrig worktree remove --force
   .claude/worktrees/agent-abd2e738dc32c6eda` and `git -C ~/dev/py/evalrig branch -D
   worktree-agent-abd2e738dc32c6eda`.
+- Delete the superseded remote branch `wip/sec1-extract-dos` (its work landed as 9f5bf03):
+  `git push origin --delete wip/sec1-extract-dos ; git branch -D wip/sec1-extract-dos`.
+- Merge `overnight/1.0` into `main` when you're happy with it (schema is now v4: the first
+  `index` after upgrading rebuilds the graph).
 - Cut the first multi-platform release (tag → draft release → publish), then fill the
   scoop/winget/brew hashes from its SHA256SUMS. npm publishing needs your npm login; brew needs
   a `homebrew-tap` repo.
@@ -197,4 +201,47 @@ pins in bench/scale.toml: Linux v6.12, rust-lang/rust 1.85.0, kubernetes v1.32.0
 deferred query indexes, streaming writer, parallel pass 2, deterministic ties, `#define`
 constants out of substring search (schema v3), per-repo refresh counts. Linux cold on current
 code (before schema v3): **224 s** (parse 57 / write tail 6 / resolve 58 / index+FTS rebuild
-~100). Re-measurement of linux + combined on current code is running.
+~100). Re-measured on 9f5bf03 in round 3 (below).
+
+## Round 3 — day session 2026-09-26 (continuing the interrupted night)
+
+Picked up the two ungated WIP commits, then went after the Rust recall gap.
+
+| commit | what | verified |
+|---|---|---|
+| 4b3dfcc | gates b1d2b9f (turbofish calls in macro args) + fixture assertions that fail on the old query | fmt/clippy/tests |
+| 9f5bf03 | **SEC-1 landed** (see below) | tests/limits.rs, bench, ~/dev graph diff |
+| 64e00c1 | Rust `#[path = ".."] mod x;` modules, schema v4 | bench, tests/resolve.rs |
+| b06ebb5 | recorded accuracy: Rust callers recall 85.1 → **88.3%**, precision 97.3 → 97.4% | `bench:record` |
+
+**SEC-1.** The interrupted branch had the right idea (O(1) `Nav` links instead of
+tree-sitter 0.27's O(depth) `parent()`/siblings, a query match limit, a hint time budget) but
+missed the real wall: past a tree depth of 65,535 (a ~64k-link `x.b().b()…` chain, 256 KB)
+tree-sitter's query cursor never finishes, match limit or not (32k links: 0.8 s; 64k: killed
+after minutes). Added a pre-query depth walk: trees deeper than 4,096 are not extracted
+(`FileFacts::limited`, lines/has_errors only). The WIP's own test also showed the 256 match
+limit drops calls on 4k-link chains; measured on the corpus it costs nothing (accuracy JSON
+byte-identical with and without the limit), so it stays and is documented as lossy only on
+absurd chains. Results: 1 MB hostile chain 0.7–2.3 s release (was: never finishes); ~/dev
+graph identical to the pre-change build (2,655 files / 33,455 symbols / 316,207 edges, same
+confidence split); cold index of ~/dev 4.06 s vs 4.24 s (mean of 3).
+
+**`#[path]` modules.** serde-json's lexical tests live in a test crate that pulls the library's
+sources in with `#[path = "../src/lexical/mod.rs"] mod lexical;`; none of it resolved.
+File-level `#[path] mod` declarations are now `mod_path` imports; `crate::` in a file outside
+`src/` loaded that way means its declarer's crate (a `src/` file keeps its own crate even when
+a test crate includes it — the fixture caught that). First version added 116 exact-tier
+false refs: serde-json's `io` module is a `#[cfg]` twin (`#[cfg(not(feature = "std"))]
+#[path = "core.rs"] mod imp;` next to `use std::io as imp;`) and the host build is std. A
+`#[path]` name that is also `use`-bound in the same file, or declared twice, is now skipped.
+serde-json callers recall 76.6 → 83.5%, no new wrong call edges; Rust refs recall +1.8 pp;
+calibration unchanged (exact 98.6 / likely 91.4 / name_only 54.5 on the 16-repo corpus).
+
+Dead end: TS explicit `this` parameters (`function make_(this: Annotation, ..)`, ~7 mobx
+sites). The hint is easy (`pattern_names` skipped the `this` pattern), but `resolve_types`
+does not look up methods declared in a type alias's object type, so mobx gained 0 and
+devkit lost 1 hit. Reverted; needs type-literal members in resolve_types first.
+
+Still open for Rust recall (bytes 79%, serde-json 83%): in-repo extension traits on std
+types (`impl BufMut for Vec<u8>` → `vec.put(..)`; round 2's `Foreign(type)` attempt was
++0.2/−0.3), `json!(..)` macro return types (`data.pointer(..)`), generic-bounded fields.
