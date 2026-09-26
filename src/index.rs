@@ -422,47 +422,42 @@ fn index_repo(
     stats.files += found.len();
 
     let t_parse = Instant::now();
-    let outcomes: Vec<Outcome> = found
-        .par_iter()
-        .map(|f| {
-            if f.size == u64::MAX {
-                return Outcome::Failed;
-            }
-            let old = existing.get(&f.rel);
-            if !opts.full {
-                if let Some(o) = old {
-                    if o.mtime == f.mtime && o.size == f.size as i64 {
-                        return Outcome::Unchanged;
-                    }
+    let parse_one = |f: &Found| -> Outcome {
+        if f.size == u64::MAX {
+            return Outcome::Failed;
+        }
+        let old = existing.get(&f.rel);
+        if !opts.full {
+            if let Some(o) = old {
+                if o.mtime == f.mtime && o.size == f.size as i64 {
+                    return Outcome::Unchanged;
                 }
             }
-            if opts.budget.is_some_and(|b| start.elapsed() > b) {
-                return Outcome::Pending;
-            }
-            let Ok(bytes) = std::fs::read(&f.abs) else {
-                return Outcome::Failed;
-            };
-            let hash = hash_hex(&bytes);
-            if !opts.full {
-                if let Some(o) = old {
-                    if o.hash == hash {
-                        return Outcome::Touch {
-                            id: o.id,
-                            mtime: f.mtime,
-                            size: f.size as i64,
-                        };
-                    }
+        }
+        if opts.budget.is_some_and(|b| start.elapsed() > b) {
+            return Outcome::Pending;
+        }
+        let Ok(bytes) = std::fs::read(&f.abs) else {
+            return Outcome::Failed;
+        };
+        let hash = hash_hex(&bytes);
+        if !opts.full {
+            if let Some(o) = old {
+                if o.hash == hash {
+                    return Outcome::Touch {
+                        id: o.id,
+                        mtime: f.mtime,
+                        size: f.size as i64,
+                    };
                 }
             }
-            match extract::extract(f.lang, &bytes) {
-                Ok(facts) => Outcome::Parsed(Box::new((facts, hash))),
-                Err(_) => Outcome::Failed,
-            }
-        })
-        .collect();
+        }
+        match extract::extract(f.lang, &bytes) {
+            Ok(facts) => Outcome::Parsed(Box::new((facts, hash))),
+            Err(_) => Outcome::Failed,
+        }
+    };
 
-    stats.parse_ms += t_parse.elapsed().as_millis();
-    let t_write = Instant::now();
     let mut layout = Layout::new(repo_root);
     let mut rs = RepoStats {
         name: name.to_string(),
@@ -473,47 +468,47 @@ fn index_repo(
         resolve: None,
     };
     let present: HashSet<&str> = found.iter().map(|f| f.rel.as_str()).collect();
+    // Parse in parallel and write as results arrive: the single SQLite writer overlaps
+    // the parsers, and a bounded channel caps how many parsed files sit in memory.
+    let (sender, receiver) = std::sync::mpsc::sync_channel::<(usize, Outcome)>(512);
+    let mut parse_wall = 0u128;
     let tx = store.conn_mut().transaction()?;
-    for (f, o) in found.iter().zip(outcomes) {
-        match o {
-            Outcome::Unchanged => stats.unchanged += 1,
-            Outcome::Touch { id, mtime, size } => {
-                stats.unchanged += 1;
-                store::touch_file(&tx, id, mtime, size)?;
+    let write_result: Result<()> = std::thread::scope(|scope| {
+        let producer = scope.spawn(|| {
+            found
+                .par_iter()
+                .enumerate()
+                .for_each_with(sender, |s, (i, f)| {
+                    // A closed channel means the writer failed; stop quietly.
+                    let _ = s.send((i, parse_one(f)));
+                });
+            t_parse.elapsed().as_millis()
+        });
+        let mut res = Ok(());
+        for (i, o) in receiver {
+            if res.is_err() {
+                continue;
             }
-            Outcome::Pending => stats.pending += 1,
-            Outcome::Failed => {
-                if f.size == u64::MAX {
-                    stats.skipped_large += 1;
-                }
-                if let Some(o) = existing.get(&f.rel) {
-                    store::delete_file(&tx, o.id)?;
-                    rs.removed += 1;
-                }
-            }
-            Outcome::Parsed(b) => {
-                let (facts, hash) = *b;
-                if facts.has_errors {
-                    stats.parse_errors += 1;
-                }
-                let unit = layout.unit(&f.rel, f.lang, facts.package.as_deref());
-                store::replace_file(
-                    &tx,
-                    repo_id,
-                    &NewFile {
-                        path: &f.rel,
-                        lang: f.lang,
-                        hash: &hash,
-                        mtime: f.mtime,
-                        size: f.size as i64,
-                        unit: &unit,
-                        facts: &facts,
-                    },
-                )?;
-                rs.parsed += 1;
-            }
+            res = write_outcome(
+                &tx,
+                repo_id,
+                &found[i],
+                o,
+                &existing,
+                &mut layout,
+                &mut rs,
+                stats,
+            );
         }
-    }
+        parse_wall = producer.join().unwrap_or_default();
+        res
+    });
+    write_result?;
+    stats.parse_ms += parse_wall;
+    // Writing overlaps parsing: count the time the writer ran past the parsers, plus the
+    // deletions and the commit below.
+    let tail = t_parse.elapsed().as_millis().saturating_sub(parse_wall);
+    let t_write = Instant::now();
     for (rel, row) in &existing {
         if !present.contains(rel.as_str()) {
             store::delete_file(&tx, row.id)?;
@@ -521,7 +516,7 @@ fn index_repo(
         }
     }
     tx.commit()?;
-    stats.write_ms += t_write.elapsed().as_millis();
+    stats.write_ms += tail + t_write.elapsed().as_millis();
     stats.parsed += rs.parsed;
     stats.removed += rs.removed;
     if rs.parsed > 0 || rs.removed > 0 || opts.full {
@@ -531,6 +526,59 @@ fn index_repo(
         stats.changed_repos.push(rs);
     }
     store.set_indexed(repo_id, util::now_unix())?;
+    Ok(())
+}
+
+/// Apply one parse outcome inside the repo's write transaction.
+#[allow(clippy::too_many_arguments)]
+fn write_outcome(
+    tx: &rusqlite::Connection,
+    repo_id: i64,
+    f: &Found,
+    o: Outcome,
+    existing: &HashMap<String, store::FileRow>,
+    layout: &mut Layout,
+    rs: &mut RepoStats,
+    stats: &mut IndexStats,
+) -> Result<()> {
+    match o {
+        Outcome::Unchanged => stats.unchanged += 1,
+        Outcome::Touch { id, mtime, size } => {
+            stats.unchanged += 1;
+            store::touch_file(tx, id, mtime, size)?;
+        }
+        Outcome::Pending => stats.pending += 1,
+        Outcome::Failed => {
+            if f.size == u64::MAX {
+                stats.skipped_large += 1;
+            }
+            if let Some(o) = existing.get(&f.rel) {
+                store::delete_file(tx, o.id)?;
+                rs.removed += 1;
+            }
+        }
+        Outcome::Parsed(b) => {
+            let (facts, hash) = *b;
+            if facts.has_errors {
+                stats.parse_errors += 1;
+            }
+            let unit = layout.unit(&f.rel, f.lang, facts.package.as_deref());
+            store::replace_file(
+                tx,
+                repo_id,
+                &NewFile {
+                    path: &f.rel,
+                    lang: f.lang,
+                    hash: &hash,
+                    mtime: f.mtime,
+                    size: f.size as i64,
+                    unit: &unit,
+                    facts: &facts,
+                },
+            )?;
+            rs.parsed += 1;
+        }
+    }
     Ok(())
 }
 
