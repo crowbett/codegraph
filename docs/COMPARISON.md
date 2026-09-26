@@ -1,0 +1,34 @@
+# codegraph vs. everything else
+
+An honest comparison, not a sales pitch. Numbers for codegraph are the measured ones from
+[ACCURACY.md](ACCURACY.md) and [AGENT-EVAL.md](AGENT-EVAL.md); everything else is described
+qualitatively, by what the tool fundamentally is, because no comparable benchmark was run
+against them here.
+
+| | grep / ripgrep | ctags / universal-ctags | LSP server (gopls, rust-analyzer, tsserver) via an MCP bridge | SCIP / Sourcegraph | GitHub code search | **codegraph** |
+|---|---|---|---|---|---|---|
+| **What it is** | literal/regex text search | a per-repo tag index of definitions | the compiler's own language service, live | a compiler-derived index format + a server to browse it | hosted text/regex search over pushed branches | a tree-sitter symbol + call graph, heuristically resolved |
+| **Setup** | none (one binary) | `ctags -R`, regenerate by hand or on save | one server per language; needs the project to actually build (`go.mod`/`Cargo.toml`/`tsconfig`, `npm install`) — first load can be slow | heaviest: build a SCIP index per repo per language (often in CI), then serve it | none — it's a website/API | one binary, `codegraph index`; no build required (tree-sitter parses syntax, not a built project) |
+| **Languages** | any text | wide, but shallow (defs only, no call graph) | one server per language; each has its own quirks and query surface | whichever indexers you maintain | any pushed text | 8 in one engine, one CLI/MCP surface: Go, Rust, C, C++, TypeScript, TSX, JavaScript, Python |
+| **Cross-repo** | yes, anything on disk | no (one tags file per repo, no shared graph) | usually scoped to one open workspace | yes — this is Sourcegraph's core use case | yes, across all of GitHub (or an org) you can read | repos share one graph store for search/outline, but **edges are not resolved across repos** — a qualifier bound to an import outside the repo resolves to nothing, by design |
+| **Precision / recall** | pure text match: same-named unrelated identifiers are false positives, renames/re-exports are false negatives | definitions only; does not resolve references or calls at all, so recall on "who calls this" is undefined (it doesn't try) | **compiler-accurate** — it *is* the type checker; this is what codegraph's own accuracy benchmark uses as ground truth | compiler-accurate, same class as LSP (SCIP indexers are usually the language's own compiler/service) | text/regex match, same false-positive/negative class as grep, plus only sees what's indexed and permissioned | measured: 98.4% callers recall / 99.2% precision, 83.3% refs recall / 99.4% precision, 100% Go interface-impl recall (all-language average); calibrated per edge (`exact`/`likely`/`name_only`) — see [ACCURACY.md](ACCURACY.md). Heuristic, not a type checker: it can be, and measurably is, wrong |
+| **Freshness** | perfectly fresh — reads the live file every time | stale until you regenerate; no incremental, no watcher built in | live; watches the workspace | as fresh as the last CI-built index — can lag the working tree by a commit or more | lags: indexing delay after push, default branch only, not your working tree | incremental (content-hash based); MCP auto-refreshes the asked-about repo before every call (throttled to once per 3s); `codegraph watch` (in progress) will do the same for the CLI |
+| **Speed** | very fast on modest repos; the reason it exists | fast to generate, but you have to remember to | can be slow to warm up on a large crate/monorepo graph, instant once warm | index build can take minutes on a large repo; queries are fast once built | fast web search, network round trip | no per-project build; cold index of `~/dev` (2,634 files across every repo below it) in 5.3s, release build, Windows 11 16 cores (see README Performance) |
+| **Token cost for agents** | measured (as the baseline arm): 45,226 tokens / 31 questions, 1,385 median tokens/question, ~2.2 tool calls/question, because confirming a text hit is really the right definition/caller usually takes a follow-up read | not measured; a raw tags file needs its own wrapper to be agent-usable at all | not measured here; depends entirely on the bridge — LSP responses are structured but a naive bridge can return verbose hover/call-hierarchy payloads | not measured here | not measured here; plus whatever the calling agent spends parsing search-result snippets | measured: 24,400 tokens / 31 questions (0.54× grep's on message content), 678 median tokens/question, ~1.2 tool calls/question — but the MCP server's 10 tool schemas are resent every turn (~1.5k tokens vs grep's ~530), so **including schema overhead the raw total is 1.36× grep's** on this question set (prompt caching would offset most of that, unmeasured) |
+| **Offline** | yes | yes | yes, once the toolchain/dependencies are present locally | no by default (Sourcegraph is normally a server); local `scip` CLI queries a file directly | no — needs network and GitHub read access | yes, no network, no per-project build |
+| **When to use it** | quick literal/regex search, one-off or unindexed repos, non-code text, or as the fallback when nothing else applies | "jump to definition by name" in an editor with no interest in a call graph | you need one language's answer to be *provably* correct and the project actually builds locally | large multi-repo orgs where cross-repo compiler-accurate navigation matters more than single-machine simplicity, and a CI index-build pipeline is acceptable | cross-repo/cross-org text search when the code isn't checked out locally at all | fast, low-setup structural navigation (definitions, callers, callees, impact) across many differently-languaged repos on one machine, especially when a project doesn't build cleanly enough for an LSP server, or you want one graph over all your repos without booting N language servers — and you're willing to read `likely`/`name_only` edges before trusting them |
+
+## The honest summary
+
+- If you need a guaranteed-correct answer for one language in one buildable project, an LSP
+  server (or SCIP built from the same tooling) is more accurate than codegraph, full stop —
+  codegraph benchmarks *against* those tools as ground truth, not the other way around.
+- If you need cross-repo, org-wide navigation with compiler accuracy and can run a CI
+  pipeline, that's SCIP/Sourcegraph's actual job.
+- If the code isn't local, GitHub code search is the only option here.
+- grep is never wrong about what it does (it finds text), which is also its limit: it has no
+  idea what a "caller" or a "definition" is.
+- codegraph's niche is the gap all of those leave open: one low-setup, no-build-required,
+  multi-language graph that's fast to keep fresh, cheap for an agent to query, and honest
+  about being a heuristic — measurably close to compiler-accurate on Go/TS/Python callers,
+  softer on Rust refs and anything `name_only`.
