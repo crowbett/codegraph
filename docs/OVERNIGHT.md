@@ -286,3 +286,26 @@ it would save ~35% of the 1-file path for real correctness risk); a resident res
   random per process. Sorted; a full resolve now reproduces itself.
 - Mistake: stopping a test watcher with `taskkill /IM codegraph.exe` also killed the
   installed codegraph MCP server of the running Claude session; kill by PID.
+
+## Round 6 — accuracy push, every language (2026-09-26 night)
+
+Four read-only agents clustered every miss per language by root cause; Go, TS/JS and Rust
+fixes were implemented by worktree agents, Python in the main tree, then merged here
+(conflicts: both Go and TS invented a `G:` hint — TS's type-guard hint is `N:`; the TS
+side added a `line` argument to eval_val/find_type, threaded through everything else).
+Each agent benchmarked on a private cache (junctions to corpus/scip, own cgdb/report):
+concurrent runs on the shared `.cache/bench` delete each other's graphs.
+
+Callers recall / precision, 16-repo corpus, before -> after (platform-twin scoring):
+
+| language | before | after | left |
+|---|---|---|---|
+| Go | 98.9 / 98.9 | **100.0 / 99.8** | 3 (multi-result index, anonymous interface case, a SCIP param local) |
+| Python | 96.0 / 98.3 | **100.0 / 99.6** | 1 overload stub (+ none real) |
+| TypeScript/JS | 94.6 / 98.8 | **99.2 / 99.5** | 28: 16 sites with two correct targets (one edge can hit one), guard unions, generic inference |
+| Rust | 88.7 / 97.4 | **97.5 / 98.6** | ~150: ~53 macro_rules-bound names (needs expansion), trait paths with explicit receivers, closure params, cfg twins across modules |
+
+Calibration: exact 99.7%, likely 96.5%. Harness changes (each re-scored the frozen
+baseline at 8d20102): definition-less SCIP locals are unjudged; platform twins
+(`#[cfg]`, Go build constraints, Python module-level `if`) count as correct. Cost: ~5-10%
+slower indexing (16-repo corpus 2.4 -> 2.5-2.6 s; ~/dev --full 4.8-5.0 -> 5.1-5.5 s).
