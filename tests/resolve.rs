@@ -138,6 +138,20 @@ fn rust_std_macro_names_as_functions() {
     assert_eq!(edge(&ix.store, "src/uses.rs", 6, "write"), None);
 }
 
+#[test]
+fn rust_items_nested_in_functions_stay_local() {
+    let ix = index_fixture("rust_infer");
+    // `type Value = u8;` of an impl inside a test fn does not shadow the imported Value.
+    assert_edge(
+        &ix,
+        "tests/assoc.rs",
+        17,
+        "pointer",
+        "value::Value::pointer",
+        "exact",
+    );
+}
+
 fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
     let mut st = ix
         .store

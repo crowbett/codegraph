@@ -1025,7 +1025,12 @@ impl Ctx {
             };
         }
         // Same file.
-        let local = self.type_syms_in(&[fi], name);
+        let mut local = self.type_syms_in(&[fi], name);
+        if lang == Lang::Rust {
+            // An item nested in a function (`type Value = MyVec<T>;` of an impl inside a
+            // test fn) is visible only inside that function.
+            local.retain(|&s| self.rust_item_visible(s, from));
+        }
         if !local.is_empty() {
             return self.pick_type(fi, &local);
         }
@@ -1085,6 +1090,30 @@ impl Ctx {
             }
             _ => Ty::Unknown,
         }
+    }
+
+    /// Whether Rust item `s` can be named from inside symbol `from`: a module-level item,
+    /// or one nested in a function/type that encloses `from`.
+    fn rust_item_visible(&self, s: usize, from: Option<i64>) -> bool {
+        let Some(p) = self.syms[s].parent else {
+            return true;
+        };
+        if self
+            .by_id
+            .get(&p)
+            .is_some_and(|&pi| self.syms[pi].kind == SymKind::Module)
+        {
+            return true;
+        }
+        let mut cur = from;
+        for _ in 0..64 {
+            let Some(id) = cur else { break };
+            if id == p {
+                return true;
+            }
+            cur = self.by_id.get(&id).and_then(|&i| self.syms[i].parent);
+        }
+        false
     }
 
     fn pick_type(&self, fi: usize, cands: &[usize]) -> Ty {
