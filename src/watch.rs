@@ -241,6 +241,9 @@ struct Watch<'a> {
     store: &'a mut Store,
     cfg: &'a Config,
     roots: Vec<PathBuf>,
+    /// Canonical form of each root: the OS may report events under it instead (macOS
+    /// FSEvents reports `/private/var/..` for a root given as `/var/..`).
+    canon: Vec<Option<PathBuf>>,
     opts: WatchOptions,
     skip: HashSet<String>,
     langs: HashSet<Lang>,
@@ -258,13 +261,26 @@ impl Watch<'_> {
     }
 
     fn add_path(&self, batch: &mut Batch, path: &Path, now: Instant) {
-        let Some((idx, rel)) = self
+        let direct = self
             .roots
             .iter()
             .enumerate()
-            .find_map(|(i, r)| util::rel_under(r, path).map(|rel| (i, rel)))
-        else {
+            .find_map(|(i, r)| util::rel_under(r, path).map(|rel| (i, rel)));
+        let Some((idx, rel)) = direct.or_else(|| {
+            self.canon.iter().enumerate().find_map(|(i, c)| {
+                c.as_deref()
+                    .and_then(|c| util::rel_under(c, path))
+                    .map(|rel| (i, rel))
+            })
+        }) else {
             return;
+        };
+        // Continue with the path as seen under the root as given (repos are stored so).
+        let joined = self.roots[idx].join(&rel);
+        let path = if rel.is_empty() {
+            &self.roots[idx]
+        } else {
+            &joined
         };
         match classify(&rel, &self.skip, &self.langs) {
             PathClass::Ignore => {}
@@ -426,9 +442,19 @@ pub fn watch(
             .map_err(|e| Error::Internal(format!("watch {}: {e}", r.display())))?;
     }
 
+    let canon = abs
+        .iter()
+        .map(|r| {
+            std::fs::canonicalize(r)
+                .ok()
+                .map(util::strip_verbatim)
+                .filter(|c| c != r)
+        })
+        .collect();
     let mut w = Watch {
         store,
         cfg,
+        canon,
         roots: abs,
         opts: opts.clone(),
         skip: cfg.skip_dirs.iter().map(|s| s.to_lowercase()).collect(),
@@ -512,6 +538,37 @@ mod tests {
             cfg.skip_dirs.iter().map(|s| s.to_lowercase()).collect(),
             cfg.languages.iter().copied().collect(),
         )
+    }
+
+    #[test]
+    fn events_under_the_canonical_root_are_mapped_back() {
+        // macOS: a root given as /var/.. is reported by FSEvents as /private/var/..
+        let db = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&db.path().join("g.db")).unwrap();
+        let cfg = Config::default();
+        let (skip, langs) = sets();
+        let given = PathBuf::from("/var/folders/t/repo");
+        let w = Watch {
+            store: &mut store,
+            cfg: &cfg,
+            roots: vec![given.clone()],
+            canon: vec![Some(PathBuf::from("/private/var/folders/t/repo"))],
+            opts: WatchOptions::default(),
+            skip,
+            langs,
+        };
+        let mut batch = Batch::default();
+        let now = Instant::now();
+        w.add_path(
+            &mut batch,
+            Path::new("/private/var/folders/t/repo/src/a.go"),
+            now,
+        );
+        w.add_path(&mut batch, Path::new("/elsewhere/b.go"), now);
+        assert_eq!(batch.repos.len(), 1);
+        let (root, work) = batch.repos.iter().next().unwrap();
+        assert_eq!(root, &given);
+        assert!(work.files.contains("src/a.go"), "{:?}", work.files);
     }
 
     #[test]
