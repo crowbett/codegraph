@@ -297,34 +297,6 @@ impl Sources {
     }
 }
 
-/// Whether the (0-based) line of a JS/TS file is a binding inside an `import` statement:
-/// the line itself starts with `import`, or it and every line up to an `import {` opener
-/// hold nothing but names (`a,` / `type B as C,`).
-fn import_binding(src: &mut Sources, path: &str, line0: u32) -> bool {
-    let ts = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
-    if !ts.iter().any(|e| path.ends_with(e)) {
-        return false;
-    }
-    let names_only = |l: &str| {
-        !l.is_empty()
-            && l.chars()
-                .all(|c| c.is_alphanumeric() || matches!(c, '_' | '$' | ',' | ' ' | '\t'))
-    };
-    for l0 in (line0.saturating_sub(200)..=line0).rev() {
-        let Some(l) = src.line(path, l0) else {
-            return false;
-        };
-        let l = l.trim();
-        if l.starts_with("import ") || l.starts_with("import{") {
-            return true;
-        }
-        if !names_only(l) {
-            return false;
-        }
-    }
-    false
-}
-
 /// Byte range of an occurrence on its line. SCIP indexers disagree on the column unit
 /// (UTF-8 bytes vs UTF-16 units); on non-ASCII lines try both and keep the one that
 /// lands on an identifier.
@@ -672,15 +644,13 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
         if o.is_def {
             continue;
         }
-        // scip-typescript turns an import it cannot resolve (a workspace package whose
-        // `types` point at an unbuilt dist/) into a local bound at the import: no ground
-        // truth for the site, so leave it unjudged.
-        // Such a local has no definition occurrence; its first occurrence is the binding.
+        // A local with no definition occurrence is SCIP's placeholder for a name it could
+        // not resolve: an import of a workspace package whose `types` point at an unbuilt
+        // dist/, or a member of a module it did not type-check (mobx's test files are
+        // outside its tsconfig, so `mobx.autorun` became `local N`). Real locals always
+        // have a definition. No ground truth for the site: leave it unjudged.
         if is_local(&o.symbol) && !scip.defs.contains_key(&o.symbol) {
-            let first = scip.occs[&path].iter().find(|x| x.symbol == o.symbol);
-            if first.is_some_and(|f| import_binding(&mut src, &path, f.line)) {
-                continue;
-            }
+            continue;
         }
         let verdict = if !scip.defs.contains_key(&o.symbol) {
             Verdict::False
