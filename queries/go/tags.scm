@@ -58,6 +58,24 @@
   function: (index_expression
     operand: (identifier) @name)) @reference.call
 
+; `pkg.F[T](a, b)`: explicitly instantiated generic function of another package
+(call_expression
+  function: (index_expression
+    operand: (selector_expression
+      operand: (_) @qualifier
+      field: (field_identifier) @name))) @reference.call
+
+; `F[T](x)` / `pkg.F[T](x)` with one argument parse as a conversion to a generic type
+(type_conversion_expression
+  type: (generic_type
+    type: (type_identifier) @name)) @reference.call
+
+(type_conversion_expression
+  type: (generic_type
+    type: (qualified_type
+      package: (package_identifier) @qualifier
+      name: (type_identifier) @name))) @reference.call
+
 (composite_literal
   type: (type_identifier) @name) @reference.type
 

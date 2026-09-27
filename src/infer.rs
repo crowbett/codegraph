@@ -1233,6 +1233,20 @@ impl<'a> Infer<'a> {
                 mk(&format!("F:{}@", self.t(field)), &base)
             }
             "call_expression" | "call" => self.eval_call(e, d),
+            // Go `F[T](x)` parses as a conversion to a generic type; `F` is usually a
+            // generic function (a generic type evaluates to itself either way).
+            "type_conversion_expression" => {
+                let t = e
+                    .child_by_field_name("type")
+                    .filter(|t| t.kind() == "generic_type")?
+                    .child_by_field_name("type")?;
+                let name = self.t(t);
+                if self.lookup(name, t).is_some_and(|dcl| !dcl.func) {
+                    // `handlers[k](x)`: indexing a local collection of functions.
+                    return None;
+                }
+                mk("C:", name)
+            }
             "struct_expression" => {
                 let n = e.child_by_field_name("name")?;
                 mk("T:", &squash(self.t(n)))
@@ -1270,6 +1284,10 @@ impl<'a> Infer<'a> {
         let mut f = e.child_by_field_name("function")?;
         if f.kind() == "generic_function" {
             f = f.child_by_field_name("function")?;
+        }
+        // Go `F[T](..)` / `pkg.F[T](..)`: an explicitly instantiated generic function.
+        if self.lang == Lang::Go && f.kind() == "index_expression" {
+            f = f.child_by_field_name("operand")?;
         }
         match f.kind() {
             "identifier" => {

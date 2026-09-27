@@ -166,6 +166,20 @@ fn go_implicit_interfaces_and_typed_receivers() {
 }
 
 #[test]
+fn go_explicit_generic_instantiation() {
+    let ix = index_fixture("go_infer");
+    let g = "api/generic.go";
+    // `pkg.F[T](x)` / `F[T](x)` parse as conversions to a generic type.
+    assert_edge(&ix, g, 8, "Parse", "store.Parse", "exact");
+    assert_edge(&ix, g, 9, "local", "api.local", "exact");
+    // ... and their results type the receiver.
+    assert_edge(&ix, g, 10, "Get", "store.Store.Get", "exact");
+    assert_edge(&ix, g, 12, "Get", "store.Store.Get", "exact");
+    // Indexing a local map of functions is not a call to a repo symbol.
+    assert_eq!(edge(&ix.store, g, 14, "fns"), None);
+}
+
+#[test]
 fn rust_receivers_inside_macros_and_smart_pointers() {
     let ix = index_fixture("rust_infer");
     let f = "src/shared.rs";
