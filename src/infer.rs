@@ -23,6 +23,8 @@
 //! `"s"` -> `T:&str`, `b"s"` -> `T:&[u8;_]`, `[x; n]` -> `T:[_;_]`, `vec![..]` ->
 //! `T:Vec<_>`, `format!(..)` -> `T:String`, `x as T` -> `T:T`, a range index
 //! `&b"s"[..]` -> `T:[u8]`; module-level `const`/`static` items bind their declared type.
+//! A capitalized non-local value is a unit struct (`Special.put_u8(..)` -> `T:Special`),
+//! `ManuallyDrop::new(x)` / `black_box(x)` are `x`, and `*p` with `p: *mut T` is a `T`.
 //! The resolver adds `M:` results of shape-revealing std methods on a known non-repo
 //! receiver (`to_vec` -> `Vec<_>`, `as_bytes` -> `&[u8]`, see `RUST_STD_SHAPES`).
 //!
@@ -1381,6 +1383,14 @@ impl<'a> Infer<'a> {
                 match self.lookup(&name, e) {
                     Some(dcl) if dcl.func => None,
                     Some(dcl) => Some(self.decl_hint(&dcl, depth).unwrap_or_else(|| "L".into())),
+                    // A capitalized, non-constant name used as a value: a unit struct.
+                    None if self.lang == Lang::Rust
+                        && name.starts_with(|c: char| c.is_ascii_uppercase())
+                        && name.chars().any(|c| c.is_ascii_lowercase())
+                        && !matches!(name.as_str(), "None" | "Some" | "Ok" | "Err" | "Self") =>
+                    {
+                        mk("T:", &name)
+                    }
                     None => None,
                 }
             }
@@ -1392,7 +1402,16 @@ impl<'a> Infer<'a> {
                 let inner = e
                     .child_by_field_name("operand")
                     .or_else(|| e.named_child(0))?;
-                self.eval(inner, d)
+                let h = self.eval(inner, d)?;
+                // `*p` with `p: *mut T` is a `T` (other derefs keep the hint as before).
+                if self.lang == Lang::Rust && self.t(e).starts_with('*') {
+                    for ptr in ["T:*mut ", "T:*const "] {
+                        if let Some(t) = h.strip_prefix(ptr) {
+                            return mk("T:", t);
+                        }
+                    }
+                }
+                Some(h)
             }
             "try_expression" => {
                 let inner = e.named_child(0)?;
@@ -1541,17 +1560,33 @@ impl<'a> Infer<'a> {
                     // Calling a local closure / function-typed variable.
                     return None;
                 }
+                if self.lang == Lang::Rust && name == "black_box" {
+                    // `black_box(x)` is `x`.
+                    let arg = e.child_by_field_name("arguments")?.named_child(0)?;
+                    return self.eval(arg, d);
+                }
                 mk("C:", &name)
             }
             "scoped_identifier" => {
                 let path = squash(&strip_generics(self.t(f)));
                 // `Arc::new(x)`, `Box::new(x)`: smart pointers deref to `x`'s type.
+                // `ManuallyDrop::new(x)` / `into_inner(x)` and `black_box(x)` pass `x` through.
                 let wrapper = path.rsplit_once("::").is_some_and(|(q, n)| {
-                    n == "new"
+                    let q = q.rsplit("::").next().unwrap_or(q);
+                    (n == "new"
                         && matches!(
-                            q.rsplit("::").next().unwrap_or(q),
-                            "Arc" | "Rc" | "Box" | "RefCell" | "Mutex" | "RwLock" | "Cell"
-                        )
+                            q,
+                            "Arc"
+                                | "Rc"
+                                | "Box"
+                                | "RefCell"
+                                | "Mutex"
+                                | "RwLock"
+                                | "Cell"
+                                | "ManuallyDrop"
+                        ))
+                        || (q == "ManuallyDrop" && n == "into_inner")
+                        || n == "black_box"
                 });
                 if wrapper {
                     let arg = e.child_by_field_name("arguments")?.named_child(0)?;

@@ -58,3 +58,4 @@ pub mod conv;
 pub mod pat;
 pub mod turbo;
 pub mod assoc2;
+pub mod prim;

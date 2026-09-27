@@ -293,6 +293,27 @@ fn rust_associated_types_are_not_module_items() {
     );
 }
 
+#[test]
+fn rust_std_wrappers_primitives_and_provided_methods() {
+    let ix = index_fixture("rust_infer");
+    let f = "src/prim.rs";
+    // `ManuallyDrop::new(Unit).go()`, a unit struct value, `(*p).go()` with `*mut Unit`.
+    assert_edge(&ix, f, 36, "go", "prim::Unit::go", "exact");
+    assert_edge(&ix, f, 37, "go", "prim::Unit::go", "exact");
+    assert_edge(&ix, f, 40, "go", "prim::Unit::go", "exact");
+    // `Big::hi(..)`: provided by `Math`, which Big implements without overriding it.
+    assert_edge(&ix, f, 38, "hi", "prim::Math::hi", "likely");
+    // `f64::exponent_limit()`: the in-repo `impl Float for f64`.
+    assert_edge(
+        &ix,
+        f,
+        41,
+        "exponent_limit",
+        "prim::f64::exponent_limit",
+        "exact",
+    );
+}
+
 fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
     let mut st = ix
         .store

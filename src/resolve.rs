@@ -54,6 +54,12 @@ pub(crate) const TRAIT_OVERLOADS: &[&str] = &[
     "borrow",
 ];
 
+/// Rust primitive types (a path qualifier naming one is never a module).
+const RUST_PRIMITIVES: &[&str] = &[
+    "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f32",
+    "f64", "bool", "char", "str",
+];
+
 /// Resolution counters for one repo.
 #[derive(Debug, Clone, Copy, Default, serde::Serialize)]
 pub struct ResolveStats {
@@ -2729,6 +2735,33 @@ impl Ctx {
             if let types::Typed::Resolved(r) = self.rust_generic_path(e, q) {
                 return r;
             }
+            // `f64::exponent_limit()`: a method of an in-repo trait impl for a primitive,
+            // or nothing (std's own).
+            if RUST_PRIMITIVES.contains(&q) {
+                // `f32::from_bits(u)` inside `impl Float for f32 { fn from_bits(..) }` is std's
+                // inherent method (the trait's would recurse forever).
+                let in_same = e
+                    .from_symbol
+                    .and_then(|id| self.by_id.get(&id))
+                    .is_some_and(|&i| {
+                        let s = &self.syms[i];
+                        s.name == e.name && s.container.as_deref() == Some(q)
+                    });
+                if in_same {
+                    return None;
+                }
+                if TRAIT_OVERLOADS.contains(&e.name.as_str()) {
+                    // `u64::from(x)`: std has its own impls; only a fitting argument picks
+                    // an in-repo one.
+                    let m: Vec<usize> = cands
+                        .iter()
+                        .copied()
+                        .filter(|&s| self.syms[s].container.as_deref() == Some(q))
+                        .collect();
+                    return self.overload_pick(e, &m).map(|s| (s, Confidence::Exact));
+                }
+                return self.by_container(e, cands, q, Confidence::Exact);
+            }
         }
         if lang == Lang::Rust && e.dot {
             // `x.f()` in Rust is a method call on a value, never a module path. With no
@@ -2885,6 +2918,46 @@ impl Ctx {
         self.pick(fi, &m, Confidence::Exact, Confidence::Likely)
     }
 
+    /// The method among `cands` that a trait implemented by type `ty` provides (breadth-first over
+    /// the traits, then their supertraits' impls as recorded), when exactly one does.
+    fn rust_provided_method(&self, cands: &[usize], ty: &str) -> Option<(usize, Confidence)> {
+        let mut frontier = vec![ty.to_string()];
+        let mut seen: HashSet<String> = HashSet::new();
+        for _ in 0..3 {
+            let mut next = Vec::new();
+            let mut found: Vec<usize> = Vec::new();
+            for t in &frontier {
+                for b in self.bases.get(t).into_iter().flatten() {
+                    if !seen.insert(b.clone()) {
+                        continue;
+                    }
+                    found.extend(cands.iter().copied().filter(|&s| {
+                        let sym = &self.syms[s];
+                        sym.container.as_deref() == Some(b.as_str())
+                            && self.files[sym.file].lang == Lang::Rust
+                            && self
+                                .by_id
+                                .get(&sym.parent.unwrap_or(-1))
+                                .is_some_and(|&p| self.syms[p].kind == SymKind::Trait)
+                    }));
+                    next.push(b.clone());
+                }
+            }
+            found.sort_unstable();
+            found.dedup();
+            match found.as_slice() {
+                [] => {}
+                [m] => return Some((*m, Confidence::Likely)),
+                _ => return None,
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+        None
+    }
+
     /// `super::f` inside an inline `mod m { .. }`: each `super` first leaves an enclosing
     /// inline module of the same file. `Ok(r)`: resolved within the file; `Err(q)`: the
     /// qualifier left once the inline modules are used up, relative to the file's module.
@@ -2955,6 +3028,11 @@ impl Ctx {
             .filter(|&s| self.syms[s].container.as_deref() == Some(ty))
             .collect();
         if m.is_empty() {
+            // `Bigint::from_u64(..)` with `impl Math for Bigint` not overriding it: the
+            // trait's provided method.
+            if self.files[e.file].lang == Lang::Rust {
+                return self.rust_provided_method(cands, ty);
+            }
             return None;
         }
         // `BytesMut::from(x)`: one method per trait impl (`From<&[u8]>`, `From<Bytes>`...);
