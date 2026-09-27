@@ -67,6 +67,15 @@ fn ts_workspace_packages_and_typed_receivers() {
     // `new Service(s).lookup(..)` and an interface-typed parameter.
     assert_edge(&ix, app, 16, "lookup", "main.Service.lookup", "exact");
     assert_edge(&ix, app, 17, "run", "src.Tool.run", "exact");
+    // Through a barrel: `export * from`, `export { a as b } from`, a namespace import of
+    // the barrel, and `function f(this: T)`.
+    let user = "packages/app/src/user.ts";
+    assert_edge(&ix, user, 4, "ext", "ann.Ann.ext", "exact");
+    assert_edge(&ix, user, 7, "annFn", "ann.annFn", "exact");
+    assert_edge(&ix, user, 8, "aliasHelper", "helpers.helper", "exact");
+    assert_edge(&ix, user, 9, "annFn", "ann.annFn", "exact");
+    // `export *` passes on exported names only.
+    assert_eq!(edge(&ix.store, user, 10, "hidden"), None);
 }
 
 #[test]

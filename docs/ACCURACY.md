@@ -61,8 +61,12 @@ the v0.1.1 baseline was re-scored with the fixed harness so deltas stay comparab
   scip-python `@overload` stubs) accepts any of them as the target.
 - Object-literal method definitions (`run() {}`) that SCIP records as references to the
   interface member they implement are definition sites, not call sites.
-- A site whose SCIP symbol is an unresolved import (scip-typescript can't see a workspace
-  package whose types point at an unbuilt `dist/`) is left unjudged instead of counted false.
+- A site whose SCIP symbol is a local with no definition anywhere is SCIP's placeholder for
+  a name it could not resolve (an import of a workspace package whose types point at an
+  unbuilt `dist/`; a member of a module it did not type-check, like `mobx.autorun` in mobx's
+  test files, which sit outside its tsconfig). Real locals always have a definition. Such
+  sites are left unjudged instead of counted false (widened on 2026-09-26 from import
+  bindings only; the baseline was re-scored with the same rule).
 - Fields and Rust enum variants are not codegraph symbols and are excluded; rust-analyzer emits
   no implementation relationships, so Rust impl edges are unscored.
 
@@ -72,25 +76,25 @@ the v0.1.1 baseline was re-scored with the fixed harness so deltas stay comparab
 harness on the current corpus; `bench/results/accuracy.json` is the latest recorded run.
 
 <!-- results:start -->
-codegraph `9f5bf03`
+codegraph `8a41f9d`
 
 | language | files | defs found | callers recall | callers precision | false call edges | refs recall | refs precision | impl recall | impl precision |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | Go | 364 | 100.0% | 98.9% | 98.9% | 1.1% | 98.6% | 99.4% | 87.5% | 79.5% |
-| Python | 124 | 100.0% | 96.0% | 98.1% | 1.9% | 76.4% | 98.3% | 100.0% | 91.4% |
+| Python | 124 | 100.0% | 96.0% | 98.3% | 1.7% | 76.4% | 98.5% | 100.0% | 91.4% |
 | Rust | 195 | 94.7% | 88.3% | 97.4% | 2.6% | 66.9% | 92.9% | – | – |
-| TypeScript/JS | 396 | 99.9% | 94.3% | 98.4% | 1.6% | 72.9% | 98.2% | 50.0% | 28.6% |
-| **all** | 1079 | 98.4% | 95.0% | 98.3% | 1.7% | 82.6% | 97.5% | 87.5% | 74.8% |
+| TypeScript/JS | 396 | 99.9% | 94.6% | 98.8% | 1.2% | 73.0% | 98.6% | 50.0% | 28.6% |
+| **all** | 1079 | 98.4% | 95.1% | 98.4% | 1.6% | 82.6% | 97.6% | 87.5% | 74.8% |
 
 Confidence calibration (share of judged edges that are correct):
 
 | language | exact | likely | name_only |
 |---|---:|---:|---:|
 | Go | 100.0% (18673/18673) | 67.7% (65/96) | 49.1% (82/167) |
-| Python | 99.7% (4222/4236) | 97.9% (508/519) | 69.8% (132/189) |
+| Python | 99.8% (4222/4230) | 98.1% (508/518) | 69.8% (132/189) |
 | Rust | 95.0% (7902/8319) | 90.1% (1014/1126) | 7.7% (13/168) |
-| TypeScript/JS | 98.9% (4894/4946) | 96.1% (199/207) | 87.6% (276/315) |
-| all | 98.7% (35691/36174) | 91.7% (1786/1948) | 60.0% (503/839) |
+| TypeScript/JS | 99.1% (4904/4947) | 96.6% (199/206) | 92.0% (276/300) |
+| all | 98.7% (35701/36169) | 91.8% (1786/1946) | 61.0% (503/824) |
 
 Per repo:
 
@@ -98,19 +102,19 @@ Per repo:
 |---|---|---:|---:|---:|---:|---:|
 | bytes | rust | 79.2% | 94.6% | 1277 | 1199 | 67.5% |
 | chi | go | 100.0% | 98.7% | 1283 | 1463 | 98.8% |
-| click | python | 94.6% | 97.5% | 2449 | 3459 | 75.4% |
+| click | python | 94.6% | 97.7% | 2449 | 3459 | 75.4% |
 | devkit | typescript | 99.7% | 99.7% | 701 | 977 | 85.8% |
 | echo | go | 98.8% | 98.8% | 4021 | 4052 | 98.6% |
 | fd | rust | 97.5% | 97.8% | 796 | 903 | 65.0% |
 | keep | go | 100.0% | 99.9% | 1351 | 1453 | 99.6% |
 | ky | typescript | 100.0% | 100.0% | 138 | 1264 | 70.0% |
-| ledger | python | 100.0% | 99.7% | 913 | 1119 | 79.8% |
-| mobx | typescript | 91.7% | 98.5% | 2285 | 7820 | 67.5% |
+| ledger | python | 100.0% | 99.8% | 913 | 1119 | 79.8% |
+| mobx | typescript | 92.2% | 98.6% | 2285 | 8634 | 67.7% |
 | pulse | go | 99.6% | 99.5% | 1131 | 1151 | 99.3% |
 | recall | rust | 93.6% | 99.3% | 715 | 693 | 71.9% |
 | serde-json | rust | 83.5% | 97.0% | 1892 | 2435 | 65.1% |
 | stash | rust | 95.7% | 99.2% | 1326 | 1301 | 67.8% |
 | urfave-cli | go | 97.5% | 98.3% | 2515 | 2509 | 98.0% |
-| zustand | typescript | 99.3% | 94.2% | 276 | 385 | 83.9% |
+| zustand | typescript | 99.3% | 98.0% | 276 | 385 | 83.9% |
 
 <!-- results:end -->

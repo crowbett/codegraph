@@ -1718,6 +1718,61 @@ fn js_import(node: Node<'_>, src: &[u8], out: &mut Vec<RawImport>) {
     };
     let path = js_string(source, src);
     let mut bindings = Vec::new();
+    if node.kind() == "export_statement" {
+        // Re-exports: the names become visible to whoever imports this module (barrel
+        // files like `internal.ts`, `index.ts`).
+        let mut c = node.walk();
+        let mut any = false;
+        for ch in node.named_children(&mut c) {
+            match ch.kind() {
+                "namespace_export" => {
+                    if let Some(id) = ch.named_child(0) {
+                        bindings.push(Binding {
+                            kind: BindKind::Module,
+                            name: String::new(),
+                            local: text(id, src).to_string(),
+                        });
+                        any = true;
+                    }
+                }
+                "export_clause" => {
+                    let mut c2 = ch.walk();
+                    for spec in ch.named_children(&mut c2) {
+                        let Some(n) = spec.child_by_field_name("name") else {
+                            continue;
+                        };
+                        let name = text(n, src).to_string();
+                        let local = spec
+                            .child_by_field_name("alias")
+                            .map_or_else(|| name.clone(), |a| text(a, src).to_string());
+                        let kind = if name == "default" {
+                            BindKind::Default
+                        } else {
+                            BindKind::Name
+                        };
+                        bindings.push(Binding { kind, name, local });
+                    }
+                    any = true;
+                }
+                _ => {}
+            }
+        }
+        if !any {
+            bindings.push(Binding {
+                kind: BindKind::Glob,
+                name: String::new(),
+                local: String::new(),
+            });
+        }
+        out.push(RawImport {
+            path,
+            line,
+            bindings,
+            system: false,
+            mod_path: false,
+        });
+        return;
+    }
     let mut c = node.walk();
     for clause in node.named_children(&mut c) {
         if clause.kind() != "import_clause" {

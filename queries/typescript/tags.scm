@@ -117,3 +117,7 @@
   (#eq? @_fn "require"))
 
 (export_statement) @export
+
+; re-exports: `export * from './x'`, `export { a as b } from './x'`
+(export_statement
+  source: (string)) @import

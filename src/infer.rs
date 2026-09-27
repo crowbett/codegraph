@@ -657,6 +657,23 @@ impl<'a> Infer<'a> {
                                 continue;
                             }
                         }
+                        if pat.kind() == "this" {
+                            // `function f(this: Annotation, ..)`: a named type only (an
+                            // inline `this: { .. }` cannot be looked up).
+                            let named = p
+                                .child_by_field_name("type")
+                                .and_then(|t| t.named_child(0))
+                                .is_some_and(|t| {
+                                    matches!(
+                                        t.kind(),
+                                        "type_identifier"
+                                            | "generic_type"
+                                            | "nested_type_identifier"
+                                    )
+                                });
+                            Self::decl(out, "this", at, if named { ty } else { None }, false);
+                            continue;
+                        }
                         for n in pattern_names(pat) {
                             Self::decl(out, self.t(n), at, ty.clone(), false);
                         }
@@ -1164,6 +1181,11 @@ impl<'a> Infer<'a> {
         let d = depth + 1;
         let k = e.kind();
         match k {
+            // TS `function f(this: Annotation, ..)`: the declared `this` type wins.
+            "this" if self.lang.is_js_family() => match self.lookup_local("this", e) {
+                Some(dcl) if dcl.hint.is_some() => dcl.hint,
+                _ => Some("S".into()),
+            },
             "self" | "this" => Some("S".into()),
             "identifier" => {
                 let name = self.t(e).to_string();

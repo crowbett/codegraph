@@ -2076,9 +2076,9 @@ impl Ctx {
 
     /// Candidates named `name` in `files` (following JS/Python re-exports one level).
     fn lookup_in(&self, files: &[usize], name: &str, edge: EdgeKind, depth: u8) -> Vec<usize> {
-        let Some(all) = self.by_name.get(name) else {
-            return Vec::new();
-        };
+        // No symbol may carry `name` itself (`export { f as g }`, `pub use f as g`): the
+        // re-exports below still apply.
+        let all: &[usize] = self.by_name.get(name).map_or(&[], Vec::as_slice);
         let set: HashSet<usize> = files.iter().copied().collect();
         let direct: Vec<usize> = all
             .iter()
@@ -2113,8 +2113,17 @@ impl Ctx {
                     out.extend(self.lookup_in(tf, orig, edge, depth - 1));
                 }
             }
-            if !sc.globs.is_empty() && self.files[t].lang == Lang::Rust {
+            // `pub use a::*` / `export * from './a'`
+            let lang = self.files[t].lang;
+            if !sc.globs.is_empty() && lang == Lang::Rust {
                 out.extend(self.lookup_in(&sc.globs, name, edge, depth - 1));
+            } else if !sc.globs.is_empty() && lang.is_js_family() {
+                // `export *` passes on exported names only.
+                out.extend(
+                    self.lookup_in(&sc.globs, name, edge, depth - 1)
+                        .into_iter()
+                        .filter(|&s| self.syms[s].exported),
+                );
             }
         }
         out.sort_unstable();
@@ -2245,8 +2254,10 @@ impl Ctx {
     ) -> Option<(usize, Confidence)> {
         let fi = e.file;
         let (self_ty, recv) = self.self_type(e.from_symbol);
-        // 1. self-like.
-        if is_self_word(q) || recv.as_deref() == Some(q) {
+        // 1. self-like (unless TS declared `this` explicitly: `function f(this: T)`, whose
+        // hint is typed and goes through 1b).
+        let declared_this = q == "this" && e.hint.as_deref().is_some_and(|h| h != "S");
+        if !declared_this && (is_self_word(q) || recv.as_deref() == Some(q)) {
             if let Some(ty) = &self_ty {
                 let m: Vec<usize> = cands
                     .iter()
