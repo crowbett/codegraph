@@ -179,6 +179,13 @@ fn rust_paths_through_reexports_and_inline_modules() {
     assert_edge(&ix, "src/scan_use.rs", 4, "scan", "walker::scan", "exact");
 }
 
+#[test]
+fn rust_trait_overloads_on_typed_receivers() {
+    let ix = index_fixture("rust_infer");
+    // `Extend<u8>` and `Extend<u16>` for Acc: the argument type decides, not the first impl.
+    assert_eq!(edge(&ix.store, "src/overload.rs", 18, "extend"), None);
+}
+
 fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
     let mut st = ix
         .store

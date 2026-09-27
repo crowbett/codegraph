@@ -1188,6 +1188,11 @@ impl Ctx {
         } else {
             own
         };
+        // `impl Extend<u8> for BytesMut` and `impl Extend<Bytes> for BytesMut`: which impl
+        // a call picks depends on the argument type.
+        if own.len() > 1 && tf.lang == Lang::Rust && super::TRAIT_OVERLOADS.contains(&name) {
+            return None;
+        }
         if let Some(b) = self.best(ts.file, &own) {
             return Some((b, false));
         }
