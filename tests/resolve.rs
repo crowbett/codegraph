@@ -226,6 +226,26 @@ fn go_anonymous_struct_fields() {
 }
 
 #[test]
+fn go_package_level_vars() {
+    let ix = index_fixture("go_infer");
+    let u = "store/use.go";
+    // Same package, declared in another file: initializer type, written type.
+    assert_edge(&ix, u, 4, "Get", "store.Store.Get", "exact");
+    assert_edge(&ix, u, 5, "Get", "store.Getter.Get", "exact");
+    // Vars bound to instantiated generic functions, called.
+    assert_edge(&ix, u, 6, "Get", "store.Store.Get", "exact");
+    assert_edge(&ix, u, 7, "Get", "store.Store.Get", "likely");
+    // A field of such a var.
+    assert_edge(&ix, u, 8, "Get", "store.Store.Get", "exact");
+    // Qualified by an imported package.
+    let a = "api/vars.go";
+    assert_edge(&ix, a, 10, "Get", "store.Store.Get", "exact");
+    assert_edge(&ix, a, 11, "Get", "store.Getter.Get", "exact");
+    // A var of a package outside the repo: nothing, not a guess.
+    assert_eq!(edge(&ix.store, a, 12, "Get"), None);
+}
+
+#[test]
 fn rust_receivers_inside_macros_and_smart_pointers() {
     let ix = index_fixture("rust_infer");
     let f = "src/shared.rs";

@@ -13,7 +13,13 @@
 //! | `F:<name>@<hint>` | field `name` of `<hint>` |
 //! | `Q:<hint>` | `<hint>` unwrapped (Rust `?`, `.unwrap()`); `A:<hint>` awaited |
 //! | `E:<hint>` | an element of the collection `<hint>` (loop variables, callback params) |
+//! | `G:<name>` / `G:<pkg>.<name>` | Go: a package-level var/const not declared in this file (same package, or of imported package `pkg`); evaluated through the var's stored type. `G:<var>.<field>` when `<var>` is not a package |
 //! | `L` | a local variable or parameter with no known type (never a repo symbol) |
+//!
+//! Go package-level vars and consts store their type hint as the symbol's `ret` (the
+//! written type, else the initializer's hint). A var bound to a function
+//! (`var NewX = NewBase[int, cfg]`) stores `C:<function>`, so calling the var evaluates
+//! to the function's result.
 //!
 //! Evidence comes from parameters, `let`/`:=`/`const`/assignments, struct and class
 //! fields and function return types. Everything is best effort: an unknown expression
@@ -1253,6 +1259,9 @@ impl<'a> Infer<'a> {
                 match self.lookup(&name, e) {
                     Some(dcl) if dcl.func => None,
                     Some(dcl) => Some(self.decl_hint(&dcl, depth).unwrap_or_else(|| "L".into())),
+                    // Go: a package-level var declared in another file (or a package
+                    // name, which the resolver tells apart).
+                    None if self.lang == Lang::Go => mk("G:", &name),
                     None => None,
                 }
             }
@@ -1285,6 +1294,10 @@ impl<'a> Infer<'a> {
                 if self.lang == Lang::Go {
                     if let Some(h) = self.anon_struct_field(obj, self.t(field)) {
                         return Some(h);
+                    }
+                    // `pkg.Var` (or a field of a package-level var declared elsewhere).
+                    if obj.kind() == "identifier" && self.lookup(self.t(obj), obj).is_none() {
+                        return mk("G:", &format!("{}.{}", self.t(obj), self.t(field)));
                     }
                 }
                 let base = self.eval(obj, d)?;
@@ -1498,6 +1511,50 @@ impl<'a> Infer<'a> {
             Lang::C | Lang::Cpp => return None,
         };
         mk("T:", &squash(self.t(r)))
+    }
+
+    /// Go: type hint of package-level var/const `name` declared by `spec` (a `var_spec`
+    /// or `const_spec`): its written type, else its initializer's hint. A var bound to a
+    /// function (`var NewX = NewBase[int, cfg]`) gets `C:<function>`, so calling the var
+    /// evaluates to the function's result.
+    pub(crate) fn var_ret_of(&mut self, spec: Node<'a>, name: &str) -> Option<String> {
+        if self.lang != Lang::Go || !self.hints_enabled() {
+            return None;
+        }
+        if let Some(t) = spec.child_by_field_name("type") {
+            return mk("T:", &squash(self.t(t)));
+        }
+        let mut c = spec.walk();
+        let i = spec
+            .children_by_field_name("name", &mut c)
+            .position(|n| self.t(n) == name)?;
+        let v = *named(spec.child_by_field_name("value")?).get(i)?;
+        let func = match v.kind() {
+            // `F[A, B]`
+            "type_instantiation_expression" => v.child_by_field_name("type"),
+            // `F[A]` (or indexing a collection: `table[k]`)
+            "index_expression" => v.child_by_field_name("operand").filter(|o| {
+                match o.kind() {
+                    "identifier" => match self.lookup(self.t(*o), *o) {
+                        Some(d) => d.func,
+                        // Not declared in this file: an instantiation when the index is
+                        // not a value in scope either.
+                        None => v.child_by_field_name("index").is_some_and(|ix| {
+                            ix.kind() == "identifier" && self.lookup(self.t(ix), ix).is_none()
+                        }),
+                    },
+                    "selector_expression" => true,
+                    _ => false,
+                }
+            }),
+            // `var f = g`
+            "identifier" => Some(v).filter(|t| self.lookup(self.t(*t), *t).is_some_and(|d| d.func)),
+            _ => None,
+        };
+        if let Some(f) = func {
+            return mk("C:", &squash(self.t(f)));
+        }
+        self.eval(v, 0).filter(|h| h != "L")
     }
 
     /// Field hints of a struct/class definition node: (name, hint). Go embedded fields
