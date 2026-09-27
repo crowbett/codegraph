@@ -72,7 +72,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 129
+        "index_ms": 168
       }
     },
     "chi": {
@@ -146,7 +146,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 145
+        "index_ms": 184
       }
     },
     "click": {
@@ -158,18 +158,18 @@
         "defs_found": 1894,
         "calls": {
           "gt": 2449,
-          "hit": 940,
+          "hit": 944,
           "dispatch": 40,
-          "wrong": 36,
+          "wrong": 32,
           "unresolved": 1432,
           "no_edge": 1,
           "no_def": 0
         },
         "refs": {
           "gt": 4994,
-          "hit": 1686,
+          "hit": 1690,
           "dispatch": 55,
-          "wrong": 386,
+          "wrong": 382,
           "unresolved": 1839,
           "no_edge": 1028,
           "no_def": 0
@@ -177,31 +177,31 @@
         "call_edges": {
           "resolved": 1907,
           "judged": 1473,
-          "correct": 1278,
+          "correct": 1282,
           "dispatch": 55,
-          "false_edges": 140
+          "false_edges": 136
         },
         "all_edges": {
           "resolved": 2750,
           "judged": 2304,
-          "correct": 1638,
+          "correct": 1642,
           "dispatch": 55,
-          "false_edges": 611
+          "false_edges": 607
         },
         "conf": {
           "exact": {
             "resolved": 1745,
             "judged": 1745,
-            "correct": 1268,
+            "correct": 1271,
             "dispatch": 15,
-            "false_edges": 462
+            "false_edges": 459
           },
           "likely": {
             "resolved": 289,
             "judged": 289,
-            "correct": 256,
+            "correct": 257,
             "dispatch": 1,
-            "false_edges": 32
+            "false_edges": 31
           },
           "name_only": {
             "resolved": 270,
@@ -220,7 +220,7 @@
           "dispatch": 0,
           "false_edges": 6
         },
-        "index_ms": 354
+        "index_ms": 381
       }
     },
     "devkit": {
@@ -294,7 +294,7 @@
           "dispatch": 0,
           "false_edges": 1
         },
-        "index_ms": 82
+        "index_ms": 109
       }
     },
     "echo": {
@@ -368,7 +368,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 336
+        "index_ms": 483
       }
     },
     "fd": {
@@ -380,18 +380,18 @@
         "defs_found": 371,
         "calls": {
           "gt": 796,
-          "hit": 561,
+          "hit": 571,
           "dispatch": 0,
-          "wrong": 17,
+          "wrong": 7,
           "unresolved": 92,
           "no_edge": 126,
           "no_def": 0
         },
         "refs": {
           "gt": 1470,
-          "hit": 738,
+          "hit": 748,
           "dispatch": 0,
-          "wrong": 17,
+          "wrong": 7,
           "unresolved": 94,
           "no_edge": 621,
           "no_def": 0
@@ -399,31 +399,31 @@
         "call_edges": {
           "resolved": 698,
           "judged": 636,
-          "correct": 585,
+          "correct": 595,
           "dispatch": 0,
-          "false_edges": 51
+          "false_edges": 41
         },
         "all_edges": {
           "resolved": 890,
           "judged": 817,
-          "correct": 755,
+          "correct": 765,
           "dispatch": 0,
-          "false_edges": 62
+          "false_edges": 52
         },
         "conf": {
           "exact": {
             "resolved": 349,
             "judged": 349,
-            "correct": 346,
+            "correct": 348,
             "dispatch": 0,
-            "false_edges": 3
+            "false_edges": 1
           },
           "likely": {
             "resolved": 410,
             "judged": 410,
-            "correct": 386,
+            "correct": 394,
             "dispatch": 0,
-            "false_edges": 24
+            "false_edges": 16
           },
           "name_only": {
             "resolved": 58,
@@ -442,7 +442,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 104
+        "index_ms": 137
       }
     },
     "keep": {
@@ -516,7 +516,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 136
+        "index_ms": 213
       }
     },
     "ky": {
@@ -576,7 +576,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 259
+        "index_ms": 367
       }
     },
     "ledger": {
@@ -650,7 +650,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 113
+        "index_ms": 128
       }
     },
     "mobx": {
@@ -724,7 +724,7 @@
           "dispatch": 0,
           "false_edges": 39
         },
-        "index_ms": 828
+        "index_ms": 996
       }
     },
     "pulse": {
@@ -736,18 +736,18 @@
         "defs_found": 556,
         "calls": {
           "gt": 1131,
-          "hit": 1063,
+          "hit": 1065,
           "dispatch": 15,
-          "wrong": 27,
+          "wrong": 25,
           "unresolved": 26,
           "no_edge": 0,
           "no_def": 0
         },
         "refs": {
           "gt": 2075,
-          "hit": 1996,
+          "hit": 1998,
           "dispatch": 15,
-          "wrong": 27,
+          "wrong": 25,
           "unresolved": 27,
           "no_edge": 10,
           "no_def": 0
@@ -755,16 +755,16 @@
         "call_edges": {
           "resolved": 1170,
           "judged": 1149,
-          "correct": 1072,
+          "correct": 1074,
           "dispatch": 15,
-          "false_edges": 62
+          "false_edges": 60
         },
         "all_edges": {
           "resolved": 2185,
           "judged": 2161,
-          "correct": 2010,
+          "correct": 2012,
           "dispatch": 15,
-          "false_edges": 136
+          "false_edges": 134
         },
         "conf": {
           "exact": {
@@ -777,9 +777,9 @@
           "likely": {
             "resolved": 372,
             "judged": 372,
-            "correct": 303,
+            "correct": 305,
             "dispatch": 0,
-            "false_edges": 69
+            "false_edges": 67
           },
           "name_only": {
             "resolved": 238,
@@ -798,7 +798,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 115
+        "index_ms": 184
       }
     },
     "recall": {
@@ -872,7 +872,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 78
+        "index_ms": 126
       }
     },
     "serde-json": {
@@ -884,18 +884,18 @@
         "defs_found": 1276,
         "calls": {
           "gt": 1892,
-          "hit": 1120,
+          "hit": 1126,
           "dispatch": 0,
-          "wrong": 89,
+          "wrong": 83,
           "unresolved": 149,
           "no_edge": 534,
           "no_def": 0
         },
         "refs": {
           "gt": 4673,
-          "hit": 2383,
+          "hit": 2486,
           "dispatch": 0,
-          "wrong": 449,
+          "wrong": 346,
           "unresolved": 271,
           "no_edge": 1568,
           "no_def": 2
@@ -903,31 +903,31 @@
         "call_edges": {
           "resolved": 2248,
           "judged": 1903,
-          "correct": 1555,
+          "correct": 1561,
           "dispatch": 0,
-          "false_edges": 348
+          "false_edges": 342
         },
         "all_edges": {
           "resolved": 4247,
           "judged": 3703,
-          "correct": 2777,
+          "correct": 2880,
           "dispatch": 0,
-          "false_edges": 926
+          "false_edges": 823
         },
         "conf": {
           "exact": {
             "resolved": 2609,
             "judged": 2609,
-            "correct": 2165,
+            "correct": 2259,
             "dispatch": 0,
-            "false_edges": 444
+            "false_edges": 350
           },
           "likely": {
             "resolved": 631,
             "judged": 631,
-            "correct": 548,
+            "correct": 557,
             "dispatch": 0,
-            "false_edges": 83
+            "false_edges": 74
           },
           "name_only": {
             "resolved": 463,
@@ -946,7 +946,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 255
+        "index_ms": 315
       }
     },
     "stash": {
@@ -958,18 +958,18 @@
         "defs_found": 478,
         "calls": {
           "gt": 1326,
-          "hit": 836,
+          "hit": 837,
           "dispatch": 0,
-          "wrong": 68,
+          "wrong": 67,
           "unresolved": 105,
           "no_edge": 317,
           "no_def": 0
         },
         "refs": {
           "gt": 2860,
-          "hit": 1497,
+          "hit": 1498,
           "dispatch": 0,
-          "wrong": 68,
+          "wrong": 67,
           "unresolved": 109,
           "no_edge": 1186,
           "no_def": 0
@@ -977,24 +977,24 @@
         "call_edges": {
           "resolved": 973,
           "judged": 973,
-          "correct": 851,
+          "correct": 852,
           "dispatch": 0,
-          "false_edges": 122
+          "false_edges": 121
         },
         "all_edges": {
           "resolved": 1630,
           "judged": 1630,
-          "correct": 1494,
+          "correct": 1495,
           "dispatch": 0,
-          "false_edges": 136
+          "false_edges": 135
         },
         "conf": {
           "exact": {
             "resolved": 1288,
             "judged": 1288,
-            "correct": 1261,
+            "correct": 1262,
             "dispatch": 0,
-            "false_edges": 27
+            "false_edges": 26
           },
           "likely": {
             "resolved": 193,
@@ -1020,7 +1020,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 101
+        "index_ms": 134
       }
     },
     "urfave-cli": {
@@ -1094,7 +1094,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 240
+        "index_ms": 365
       }
     },
     "zustand": {
@@ -1161,7 +1161,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 114
+        "index_ms": 148
       }
     }
   },
@@ -1172,18 +1172,18 @@
       "defs_found": 4217,
       "calls": {
         "gt": 10301,
-        "hit": 9117,
+        "hit": 9119,
         "dispatch": 358,
-        "wrong": 552,
+        "wrong": 550,
         "unresolved": 273,
         "no_edge": 1,
         "no_def": 0
       },
       "refs": {
         "gt": 18978,
-        "hit": 17651,
+        "hit": 17653,
         "dispatch": 358,
-        "wrong": 553,
+        "wrong": 551,
         "unresolved": 293,
         "no_edge": 123,
         "no_def": 0
@@ -1191,16 +1191,16 @@
       "call_edges": {
         "resolved": 11543,
         "judged": 11320,
-        "correct": 9167,
+        "correct": 9169,
         "dispatch": 358,
-        "false_edges": 1795
+        "false_edges": 1793
       },
       "all_edges": {
         "resolved": 20624,
         "judged": 20248,
-        "correct": 17726,
+        "correct": 17728,
         "dispatch": 358,
-        "false_edges": 2164
+        "false_edges": 2162
       },
       "conf": {
         "exact": {
@@ -1213,9 +1213,9 @@
         "likely": {
           "resolved": 3499,
           "judged": 3499,
-          "correct": 2523,
+          "correct": 2525,
           "dispatch": 66,
-          "false_edges": 910
+          "false_edges": 908
         },
         "name_only": {
           "resolved": 3038,
@@ -1234,7 +1234,7 @@
         "dispatch": 0,
         "false_edges": 0
       },
-      "index_ms": 972
+      "index_ms": 1429
     },
     "python": {
       "files": 124,
@@ -1242,18 +1242,18 @@
       "defs_found": 2321,
       "calls": {
         "gt": 3362,
-        "hit": 1850,
+        "hit": 1854,
         "dispatch": 40,
-        "wrong": 39,
+        "wrong": 35,
         "unresolved": 1432,
         "no_edge": 1,
         "no_def": 0
       },
       "refs": {
         "gt": 6521,
-        "hit": 2891,
+        "hit": 2895,
         "dispatch": 55,
-        "wrong": 400,
+        "wrong": 396,
         "unresolved": 1869,
         "no_edge": 1306,
         "no_def": 0
@@ -1261,31 +1261,31 @@
       "call_edges": {
         "resolved": 3049,
         "judged": 2593,
-        "correct": 2391,
+        "correct": 2395,
         "dispatch": 55,
-        "false_edges": 147
+        "false_edges": 143
       },
       "all_edges": {
         "resolved": 4021,
         "judged": 3548,
-        "correct": 2835,
+        "correct": 2839,
         "dispatch": 55,
-        "false_edges": 658
+        "false_edges": 654
       },
       "conf": {
         "exact": {
           "resolved": 2846,
           "judged": 2846,
-          "correct": 2329,
+          "correct": 2332,
           "dispatch": 15,
-          "false_edges": 502
+          "false_edges": 499
         },
         "likely": {
           "resolved": 360,
           "judged": 360,
-          "correct": 326,
+          "correct": 327,
           "dispatch": 1,
-          "false_edges": 33
+          "false_edges": 32
         },
         "name_only": {
           "resolved": 342,
@@ -1304,7 +1304,7 @@
         "dispatch": 0,
         "false_edges": 6
       },
-      "index_ms": 545
+      "index_ms": 635
     },
     "rust": {
       "files": 195,
@@ -1312,18 +1312,18 @@
       "defs_found": 3239,
       "calls": {
         "gt": 6006,
-        "hit": 3785,
+        "hit": 3802,
         "dispatch": 0,
-        "wrong": 368,
+        "wrong": 351,
         "unresolved": 508,
         "no_edge": 1345,
         "no_def": 0
       },
       "refs": {
         "gt": 12654,
-        "hit": 6718,
+        "hit": 6832,
         "dispatch": 0,
-        "wrong": 728,
+        "wrong": 614,
         "unresolved": 652,
         "no_edge": 4554,
         "no_def": 2
@@ -1331,31 +1331,31 @@
       "call_edges": {
         "resolved": 5709,
         "judged": 5257,
-        "correct": 4342,
+        "correct": 4359,
         "dispatch": 0,
-        "false_edges": 915
+        "false_edges": 898
       },
       "all_edges": {
         "resolved": 9380,
         "judged": 8712,
-        "correct": 7178,
+        "correct": 7292,
         "dispatch": 0,
-        "false_edges": 1534
+        "false_edges": 1420
       },
       "conf": {
         "exact": {
           "resolved": 5953,
           "judged": 5953,
-          "correct": 5440,
+          "correct": 5537,
           "dispatch": 0,
-          "false_edges": 513
+          "false_edges": 416
         },
         "likely": {
           "resolved": 1715,
           "judged": 1715,
-          "correct": 1476,
+          "correct": 1493,
           "dispatch": 0,
-          "false_edges": 239
+          "false_edges": 222
         },
         "name_only": {
           "resolved": 1044,
@@ -1374,7 +1374,7 @@
         "dispatch": 0,
         "false_edges": 0
       },
-      "index_ms": 589
+      "index_ms": 754
     },
     "ts": {
       "files": 396,
@@ -1444,7 +1444,7 @@
         "dispatch": 0,
         "false_edges": 40
       },
-      "index_ms": 1283
+      "index_ms": 1620
     }
   }
 }

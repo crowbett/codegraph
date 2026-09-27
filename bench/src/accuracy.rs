@@ -420,6 +420,11 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
         root: dirs.corpus(&r.name),
         cache: HashMap::new(),
     };
+    // Separate cache for the platform-twin check (used while `src` lines are borrowed).
+    let mut twin_src = Sources {
+        root: dirs.corpus(&r.name),
+        cache: HashMap::new(),
+    };
     let mut by_lang: BTreeMap<String, Counts> = BTreeMap::new();
     let mut rep = Report {
         misses: Vec::new(),
@@ -574,6 +579,11 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
                     None => Outcome::Unresolved,
                     Some(t) if Some(t) == expect => Outcome::Hit,
                     Some(t) if correct_target(&cg, &scip, &def_text, &o.symbol, t) => Outcome::Hit,
+                    Some(t)
+                        if platform_twin(&cg, &scip, &def_text, &mut twin_src, &o.symbol, t) =>
+                    {
+                        Outcome::Hit
+                    }
                     Some(t) if related(&o.symbol, t) => Outcome::Dispatch,
                     Some(_) => Outcome::Wrong,
                 },
@@ -654,7 +664,9 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
         }
         let verdict = if !scip.defs.contains_key(&o.symbol) {
             Verdict::False
-        } else if correct_target(&cg, &scip, &def_text, &o.symbol, to) {
+        } else if correct_target(&cg, &scip, &def_text, &o.symbol, to)
+            || platform_twin(&cg, &scip, &def_text, &mut twin_src, &o.symbol, to)
+        {
             Verdict::Correct
         } else if related(&o.symbol, to) {
             Verdict::Dispatch
@@ -815,6 +827,118 @@ fn correct_target(
             *path == d.path && s.start <= l1 && l1 <= s.end && name_ok
         });
     at_def || python_redef(scip, sym, path, s, name_ok)
+}
+
+/// The ground truth was indexed on one machine, so for code defined per platform or
+/// build configuration it only knows the active variant. codegraph cannot know which
+/// variant a build uses; its target is a *platform twin* of the wanted one, and correct,
+/// when both have the same name and:
+/// - Rust: both are in the same file and both carry a `#[cfg(..)]` attribute;
+/// - Go: both are in the same package directory, in different files that each carry a
+///   build constraint (`//go:build`, `// +build`, or a GOOS/GOARCH file-name suffix);
+/// - Python: codegraph's definition is a platform alternative, defined inside a
+///   module-level `if`/`elif`/`else` block.
+fn platform_twin(
+    cg: &Cg,
+    scip: &Scip,
+    def_text: &HashMap<&str, String>,
+    src: &mut Sources,
+    sym: &str,
+    to: i64,
+) -> bool {
+    let (Some(d), Some(s)) = (scip.defs.get(sym), cg.syms.get(&to)) else {
+        return false;
+    };
+    if def_text.get(sym).is_some_and(|n| *n != s.name) {
+        return false;
+    }
+    let path = cg.files[&s.file].0.clone();
+    let line0 = s.start.saturating_sub(1);
+    if path.ends_with(".rs") {
+        path == d.path && cfg_above(src, &path, line0) && cfg_above(src, &d.path, d.line)
+    } else if path.ends_with(".go") {
+        let dir = |p: &str| {
+            p.rsplit_once('/')
+                .map_or(String::new(), |(a, _)| a.to_string())
+        };
+        path != d.path
+            && dir(&path) == dir(&d.path)
+            && go_constrained(src, &path)
+            && go_constrained(src, &d.path)
+    } else if path.ends_with(".py") {
+        py_conditional(src, &path, line0)
+    } else {
+        false
+    }
+}
+
+/// A `#[cfg(..)]` attribute on the item at `line0` (on it, or on the attribute/comment
+/// lines right above it).
+fn cfg_above(src: &mut Sources, path: &str, line0: u32) -> bool {
+    let mut l = line0;
+    for _ in 0..12 {
+        let Some(t) = src.line(path, l).map(str::trim) else {
+            return false;
+        };
+        if t.contains("#[cfg(") {
+            return true;
+        }
+        let is_prefix = l == line0 || t.starts_with("#[") || t.starts_with("//") || t.is_empty();
+        if !is_prefix || l == 0 {
+            return false;
+        }
+        l -= 1;
+    }
+    false
+}
+
+/// A Go file restricted to some platforms (build constraint or file-name suffix).
+fn go_constrained(src: &mut Sources, path: &str) -> bool {
+    const SUFFIX: &[&str] = &[
+        "_windows", "_linux", "_darwin", "_unix", "_other", "_freebsd", "_openbsd", "_netbsd",
+        "_plan9", "_js", "_wasm", "_wasip1", "_amd64", "_arm64", "_386", "_arm",
+    ];
+    let stem = path
+        .rsplit('/')
+        .next()
+        .unwrap_or(path)
+        .trim_end_matches(".go");
+    let stem = stem.trim_end_matches("_test");
+    if SUFFIX.iter().any(|s| stem.ends_with(s)) {
+        return true;
+    }
+    (0..20).any(|l| {
+        src.line(path, l)
+            .is_some_and(|t| t.starts_with("//go:build") || t.starts_with("// +build"))
+    })
+}
+
+/// A Python definition at `line0` inside a module-level `if`/`elif`/`else` block.
+fn py_conditional(src: &mut Sources, path: &str, line0: u32) -> bool {
+    let indent = |t: &str| t.len() - t.trim_start().len();
+    let Some(def) = src.line(path, line0).map(str::to_string) else {
+        return false;
+    };
+    let own = indent(&def);
+    if own == 0 {
+        return false;
+    }
+    let mut l = line0;
+    while l > 0 {
+        l -= 1;
+        let Some(t) = src.line(path, l).map(str::to_string) else {
+            return false;
+        };
+        if t.trim().is_empty() || t.trim_start().starts_with('#') {
+            continue;
+        }
+        if indent(&t) < own {
+            let t = t.trim_start();
+            return indent(&src.line(path, l).map(str::to_string).unwrap_or_default()) == 0
+                && (t.starts_with("if ") || t.starts_with("elif ") || t.starts_with("else:"));
+        }
+    }
+    false
 }
 
 /// scip-python records only the first `@overload` stub of a function as its definition;

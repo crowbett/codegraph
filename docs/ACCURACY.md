@@ -61,6 +61,14 @@ the v0.1.1 baseline was re-scored with the fixed harness so deltas stay comparab
   scip-python `@overload` stubs) accepts any of them as the target.
 - Object-literal method definitions (`run() {}`) that SCIP records as references to the
   interface member they implement are definition sites, not call sites.
+- Platform twins: the ground truth was indexed on one Windows machine, so for code
+  defined per platform or build configuration it knows only the active variant, and
+  codegraph (which cannot know the build) may point at another. A target counts as correct
+  when it has the wanted symbol's name and is its platform twin: Rust, same file and both
+  carry `#[cfg(..)]`; Go, same package directory, different files that each carry a build
+  constraint (`//go:build`, `// +build`, or a GOOS/GOARCH file-name suffix); Python,
+  codegraph's definition sits in a module-level `if`/`elif`/`else` block. Added on
+  2026-09-26; the baseline was re-scored with it.
 - A site whose SCIP symbol is a local with no definition anywhere is SCIP's placeholder for
   a name it could not resolve (an import of a workspace package whose types point at an
   unbuilt `dist/`; a member of a module it did not type-check, like `mobx.autorun` in mobx's
