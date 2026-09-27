@@ -121,6 +121,9 @@ fn ts_factories_generics_and_super() {
         "factories.ComputedFactory.describe",
         "exact",
     );
+    // `Map<K, V>.get(k)` is a `V`.
+    let m = "packages/app/src/maps.ts";
+    assert_edge(&ix, m, 7, "get", "factories.Value.get", "exact");
 }
 
 /// Start line of the target of the edge `name` at `file:line`.

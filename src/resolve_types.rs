@@ -559,6 +559,27 @@ fn builtin_type(lang: Lang, name: &str) -> bool {
     list.contains(&name)
 }
 
+/// `V` of a TS `Map<K, V>` / `WeakMap` / `ReadonlyMap` type text (nullable allowed).
+fn map_value(text: &str) -> Option<&str> {
+    let parts: Vec<&str> = split_top(text.trim(), '|')
+        .into_iter()
+        .map(str::trim)
+        .filter(|p| !matches!(*p, "" | "null" | "undefined"))
+        .collect();
+    let [t] = parts.as_slice() else {
+        return None;
+    };
+    let (head, _) = outer_generic(t, '<', '>');
+    if !matches!(head, "Map" | "WeakMap" | "ReadonlyMap") {
+        return None;
+    }
+    let inner = t[head.len()..].strip_prefix('<')?.strip_suffix('>')?;
+    match split_top(inner, ',').as_slice() {
+        [_, v] => Some(v.trim()),
+        _ => None,
+    }
+}
+
 /// Split `Name<A, B>` / `Name[A]` into (`Name`, first argument).
 fn outer_generic(s: &str, open: char, close: char) -> (&str, Option<&str>) {
     let Some(i) = s.find(open) else {
@@ -878,6 +899,31 @@ impl Ctx {
                 }
                 if lang == Lang::Rust && PASSTHROUGH.contains(&name) {
                     return bv;
+                }
+                // JS/TS `Map<K, V>.get(k)`: a `V`.
+                if lang.is_js_family() && name == "get" {
+                    if let Val::Text {
+                        fi,
+                        from,
+                        line,
+                        text,
+                        unwrap: false,
+                        awaited: false,
+                        elem: false,
+                    } = &bv
+                    {
+                        if let Some(v) = map_value(text) {
+                            return Val::Text {
+                                fi: *fi,
+                                from: *from,
+                                line: *line,
+                                text: v.to_string(),
+                                unwrap: false,
+                                awaited: false,
+                                elem: false,
+                            };
+                        }
+                    }
                 }
                 // Iterator adaptors keep the element type: track the collection itself.
                 let same_elems = match lang {
@@ -1864,6 +1910,9 @@ mod tests {
         assert!(shape_ok(Some('f'), 'g') && !shape_ok(Some('f'), 'n'));
         assert!(shape_ok(Some('o'), 'n') && !shape_ok(Some('o'), 'f'));
         assert_eq!(split_top("a:()=>T,b:X", ','), vec!["a:()=>T", "b:X"]);
+        assert_eq!(map_value("Map<string,Box<T>>|undefined"), Some("Box<T>"));
+        assert_eq!(map_value("WeakMap<object,()=>Foo>"), Some("()=>Foo"));
+        assert_eq!(map_value("Set<X>"), None);
     }
 
     #[test]

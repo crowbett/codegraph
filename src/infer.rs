@@ -28,6 +28,7 @@
 //! a function type `(..) => R` gives `R`; an interface / type alias gives its fitting
 //! signatures (own, else alias target's, else bases'), resolved only when they agree.
 //! `C:v.m` / `C:ns.v.m` is method `m` of the value's type or its field `m`, called.
+//! `M:get@<hint>` on a TS `Map<K, V>` / `WeakMap` / `ReadonlyMap` is a `V`.
 //!
 //! `T:` names are bound where the hint was written: in JS/TS, a file declaring one type
 //! name twice (sibling test callbacks each with `class Store`) binds the declaration
