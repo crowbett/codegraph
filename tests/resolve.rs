@@ -266,6 +266,18 @@ fn rust_pattern_bindings_are_typed() {
     assert_edge(&ix, f, 25, "as_f64", "pat::Num::as_f64", "exact");
 }
 
+#[test]
+fn rust_turbofish_calls_in_macro_tokens() {
+    let ix = index_fixture("rust_infer");
+    // `load::<BTreeMap<u128, ()>>(..)`, `load::<Vec<Vec<u8>>>(..)` and a qualified
+    // `crate::turbo::load::<Option<u8>>(..)` inside macro arguments.
+    for line in [8, 9, 10] {
+        assert_edge(&ix, "src/turbo.rs", line, "load", "turbo::load", "exact");
+    }
+    // `Vec::<u8>::new()`: a type path, not a call of `Vec`.
+    assert_eq!(edge(&ix.store, "src/turbo.rs", 11, "Vec"), None);
+}
+
 fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
     let mut st = ix
         .store

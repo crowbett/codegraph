@@ -357,6 +357,9 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
                 if lang == Lang::Rust && in_attribute_or_macro_def(&nav, name, &mut macro_memo) {
                     continue;
                 }
+                if lang == Lang::Rust && !token_turbofish_ok(&nav, name) {
+                    continue;
+                }
                 let cand = RefCand {
                     kind,
                     name,
@@ -564,6 +567,45 @@ fn path_attribute(item: Node<'_>, src: &[u8]) -> Option<String> {
         .child_by_field_name("value")
         .filter(|v| v.kind() == "string_literal")?;
     Some(unquote(text(value, src)))
+}
+
+/// For a macro-token name followed by `::<` (the turbofish tags.scm patterns): whether
+/// the generic arguments close and a `(..)` token tree follows, i.e. it is a call
+/// (`from_str::<BTreeMap<u128, ()>>(j)`), not a type path (`Vec::<u8>::new`). Any other
+/// name passes.
+fn token_turbofish_ok<'t>(nav: &Nav<'t>, name: Node<'t>) -> bool {
+    if nav.parent(name).is_none_or(|p| p.kind() != "token_tree") {
+        return true;
+    }
+    let Some(sep) = nav.next_sibling(name).filter(|n| n.kind() == "::") else {
+        return true;
+    };
+    let Some(mut cur) = nav.next_sibling(sep).filter(|n| n.kind() == "<") else {
+        return true;
+    };
+    let mut depth = 1i32;
+    for _ in 0..256 {
+        let Some(next) = nav.next_sibling(cur) else {
+            return false;
+        };
+        cur = next;
+        depth += match cur.kind() {
+            "<" => 1,
+            "<<" => 2,
+            ">" => -1,
+            ">>" => -2,
+            _ => 0,
+        };
+        if depth <= 0 {
+            return depth == 0
+                && nav.next_sibling(cur).is_some_and(|n| {
+                    n.kind() == "token_tree" && n.start_byte() < n.end_byte() && {
+                        n.child(0).is_some_and(|c| c.kind() == "(")
+                    }
+                });
+        }
+    }
+    false
 }
 
 /// `x` in `x.f()` (a field expression or a `.` token in a macro token tree).

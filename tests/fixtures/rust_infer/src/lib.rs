@@ -56,3 +56,4 @@ pub mod slices;
 pub mod gen;
 pub mod conv;
 pub mod pat;
+pub mod turbo;
