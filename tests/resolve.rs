@@ -206,6 +206,16 @@ fn go_index_expressions() {
 }
 
 #[test]
+fn go_generic_bounds_on_vars_and_receivers() {
+    let ix = index_fixture("go_infer");
+    let f = "api/bound.go";
+    // `var vc VC` with VC bound by the receiver type's declaration (renamed params).
+    assert_edge(&ix, f, 17, "Create", "api.Creator.Create", "exact");
+    // `var c C` with C bound by the function's own type parameters.
+    assert_edge(&ix, f, 22, "Create", "api.Creator.Create", "exact");
+}
+
+#[test]
 fn rust_receivers_inside_macros_and_smart_pointers() {
     let ix = index_fixture("rust_infer");
     let f = "src/shared.rs";

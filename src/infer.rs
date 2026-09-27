@@ -811,9 +811,15 @@ impl<'a> Infer<'a> {
                 }
             }
             (Lang::Go, "var_spec") => {
-                let ty = n
-                    .child_by_field_name("type")
-                    .and_then(|t| mk("T:", &squash(self.t(t))));
+                // `var vc VC` inside a generic function: VC's bound.
+                let ty = n.child_by_field_name("type").and_then(|t| {
+                    let gens = self
+                        .nav
+                        .enclosing_fn(self.lang, n)
+                        .map(|f| self.generics(f))
+                        .unwrap_or_default();
+                    subst(&squash(self.t(t)), &gens).and_then(|t| mk("T:", &t))
+                });
                 let vals: Vec<Node<'_>> = n
                     .child_by_field_name("value")
                     .map(|v| named(v))
@@ -1108,12 +1114,19 @@ impl<'a> Infer<'a> {
                         }
                     }
                 }
-                // `func (s *Set[T]) Add(v T)`: T is the receiver type's parameter.
+                // `func (s *Set[T]) Add(v T)`: T is the receiver type's parameter, bound
+                // (by position) as in the type's declaration when it is in this file.
                 if let Some(r) = f.child_by_field_name("receiver") {
                     let text = squash(self.t(r));
                     if let (Some(a), Some(b)) = (text.find('['), text.rfind(']')) {
-                        for n in text[a + 1..b].split(',') {
-                            add(n.trim(), None);
+                        let tname = text[..a]
+                            .rsplit([' ', '*', '('])
+                            .next()
+                            .unwrap_or("")
+                            .to_string();
+                        let bounds = self.go_type_param_bounds(&tname);
+                        for (i, n) in text[a + 1..b].split(',').enumerate() {
+                            add(n.trim(), bounds.get(i).cloned().flatten());
                         }
                     }
                 }
@@ -1142,6 +1155,43 @@ impl<'a> Infer<'a> {
                 (n, (b.len() == 1).then(|| b.remove(0)))
             })
             .collect()
+    }
+
+    /// Go: the bound of each type parameter (in order) of the generic type `name`
+    /// declared at the top level of this file (`type Base[T any, VC Creator[T]] struct`
+    /// -> [None, Some("Creator[T]")]); empty when the type is declared elsewhere.
+    fn go_type_param_bounds(&self, name: &str) -> Vec<Option<String>> {
+        let mut out = Vec::new();
+        for decl in named(self.root) {
+            if decl.kind() != "type_declaration" {
+                continue;
+            }
+            for spec in named(decl) {
+                if spec.kind() != "type_spec"
+                    || spec
+                        .child_by_field_name("name")
+                        .is_none_or(|n| self.t(n) != name)
+                {
+                    continue;
+                }
+                let Some(tp) = spec.child_by_field_name("type_parameters") else {
+                    return out;
+                };
+                for d in named(tp) {
+                    let bound = d
+                        .child_by_field_name("type")
+                        .map(|t| squash(self.t(t)))
+                        .filter(|t| simple_bound(t) && !matches!(t.as_str(), "any" | "comparable"));
+                    let mut c = d.walk();
+                    let count = d.children_by_field_name("name", &mut c).count();
+                    for _ in 0..count {
+                        out.push(bound.clone());
+                    }
+                }
+                return out;
+            }
+        }
+        out
     }
 
     /// Meaningful Rust trait bounds: no lifetimes, `?Sized` or std marker traits.
