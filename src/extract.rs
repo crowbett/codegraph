@@ -27,11 +27,11 @@ const BUDGET_EVERY: usize = 256;
 /// pathological nesting (real files stay far below it). Past it tree-sitter drops the
 /// oldest in-progress matches, so an absurd chain loses some of its outer calls.
 const MATCH_LIMIT: u32 = 256;
-/// Files whose syntax tree is nested deeper than this are not extracted at all (only
-/// `lines`/`has_errors`, with `limited` set). tree-sitter's query cursor stops making
-/// progress somewhere past a depth of 65 535 (a ~250 KB `x.b().b()…` chain), whatever the
-/// match limit; real code never comes near this.
-const MAX_TREE_DEPTH: usize = 4096;
+/// Time the tag query may run on one file. tree-sitter's query cursor stops making
+/// progress somewhere past a nesting depth of 65 535 (a ~250 KB `x.b().b()…` chain),
+/// whatever the match limit; the query is cancelled instead (a real 1 MB file takes well
+/// under a second).
+const QUERY_BUDGET: Duration = Duration::from_secs(3);
 
 /// Longest signature line kept.
 const MAX_SIG: usize = 200;
@@ -163,8 +163,8 @@ pub struct FileFacts {
     pub has_errors: bool,
     /// Extraction was bounded: receiver hints were skipped for all or part of the file
     /// (nesting deeper than `infer::MAX_INFER_DEPTH`, or [`HINT_BUDGET`] ran out), or the
-    /// query hit its match limit (symbols and edges are still extracted, a few may be
-    /// missing); or the tree is deeper than [`MAX_TREE_DEPTH`] and nothing was extracted.
+    /// query hit its match limit or [`QUERY_BUDGET`] (symbols and edges are still
+    /// extracted, some may be missing).
     pub limited: bool,
 }
 
@@ -259,30 +259,6 @@ fn count_errors(root: Node<'_>) -> usize {
     }
 }
 
-/// Whether any node sits more than `max` levels below `root` (one cursor walk, stops early).
-fn deeper_than(root: Node<'_>, max: usize) -> bool {
-    let mut cur = root.walk();
-    let mut depth = 0usize;
-    loop {
-        if cur.goto_first_child() {
-            depth += 1;
-            if depth > max {
-                return true;
-            }
-            continue;
-        }
-        loop {
-            if cur.goto_next_sibling() {
-                break;
-            }
-            if !cur.goto_parent() {
-                return false;
-            }
-            depth -= 1;
-        }
-    }
-}
-
 /// `start`: when extraction of this file began (the [`HINT_BUDGET`] clock).
 fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
     let query = lang.query()?;
@@ -290,17 +266,9 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
         return Ok(FileFacts::default());
     };
     let root = tree.root_node();
-    if deeper_than(root, MAX_TREE_DEPTH) {
-        return Ok(FileFacts {
-            lines: count_lines(src),
-            has_errors: root.has_error(),
-            limited: true,
-            ..FileFacts::default()
-        });
-    }
     let names = query.capture_names();
     // O(1) parent/sibling links: `Node::parent` & co. are O(depth) in tree-sitter 0.27.
-    let nav = Nav::new(lang, root);
+    let nav = Nav::new(lang, root, start);
     let mut macro_memo: HashMap<usize, bool> = HashMap::new();
 
     let mut defs: Vec<DefCand<'_>> = Vec::new();
@@ -312,7 +280,21 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
 
     let mut cursor = QueryCursor::new();
     cursor.set_match_limit(MATCH_LIMIT);
-    let mut matches = cursor.matches(query, root, src);
+    let cancelled = std::cell::Cell::new(false);
+    let mut over_budget = |_: &tree_sitter::QueryCursorState| {
+        if start.elapsed() > QUERY_BUDGET {
+            cancelled.set(true);
+            std::ops::ControlFlow::Break(())
+        } else {
+            std::ops::ControlFlow::Continue(())
+        }
+    };
+    let mut matches = cursor.matches_with_options(
+        query,
+        root,
+        src,
+        tree_sitter::QueryCursorOptions::new().progress_callback(&mut over_budget),
+    );
     while let Some(m) = matches.next() {
         let mut role: Option<(Role, Node<'_>)> = None;
         let (mut name, mut qualifier, mut receiver, mut decl, mut impl_for) =
@@ -389,7 +371,7 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
             }
         }
     }
-    let match_limited = cursor.did_exceed_match_limit();
+    let match_limited = cursor.did_exceed_match_limit() || cancelled.get();
 
     let mut facts = FileFacts {
         package,

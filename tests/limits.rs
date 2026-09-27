@@ -59,15 +59,12 @@ fn long_chains_are_bounded_and_still_extracted() {
 }
 
 #[test]
-fn over_deep_trees_are_skipped_not_hung() {
-    // Past a depth of 65 535 tree-sitter's query cursor stops making progress.
+fn over_deep_trees_are_cancelled_not_hung() {
+    // Past a depth of 65 535 tree-sitter's query cursor stops making progress: the query
+    // is cancelled at its time budget and whatever it matched so far is kept.
     for lang in LANGS {
         let facts = timed(lang, &chained(lang, 40_000));
         assert!(facts.limited, "{lang:?}");
-        assert!(
-            facts.refs.is_empty() && facts.symbols.is_empty(),
-            "{lang:?}"
-        );
         assert!(facts.lines > 0, "{lang:?}");
     }
 }

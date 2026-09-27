@@ -24,15 +24,20 @@
 //! In tree-sitter 0.27 `Node::parent`, `prev_sibling` and `next_sibling` walk down from
 //! the root (O(depth) each, O(width) for siblings), so calling them per reference makes a
 //! long method chain (`a.b().b()…`, every call one level deeper) quadratic or worse.
-//! Extraction therefore navigates through [`Nav`], built in one cursor walk per file:
-//! parent / sibling / enclosing-function links in O(1). Two guards bound what is left:
-//! files nested deeper than [`MAX_INFER_DEPTH`] get no receiver hints at all (symbols
-//! and edges are still extracted), and `extract` stops computing hints once a file has
-//! used its time budget (see `extract::HINT_BUDGET`). Either sets
+//! Extraction therefore navigates through [`Nav`]: plain tree-sitter calls while a file
+//! is cheap (real code is ~20 levels deep, and building a table for every file cost a
+//! third of all extraction time), switching to a table built in one cursor walk —
+//! parent / sibling / enclosing-function links in O(1) — once the file has used
+//! [`NAV_TABLE_AFTER`] of extraction time. Two guards bound what is left: once the table
+//! shows nesting deeper than [`MAX_INFER_DEPTH`] no more receiver hints are computed
+//! (symbols and edges are still extracted), and `extract` stops computing hints once a
+//! file has used its time budget (see `extract::HINT_BUDGET`). Either sets
 //! `FileFacts::limited`.
 
+use std::cell::{Cell, OnceCell};
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
+use std::time::{Duration, Instant};
 
 use tree_sitter::Node;
 
@@ -69,9 +74,99 @@ type IdMap<V> = HashMap<usize, V, BuildHasherDefault<IdHasher>>;
 
 const NONE: u32 = u32::MAX;
 
-/// O(1) tree navigation for one file: parent, siblings and the nearest enclosing
-/// function of every node, recorded in a single cursor walk (see the module doc).
+/// Extraction time after which a file's lookups go through a [`NavTable`] (only
+/// pathological or very large files get there).
+const NAV_TABLE_AFTER: Duration = Duration::from_millis(100);
+
+/// Tree navigation for one file: tree-sitter's own O(depth) calls until the file has
+/// used [`NAV_TABLE_AFTER`], then O(1) lookups in a [`NavTable`] (see the module doc).
 pub(crate) struct Nav<'a> {
+    lang: Lang,
+    root: Node<'a>,
+    start: Instant,
+    table: OnceCell<NavTable<'a>>,
+    calls: Cell<u32>,
+}
+
+impl<'a> Nav<'a> {
+    /// `start`: when extraction of this file began.
+    pub(crate) fn new(lang: Lang, root: Node<'a>, start: Instant) -> Self {
+        Self {
+            lang,
+            root,
+            start,
+            table: OnceCell::new(),
+            calls: Cell::new(0),
+        }
+    }
+
+    /// The table, once built; builds it when the file has run long (checked every 64
+    /// lookups: between checks a lookup costs at most O(depth)).
+    fn table(&self) -> Option<&NavTable<'a>> {
+        if let Some(t) = self.table.get() {
+            return Some(t);
+        }
+        let c = self.calls.get().wrapping_add(1);
+        self.calls.set(c);
+        if c % 64 == 0 && self.start.elapsed() > NAV_TABLE_AFTER {
+            return Some(
+                self.table
+                    .get_or_init(|| NavTable::new(self.lang, self.root)),
+            );
+        }
+        None
+    }
+
+    /// `n.parent()`.
+    pub(crate) fn parent(&self, n: Node<'a>) -> Option<Node<'a>> {
+        match self.table() {
+            Some(t) => t.link(n, &t.parent).unwrap_or_else(|()| n.parent()),
+            None => n.parent(),
+        }
+    }
+
+    /// `n.prev_sibling()`.
+    pub(crate) fn prev_sibling(&self, n: Node<'a>) -> Option<Node<'a>> {
+        match self.table() {
+            Some(t) => t.link(n, &t.prev).unwrap_or_else(|()| n.prev_sibling()),
+            None => n.prev_sibling(),
+        }
+    }
+
+    /// `n.next_sibling()`.
+    pub(crate) fn next_sibling(&self, n: Node<'a>) -> Option<Node<'a>> {
+        match self.table() {
+            Some(t) => t.link(n, &t.next).unwrap_or_else(|()| n.next_sibling()),
+            None => n.next_sibling(),
+        }
+    }
+
+    /// Nearest function-like strict ancestor of `n`.
+    fn enclosing_fn(&self, lang: Lang, n: Node<'a>) -> Option<Node<'a>> {
+        if let Some(t) = self.table() {
+            if let Ok(f) = t.link(n, &t.func) {
+                return f;
+            }
+        }
+        let mut cur = n.parent();
+        while let Some(p) = cur {
+            if is_function(lang, p) {
+                return Some(p);
+            }
+            cur = p.parent();
+        }
+        None
+    }
+
+    /// Deepest nesting level in the tree (root = 0), once the table was built.
+    pub(crate) fn max_depth(&self) -> Option<usize> {
+        self.table.get().map(|t| t.max_depth)
+    }
+}
+
+/// O(1) tree navigation: parent, siblings and the nearest enclosing function of every
+/// node, recorded in a single cursor walk.
+struct NavTable<'a> {
     nodes: Vec<Node<'a>>,
     index: IdMap<u32>,
     parent: Vec<u32>,
@@ -82,9 +177,9 @@ pub(crate) struct Nav<'a> {
     max_depth: usize,
 }
 
-impl<'a> Nav<'a> {
-    pub(crate) fn new(lang: Lang, root: Node<'a>) -> Self {
-        let mut nav = Nav {
+impl<'a> NavTable<'a> {
+    fn new(lang: Lang, root: Node<'a>) -> Self {
+        let mut nav = NavTable {
             nodes: Vec::new(),
             index: IdMap::default(),
             parent: Vec::new(),
@@ -138,42 +233,6 @@ impl<'a> Nav<'a> {
         let &i = self.index.get(&n.id()).ok_or(())?;
         let j = links[i as usize];
         Ok((j != NONE).then(|| self.nodes[j as usize]))
-    }
-
-    /// `n.parent()` in O(1).
-    pub(crate) fn parent(&self, n: Node<'a>) -> Option<Node<'a>> {
-        self.link(n, &self.parent).unwrap_or_else(|()| n.parent())
-    }
-
-    /// `n.prev_sibling()` in O(1).
-    pub(crate) fn prev_sibling(&self, n: Node<'a>) -> Option<Node<'a>> {
-        self.link(n, &self.prev)
-            .unwrap_or_else(|()| n.prev_sibling())
-    }
-
-    /// `n.next_sibling()` in O(1).
-    pub(crate) fn next_sibling(&self, n: Node<'a>) -> Option<Node<'a>> {
-        self.link(n, &self.next)
-            .unwrap_or_else(|()| n.next_sibling())
-    }
-
-    /// Nearest function-like strict ancestor of `n`.
-    fn enclosing_fn(&self, lang: Lang, n: Node<'a>) -> Option<Node<'a>> {
-        self.link(n, &self.func).unwrap_or_else(|()| {
-            let mut cur = n.parent();
-            while let Some(p) = cur {
-                if is_function(lang, p) {
-                    return Some(p);
-                }
-                cur = p.parent();
-            }
-            None
-        })
-    }
-
-    /// Deepest nesting level in the tree (root = 0).
-    pub(crate) fn max_depth(&self) -> usize {
-        self.max_depth
     }
 }
 
@@ -261,7 +320,6 @@ fn mk(prefix: &str, inner: &str) -> Option<String> {
 }
 
 impl<'a> Infer<'a> {
-    /// Receiver hints are off when the tree is nested deeper than [`MAX_INFER_DEPTH`].
     pub(crate) fn new(lang: Lang, root: Node<'a>, src: &'a [u8], nav: &'a Nav<'a>) -> Self {
         Self {
             lang,
@@ -271,13 +329,14 @@ impl<'a> Infer<'a> {
             memo: HashMap::new(),
             root,
             nav,
-            hints: nav.max_depth() <= MAX_INFER_DEPTH,
+            hints: true,
         }
     }
 
-    /// Whether receiver hints are being computed.
+    /// Whether receiver hints are being computed: not past the time budget, and not in a
+    /// tree known to be nested deeper than [`MAX_INFER_DEPTH`].
     pub(crate) fn hints_enabled(&self) -> bool {
-        self.hints
+        self.hints && self.nav.max_depth().is_none_or(|d| d <= MAX_INFER_DEPTH)
     }
 
     /// Stop computing receiver hints for the rest of the file.
@@ -295,7 +354,7 @@ impl<'a> Infer<'a> {
 
     /// Receiver hint for a qualifier expression (`x` in `x.f()`).
     pub(crate) fn qualifier_hint(&mut self, q: Node<'a>) -> Option<String> {
-        if !self.supported() || !self.hints {
+        if !self.supported() || !self.hints_enabled() {
             return None;
         }
         self.eval(q, 0)
@@ -305,7 +364,7 @@ impl<'a> Infer<'a> {
     /// before the `.`: rebuild the chain from raw tokens (`repo.backend().exists(..)`,
     /// `k.id.short()`).
     pub(crate) fn token_receiver_hint(&mut self, q: Node<'a>) -> Option<String> {
-        if !self.supported() || !self.hints {
+        if !self.supported() || !self.hints_enabled() {
             return None;
         }
         self.token_chain(q, 0)
@@ -359,7 +418,7 @@ impl<'a> Infer<'a> {
     /// Whether a bare identifier used as a call/value is a local variable or parameter
     /// (not a function): such a name never refers to a repo-level symbol.
     pub(crate) fn bare_is_local(&mut self, name: Node<'a>) -> bool {
-        if !self.supported() || !self.hints {
+        if !self.supported() || !self.hints_enabled() {
             return false;
         }
         let n = self.t(name).to_string();
