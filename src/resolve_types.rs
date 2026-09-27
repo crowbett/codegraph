@@ -73,6 +73,74 @@ const SELF_CTORS: &[&str] = &[
     "with_capacity",
 ];
 /// `T`, `K2`, `Fut`-less short all-caps names: likely a generic type parameter.
+/// `t.X` / `typing.X` / `collections.abc.X` -> `X`.
+fn strip_typing(t: &str) -> &str {
+    let t = t.trim();
+    t.strip_prefix("typing.")
+        .or_else(|| t.strip_prefix("t."))
+        .or_else(|| t.strip_prefix("collections.abc."))
+        .or_else(|| t.strip_prefix("cabc."))
+        .unwrap_or(t)
+}
+
+/// Annotation of parameter `i` in a one-line Python `def` signature
+/// (`def f(self, ctx: Context, name: str) -> X:` with `i = 1` -> `Context`).
+fn param_annotation(sig: &str, i: usize) -> Option<String> {
+    let open = sig.find('(')?;
+    let body = &sig[open + 1..];
+    let mut depth = 0i32;
+    let mut end = None;
+    for (k, ch) in body.char_indices() {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' if depth > 0 => depth -= 1,
+            ')' => {
+                end = Some(k);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let params = split_top(&body[..end?], ',');
+    let p = params.get(i)?.trim();
+    let (_, ty) = p.split_once(':')?;
+    let ty = split_top(ty, '=')[0].trim();
+    (!ty.is_empty()).then(|| ty.to_string())
+}
+
+/// Item `i` of a tuple type (`tuple[str, Command]`, `Tuple[..]`, Rust `(A, B)`).
+fn tuple_item(text: &str, i: usize) -> Option<String> {
+    let t = strip_typing(text);
+    let inner = t
+        .strip_prefix("tuple[")
+        .or_else(|| t.strip_prefix("Tuple["))
+        .and_then(|x| x.strip_suffix(']'))
+        .or_else(|| t.strip_prefix('(').and_then(|x| x.strip_suffix(')')))?;
+    let parts = split_top(inner, ',');
+    if parts.iter().any(|p| p.trim() == "...") {
+        return None;
+    }
+    parts
+        .get(i)
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+}
+
+/// The value type of subscripting a Python collection type.
+fn subscript_value(text: &str) -> Option<String> {
+    let t = strip_typing(text);
+    let (head, args) = t.split_once('[')?;
+    let args = split_top(args.strip_suffix(']')?, ',');
+    let pick = match head {
+        "dict" | "Dict" | "Mapping" | "MutableMapping" | "defaultdict" | "OrderedDict" => 1,
+        "list" | "List" | "Sequence" | "MutableSequence" => 0,
+        _ => return None,
+    };
+    args.get(pick)
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty())
+}
+
 /// Types a Python decorator's result may give the decorated name, from the decorator's
 /// type text: union members, with `Callable[[..], R]` replaced by `R` (recursively), so
 /// `Group | Callable[[F], Group | GrpType]` (usable with or without arguments) gives
@@ -754,6 +822,75 @@ impl Ctx {
                 _ => Val::Ty(Ty::Unknown),
             };
         }
+        // Python untyped parameter `i` of method `m`: the annotation at the same position
+        // of `m` in a base class of the method's class.
+        if let Some(rest) = h.strip_prefix("P:") {
+            return self
+                .inherited_param(from, rest, d)
+                .unwrap_or(Val::Ty(Ty::Unknown));
+        }
+        // Python `for a, b in xs`: position `i` of the element tuple.
+        if let Some(rest) = h.strip_prefix("I:") {
+            let Some((i, inner)) = rest.split_once('@') else {
+                return Val::Ty(Ty::Unknown);
+            };
+            let Ok(i) = i.parse::<usize>() else {
+                return Val::Ty(Ty::Unknown);
+            };
+            return match self.eval_val(fi, from, inner, d) {
+                Val::Text {
+                    fi,
+                    from,
+                    text,
+                    unwrap: false,
+                    awaited: false,
+                    elem,
+                } => {
+                    let lang = self.files[fi].lang;
+                    let tuple = if elem {
+                        element_of(lang, &text)
+                    } else {
+                        Some(text)
+                    };
+                    match tuple.as_deref().and_then(|t| tuple_item(t, i)) {
+                        Some(text) => Val::Text {
+                            fi,
+                            from,
+                            text,
+                            unwrap: false,
+                            awaited: false,
+                            elem: false,
+                        },
+                        None => Val::Ty(Ty::Unknown),
+                    }
+                }
+                _ => Val::Ty(Ty::Unknown),
+            };
+        }
+        // Python `d[k]`: a value of the collection (`dict[K, V]` -> V, `list[T]` -> T).
+        if let Some(inner) = h.strip_prefix("V:") {
+            return match self.eval_val(fi, from, inner, d) {
+                Val::Text {
+                    fi,
+                    from,
+                    text,
+                    unwrap: false,
+                    awaited: false,
+                    elem: false,
+                } => match subscript_value(&text) {
+                    Some(text) => Val::Text {
+                        fi,
+                        from,
+                        text,
+                        unwrap: false,
+                        awaited: false,
+                        elem: false,
+                    },
+                    None => Val::Ty(Ty::Unknown),
+                },
+                _ => Val::Ty(Ty::Unknown),
+            };
+        }
         // Python `@deco def f`: `f` is what calling the decorator's value returns.
         if let Some(inner) = h.strip_prefix("D:") {
             return match self.eval_val(fi, from, inner, d) {
@@ -828,6 +965,14 @@ impl Ctx {
                 // (`Db::read`, `Bag.values` are not std's).
                 if let Ty::Known(t) = bt {
                     if let Some((m, _)) = self.method_on(t, name, &mut HashSet::new(), d) {
+                        // `-> Self` (Python typing.Self): the receiver's own type.
+                        let is_self = self.syms[m].ret.as_deref().is_some_and(|r| {
+                            let r = r.strip_prefix("T:").unwrap_or(r);
+                            r.rsplit('.').next() == Some("Self") && lang == Lang::Python
+                        });
+                        if is_self {
+                            return Val::Ty(Ty::Known(t));
+                        }
                         return match self.syms[m].ret.clone() {
                             Some(r) => {
                                 let mf = self.syms[m].file;
@@ -835,6 +980,33 @@ impl Ctx {
                             }
                             None => Val::Ty(Ty::Unknown),
                         };
+                    }
+                    // Python `self.context_class(..)` with `context_class: type[Context]`.
+                    if lang == Lang::Python {
+                        if let Val::Text { fi, from, text, .. } =
+                            self.field_of(t, name, &mut HashSet::new(), d)
+                        {
+                            let tt = strip_typing(&text);
+                            let inner = tt
+                                .strip_prefix("type[")
+                                .or_else(|| tt.strip_prefix("Type["))
+                                .and_then(|x| x.strip_suffix(']'));
+                            if let Some(inner) = inner {
+                                return Val::Text {
+                                    fi,
+                                    from,
+                                    text: inner.to_string(),
+                                    unwrap: false,
+                                    awaited: false,
+                                    elem: false,
+                                };
+                            }
+                        }
+                    }
+                    // Python `with m as x` on a repo type without its own `__enter__`
+                    // (inherited from outside the repo): context managers return self.
+                    if name == "__enter__" && lang == Lang::Python {
+                        return Val::Ty(Ty::Known(t));
                     }
                 }
                 // An in-repo trait's method on a std type (`vec.put(..)` with
@@ -848,6 +1020,40 @@ impl Ctx {
                             }
                             None => Val::Ty(Ty::Unknown),
                         };
+                    }
+                }
+                // Python `d.get(k)` on `dict[K, V]`: a `V`.
+                if lang == Lang::Python && matches!(name, "get" | "pop" | "setdefault") {
+                    if let Val::Text {
+                        fi,
+                        from,
+                        text,
+                        elem: false,
+                        ..
+                    } = &bv
+                    {
+                        if let Some(v) = subscript_value(text).filter(|_| {
+                            strip_typing(text).split('[').next().is_some_and(|h| {
+                                matches!(
+                                    h,
+                                    "dict"
+                                        | "Dict"
+                                        | "Mapping"
+                                        | "MutableMapping"
+                                        | "defaultdict"
+                                        | "OrderedDict"
+                                )
+                            })
+                        }) {
+                            return Val::Text {
+                                fi: *fi,
+                                from: *from,
+                                text: v,
+                                unwrap: false,
+                                awaited: false,
+                                elem: false,
+                            };
+                        }
                     }
                 }
                 if lang == Lang::Rust && PASSTHROUGH.contains(&name) {
@@ -1502,6 +1708,64 @@ impl Ctx {
         }
     }
 
+    /// `P:<i>@<method>` (see [`Self::eval_val`]).
+    fn inherited_param(&self, from: Option<i64>, rest: &str, d: u8) -> Option<Val> {
+        let (i, method) = rest.split_once('@')?;
+        let i: usize = i.parse().ok()?;
+        // The method itself: `from` or one of its parents (a nested function's use).
+        let mut cur = from.and_then(|id| self.by_id.get(&id).copied());
+        let m = loop {
+            let k = cur?;
+            let s = &self.syms[k];
+            if s.kind == SymKind::Method && s.name == method {
+                break k;
+            }
+            cur = s.parent.and_then(|p| self.by_id.get(&p).copied());
+        };
+        let ms = &self.syms[m];
+        let class = ms.parent.and_then(|p| self.by_id.get(&p).copied())?;
+        let cs = &self.syms[class];
+        let mut frontier = vec![class];
+        let mut seen: HashSet<usize> = HashSet::new();
+        for _ in 0..4 {
+            let mut next = Vec::new();
+            for c in frontier {
+                if !seen.insert(c) {
+                    continue;
+                }
+                let c_sym = &self.syms[c];
+                for (qual, base) in self.base_quals.get(&c_sym.name).into_iter().flatten() {
+                    let Ty::Known(b) = self.find_type(c_sym.file, qual.as_deref(), base, None)
+                    else {
+                        continue;
+                    };
+                    let own = self
+                        .by_member
+                        .get(&(self.syms[b].name.clone(), method.to_string()))
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                        .find(|&bm| self.syms[bm].parent == Some(self.syms[b].id));
+                    if let Some(bm) = own {
+                        let text = param_annotation(&self.syms[bm].sig, i)?;
+                        return Some(Val::Text {
+                            fi: self.syms[bm].file,
+                            from: Some(self.syms[bm].id),
+                            text,
+                            unwrap: false,
+                            awaited: false,
+                            elem: false,
+                        });
+                    }
+                    next.push(b);
+                }
+            }
+            frontier = next;
+        }
+        let _ = (cs, d);
+        None
+    }
+
     /// `super().m()` (Python): `m` found through the bases of the class enclosing the
     /// call, never the class itself.
     pub(super) fn resolve_super(&self, e: &E) -> Option<(usize, Confidence)> {
@@ -1526,6 +1790,45 @@ impl Ctx {
         None
     }
 
+    /// Method `name` defined by exactly one type deriving (transitively) from `t`, for a
+    /// receiver narrowed by `isinstance`. Classes are matched by name, in the same
+    /// language.
+    fn subclass_method(&self, t: usize, name: &str) -> Option<usize> {
+        let lang = self.files[self.syms[t].file].lang;
+        let mut found: Vec<usize> = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut frontier: Vec<&str> = vec![self.syms[t].name.as_str()];
+        for _ in 0..4 {
+            let mut next = Vec::new();
+            for b in frontier {
+                for sub in self.derived.get(b).into_iter().flatten() {
+                    if !seen.insert(sub.as_str()) {
+                        continue;
+                    }
+                    for &m in self
+                        .by_member
+                        .get(&(sub.clone(), name.to_string()))
+                        .into_iter()
+                        .flatten()
+                    {
+                        if self.files[self.syms[m].file].lang == lang && !found.contains(&m) {
+                            found.push(m);
+                        }
+                    }
+                    next.push(sub.as_str());
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+        match found.as_slice() {
+            [m] => Some(*m),
+            _ => None,
+        }
+    }
+
     /// Resolve a receiver call through its type hint.
     pub(super) fn resolve_typed(&self, e: &E) -> Typed {
         let Some(hint) = e.hint.as_deref() else {
@@ -1541,17 +1844,26 @@ impl Ctx {
                     .map(|m| (m, Confidence::Exact)),
             ),
             Ty::External(None) => Typed::Resolved(None),
-            Ty::Known(t) => Typed::Resolved(
-                self.method_on(t, &e.name, &mut HashSet::new(), 0)
-                    .map(|(m, via_base)| {
-                        let c = if via_base {
-                            Confidence::Likely
-                        } else {
-                            Confidence::Exact
-                        };
-                        (m, c)
-                    }),
-            ),
+            Ty::Known(t) => {
+                let found =
+                    self.method_on(t, &e.name, &mut HashSet::new(), 0)
+                        .map(|(m, via_base)| {
+                            let c = if via_base {
+                                Confidence::Likely
+                            } else {
+                                Confidence::Exact
+                            };
+                            (m, c)
+                        });
+                if found.is_none() && self.files[e.file].lang == Lang::Python {
+                    // Not on the static type: an `isinstance` narrowing to a subclass.
+                    return Typed::Resolved(
+                        self.subclass_method(t, &e.name)
+                            .map(|m| (m, Confidence::Likely)),
+                    );
+                }
+                Typed::Resolved(found)
+            }
         }
     }
 }

@@ -176,6 +176,8 @@ struct Ctx {
     /// The same bases with the qualifier they were written with (`click.Group`), for
     /// binding them as types from the subclass's file.
     base_quals: HashMap<String, Vec<(Option<String>, String)>>,
+    /// Base name -> names of the types written as deriving from it.
+    derived: HashMap<String, Vec<String>>,
     /// Types implementing an in-repo trait that are not repo types themselves (`Vec` in
     /// `impl BufMut for Vec<u8>`), by id; see `types::Ty::External`.
     ext_names: Vec<String>,
@@ -1708,6 +1710,7 @@ fn load_ctx(store: &Store, repo_id: i64, root: &Path) -> Result<Ctx> {
         mentioned: vec![HashSet::new(); files.len()],
         bases: HashMap::new(),
         base_quals: HashMap::new(),
+        derived: HashMap::new(),
         ext_names: Vec::new(),
         ext_ids: HashMap::new(),
         files,
@@ -1881,6 +1884,7 @@ impl Ctx {
         self.mentioned = vec![HashSet::new(); self.files.len()];
         self.bases.clear();
         self.base_quals.clear();
+        self.derived.clear();
         self.path_mods.clear();
         self.path_parent.clear();
         self.ext_names.clear();
@@ -2070,6 +2074,10 @@ impl Ctx {
                         .entry(from.clone())
                         .or_default()
                         .push((e.qualifier.clone(), e.name.clone()));
+                    self.derived
+                        .entry(e.name.clone())
+                        .or_default()
+                        .push(from.clone());
                     self.bases.entry(from).or_default().push(e.name.clone());
                 }
             }

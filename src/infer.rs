@@ -277,6 +277,10 @@ struct Decl<'a> {
     /// Python: a decorated `def`; `value` is its topmost decorator's expression, and
     /// used as a value the name is that decorator's result (`@click.group() def cli`).
     deco: bool,
+    /// Python `with m as x`: `x` is what `m.__enter__()` returns.
+    enter: bool,
+    /// Python `for a, b in xs`: position in the element tuple.
+    tup: Option<u8>,
 }
 
 /// Per-file inference state (function environments are built lazily).
@@ -360,7 +364,65 @@ impl<'a> Infer<'a> {
         if !self.supported() || !self.hints_enabled() {
             return None;
         }
+        if self.lang == Lang::Python {
+            if let Some(c) = self.isinstance_narrowing(q) {
+                return mk("T:", &c);
+            }
+        }
         self.eval(q, 0)
+    }
+
+    /// Python: the class `x` is narrowed to where `x` (an identifier or attribute chain)
+    /// is used: inside `if isinstance(x, C):`, or after `assert isinstance(x, C)` in the
+    /// same block. Single classes only (a tuple of classes has no one type).
+    fn isinstance_narrowing(&self, q: Node<'a>) -> Option<String> {
+        let target = self.t(q);
+        let class_of = |cond: Node<'a>| -> Option<String> {
+            if cond.kind() != "call" {
+                return None;
+            }
+            let f = cond.child_by_field_name("function")?;
+            if self.t(f) != "isinstance" {
+                return None;
+            }
+            let args = cond.child_by_field_name("arguments")?;
+            let (a, c) = (args.named_child(0)?, args.named_child(1)?);
+            (self.t(a) == target && matches!(c.kind(), "identifier" | "attribute"))
+                .then(|| self.t(c).to_string())
+        };
+        let mut child = q;
+        let mut cur = self.nav.parent(q);
+        while let Some(n) = cur {
+            match n.kind() {
+                "if_statement" | "elif_clause" => {
+                    let inside = n
+                        .child_by_field_name("consequence")
+                        .is_some_and(|b| b.id() == child.id());
+                    if inside {
+                        if let Some(c) = n.child_by_field_name("condition").and_then(class_of) {
+                            return Some(c);
+                        }
+                    }
+                }
+                "block" | "module" => {
+                    // `assert isinstance(x, C)` earlier in this block.
+                    let mut sib = self.nav.prev_sibling(child);
+                    while let Some(st) = sib {
+                        if st.kind() == "assert_statement" {
+                            if let Some(c) = st.named_child(0).and_then(class_of) {
+                                return Some(c);
+                            }
+                        }
+                        sib = self.nav.prev_sibling(st);
+                    }
+                }
+                "function_definition" | "class_definition" | "lambda" => return None,
+                _ => {}
+            }
+            child = n;
+            cur = self.nav.parent(n);
+        }
+        None
     }
 
     /// Receiver hint for a `.name(` call inside a macro token tree, where `q` is the token
@@ -510,6 +572,8 @@ impl<'a> Infer<'a> {
             elem: false,
             func,
             deco: false,
+            enter: false,
+            tup: None,
         });
     }
 
@@ -526,6 +590,8 @@ impl<'a> Infer<'a> {
             elem: true,
             func: false,
             deco: false,
+            enter: false,
+            tup: None,
         });
     }
 
@@ -556,12 +622,18 @@ impl<'a> Infer<'a> {
         // Guard against self-reference while evaluating (`x = x.next()` chains).
         self.memo.insert(key, None);
         let h = self.eval(v, depth + 1).and_then(|h| {
-            if !d.elem {
+            if d.enter {
+                mk("M:__enter__@", &h)
+            } else if !d.elem {
                 Some(h)
             } else if h == "L" {
                 None
             } else {
-                mk("E:", &h)
+                let e = mk("E:", &h)?;
+                match d.tup {
+                    Some(i) => mk(&format!("I:{i}@"), &e),
+                    None => Some(e),
+                }
             }
         });
         self.memo.insert(key, h.clone());
@@ -689,12 +761,32 @@ impl<'a> Infer<'a> {
                 let Some(ps) = f.child_by_field_name("parameters") else {
                     return;
                 };
+                // A method (directly in a class body): an untyped parameter may take its
+                // type from the same method of a base class (`P:`).
+                let method = f
+                    .parent()
+                    .and_then(|p| {
+                        if p.kind() == "decorated_definition" {
+                            p.parent()
+                        } else {
+                            Some(p)
+                        }
+                    })
+                    .filter(|b| b.kind() == "block")
+                    .and_then(|b| b.parent())
+                    .filter(|c| c.kind() == "class_definition")
+                    .and(f.child_by_field_name("name"))
+                    .map(|n| self.t(n).to_string());
                 let mut c = ps.walk();
                 for (i, p) in ps.named_children(&mut c).enumerate() {
                     match p.kind() {
                         "identifier" => {
                             let n = self.t(p);
-                            let h = (i == 0 && matches!(n, "self" | "cls")).then(|| "S".into());
+                            let h = if i == 0 && matches!(n, "self" | "cls") {
+                                Some("S".into())
+                            } else {
+                                method.as_ref().map(|m| format!("P:{i}@{m}"))
+                            };
                             Self::decl(out, n, at, h, false);
                         }
                         "typed_parameter" => {
@@ -751,6 +843,8 @@ impl<'a> Infer<'a> {
                         if let (Some(v), Some(last)) = (deco, out.last_mut()) {
                             last.value = Some(v);
                             last.deco = true;
+                            // `@click.command(cls=AliasedGroup)`: an instance of `cls`.
+                            last.hint = self.cls_argument(v);
                         }
                     }
                     descend = false;
@@ -1001,6 +1095,35 @@ impl<'a> Infer<'a> {
                     }
                 }
             }
+            // `for name, cmd in xs`: element tuple positions.
+            (Lang::Python, "for_statement" | "for_in_clause")
+                if n.child_by_field_name("left").is_some_and(|l| {
+                    matches!(l.kind(), "pattern_list" | "tuple_pattern")
+                        && l.named_child_count() <= 8
+                        && (0..l.named_child_count() as u32)
+                            .all(|i| l.named_child(i).is_some_and(|c| c.kind() == "identifier"))
+                }) =>
+            {
+                if let (Some(l), Some(r)) = (
+                    n.child_by_field_name("left"),
+                    n.child_by_field_name("right"),
+                ) {
+                    // A comprehension's variables are in scope in its whole expression,
+                    // which comes before the `for` clause.
+                    let at = if n.kind() == "for_in_clause" {
+                        n.parent().map_or(r.end_byte(), |p| p.start_byte())
+                    } else {
+                        r.end_byte()
+                    };
+                    for i in 0..l.named_child_count() as u32 {
+                        let Some(x) = l.named_child(i) else { continue };
+                        Self::decl_elem(out, self.t(x), at, r);
+                        if let Some(last) = out.last_mut() {
+                            last.tup = Some(i as u8);
+                        }
+                    }
+                }
+            }
             (Lang::Python, "for_statement" | "for_in_clause")
                 if n.child_by_field_name("left")
                     .is_some_and(|l| l.kind() == "identifier") =>
@@ -1009,7 +1132,12 @@ impl<'a> Infer<'a> {
                     n.child_by_field_name("left"),
                     n.child_by_field_name("right"),
                 ) {
-                    Self::decl_elem(out, self.t(l), r.end_byte(), r);
+                    let at = if n.kind() == "for_in_clause" {
+                        n.parent().map_or(r.end_byte(), |p| p.start_byte())
+                    } else {
+                        r.end_byte()
+                    };
+                    Self::decl_elem(out, self.t(l), at, r);
                 }
             }
             (Lang::Python, "for_statement" | "with_item" | "for_in_clause" | "except_clause") => {
@@ -1030,8 +1158,20 @@ impl<'a> Infer<'a> {
             }
             (Lang::Python, "as_pattern") => {
                 if let Some(a) = n.child_by_field_name("alias") {
-                    for x in pattern_names(a) {
-                        Self::decl(out, self.t(x), n.start_byte(), None, false);
+                    // `with m as x`: typed through `m.__enter__()`.
+                    let managed = n
+                        .parent()
+                        .filter(|p| p.kind() == "with_item")
+                        .and_then(|_| n.named_child(0));
+                    let names = pattern_names(a);
+                    for x in &names {
+                        Self::decl(out, self.t(*x), n.start_byte(), None, false);
+                        if let (Some(v), true, Some(last)) =
+                            (managed, names.len() == 1, out.last_mut())
+                        {
+                            last.value = Some(v);
+                            last.enter = true;
+                        }
                     }
                 }
             }
@@ -1213,6 +1353,9 @@ impl<'a> Infer<'a> {
                 }
                 match self.lookup(&name, e) {
                     Some(dcl) if dcl.deco => {
+                        if dcl.hint.is_some() {
+                            return dcl.hint;
+                        }
                         let v = dcl.value?;
                         let h = self.eval(v, d)?;
                         mk("D:", &h)
@@ -1221,6 +1364,15 @@ impl<'a> Infer<'a> {
                     Some(dcl) => Some(self.decl_hint(&dcl, depth).unwrap_or_else(|| "L".into())),
                     None => None,
                 }
+            }
+            // Python `d[k]`: a value of the subscripted collection.
+            "subscript" if self.lang == Lang::Python => {
+                let v = e.child_by_field_name("value")?;
+                let h = self.eval(v, d)?;
+                if h == "L" {
+                    return None;
+                }
+                mk("V:", &h)
             }
             "parenthesized_expression"
             | "non_null_expression"
@@ -1288,8 +1440,31 @@ impl<'a> Infer<'a> {
         Some((obj, field))
     }
 
+    /// `cls=X` of a Python decorator call -> `T:X`.
+    fn cls_argument(&self, call: Node<'a>) -> Option<String> {
+        let args = call.child_by_field_name("arguments")?;
+        let mut c = args.walk();
+        let kw = args.named_children(&mut c).find(|a| {
+            a.kind() == "keyword_argument"
+                && a.child_by_field_name("name")
+                    .is_some_and(|n| self.t(n) == "cls")
+        })?;
+        let v = kw.child_by_field_name("value")?;
+        matches!(v.kind(), "identifier" | "attribute").then(|| format!("T:{}", self.t(v)))
+    }
+
     fn eval_call(&mut self, e: Node<'a>, d: u8) -> Option<String> {
         let mut f = e.child_by_field_name("function")?;
+        // Python `cast(T, x)` / `t.cast(T, x)`: the result is `T`.
+        if self.lang == Lang::Python {
+            let name = self.t(f);
+            if matches!(name, "cast" | "t.cast" | "typing.cast") {
+                let ty = e.child_by_field_name("arguments")?.named_child(0)?;
+                if ty.kind() != "keyword_argument" {
+                    return mk("T:", &squash(self.t(ty)));
+                }
+            }
+        }
         if f.kind() == "generic_function" {
             f = f.child_by_field_name("function")?;
         }

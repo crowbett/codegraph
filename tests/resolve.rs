@@ -305,3 +305,32 @@ fn python_packages_and_qualified_bases() {
         "exact",
     );
 }
+
+#[test]
+fn python_typed_flow() {
+    let ix = index_fixture("python_infer");
+    let f = "user2.py";
+    let ctx_fail = "pkg.ctx.Context.fail";
+    let make = "pkg.ctx.Command.make_context";
+    // Untyped override parameter typed by the base method (`ctx: Context`).
+    assert_edge(&ix, f, 9, "fail", ctx_fail, "exact");
+    // `with progress() as bar` (no repo `__enter__`: the manager itself).
+    assert_edge(&ix, f, 19, "update", "pkg.ctx.Bar.update", "exact");
+    // `t.cast(Command, obj)`.
+    assert_edge(&ix, f, 21, "make_context", make, "exact");
+    // `if isinstance(obj, Special)`.
+    assert_edge(&ix, f, 23, "special", "pkg.ctx.Special.special", "exact");
+    // `for name, cmd in pairs()` with `Iterator[tuple[str, Command]]`.
+    assert_edge(&ix, f, 25, "make_context", make, "exact");
+    // `table["k"]` and `table.get("k")` with `dict[str, Command]`.
+    assert_edge(&ix, f, 26, "make_context", make, "exact");
+    assert_edge(&ix, f, 27, "make_context", make, "exact");
+    // Calling a `type[Context]` field.
+    assert_edge(&ix, f, 29, "fail", ctx_fail, "exact");
+    // `__enter__` returning `Self`.
+    assert_edge(&ix, f, 31, "fail", ctx_fail, "exact");
+    // `@pkg.deco.group(cls=Special)`.
+    assert_edge(&ix, f, 32, "special", "pkg.ctx.Special.special", "exact");
+    // A comprehension variable used before its `for` clause.
+    assert_edge(&ix, f, 33, "make_context", make, "exact");
+}
