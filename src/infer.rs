@@ -1239,6 +1239,15 @@ impl<'a> Infer<'a> {
                 mk(&format!("F:{}@", self.t(field)), &base)
             }
             "call_expression" | "call" => self.eval_call(e, d),
+            // Go `xs[i]`, `m[k]` (also the comma-ok `v, ok := m[k]`): an element.
+            "index_expression" if self.lang == Lang::Go => {
+                let o = e.child_by_field_name("operand")?;
+                let h = self.eval(o, d)?;
+                if h == "L" {
+                    return None;
+                }
+                mk("E:", &h)
+            }
             // Go `F[T](x)` parses as a conversion to a generic type; `F` is usually a
             // generic function (a generic type evaluates to itself either way).
             "type_conversion_expression" => {

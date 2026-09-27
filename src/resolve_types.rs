@@ -710,6 +710,34 @@ impl Ctx {
                     awaited,
                     elem: true,
                 },
+                // An element of an element (`grid[i][j]`, `for _, x := range xss[i]`):
+                // take the inner element type now.
+                Val::Text {
+                    fi,
+                    from,
+                    text,
+                    unwrap,
+                    awaited,
+                    elem: true,
+                } => {
+                    let lang = self.files[fi].lang;
+                    let outer = if unwrap {
+                        unwrap_text(lang, &text)
+                    } else {
+                        text
+                    };
+                    match element_of(lang, &outer) {
+                        Some(text) => Val::Text {
+                            fi,
+                            from,
+                            text,
+                            unwrap: false,
+                            awaited,
+                            elem: true,
+                        },
+                        None => Val::Ty(Ty::Unknown),
+                    }
+                }
                 _ => Val::Ty(Ty::Unknown),
             };
         }

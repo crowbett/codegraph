@@ -196,6 +196,16 @@ fn go_embedded_field_access_and_named_results() {
 }
 
 #[test]
+fn go_index_expressions() {
+    let ix = index_fixture("go_infer");
+    let f = "api/index.go";
+    // Slice and map elements (comma-ok too), elements of elements.
+    for line in [11, 14, 17, 19] {
+        assert_edge(&ix, f, line, "Get", "store.Store.Get", "exact");
+    }
+}
+
+#[test]
 fn rust_receivers_inside_macros_and_smart_pointers() {
     let ix = index_fixture("rust_infer");
     let f = "src/shared.rs";
