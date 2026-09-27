@@ -1435,15 +1435,22 @@ impl<'a> Infer<'a> {
         match f.kind() {
             "identifier" => {
                 let name = self.t(f).to_string();
-                if self.lang == Lang::Go && name == "new" {
+                let dcl = self.lookup(&name, f);
+                if self.lang == Lang::Go && matches!(name.as_str(), "new" | "make") && dcl.is_none()
+                {
                     let arg = e.child_by_field_name("arguments")?.named_child(0)?;
                     return mk("T:", &squash(self.t(arg)));
                 }
-                if self.lookup(&name, f).is_some_and(|dcl| !dcl.func) {
-                    // Calling a local closure / function-typed variable.
-                    return None;
+                match dcl {
+                    // Calling a function-typed variable.
+                    Some(d) if !d.func => None,
+                    // Go: calling a local closure (`do := func() *X {..}`): its result.
+                    Some(d) if self.lang == Lang::Go && d.value.is_some() => {
+                        let lit = d.value.filter(|v| v.kind() == "func_literal")?;
+                        self.ret_of(lit)
+                    }
+                    _ => mk("C:", &name),
                 }
-                mk("C:", &name)
             }
             "scoped_identifier" => {
                 let path = squash(&strip_generics(self.t(f)));

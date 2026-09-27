@@ -246,6 +246,16 @@ fn go_package_level_vars() {
 }
 
 #[test]
+fn go_local_closures_and_make() {
+    let ix = index_fixture("go_infer");
+    let f = "api/closure.go";
+    // Calling a local closure: its written result type.
+    assert_edge(&ix, f, 11, "Get", "store.Store.Get", "exact");
+    // `make(url.Values)` is a stdlib type: nothing, not a guess.
+    assert_eq!(edge(&ix.store, f, 13, "Get"), None);
+}
+
+#[test]
 fn rust_receivers_inside_macros_and_smart_pointers() {
     let ix = index_fixture("rust_infer");
     let f = "src/shared.rs";
