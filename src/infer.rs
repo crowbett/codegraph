@@ -9,7 +9,7 @@
 //! | `S` | the enclosing type (`self`, `this`, a Go receiver) |
 //! | `B` | the bases of the enclosing type (`super`): a call resolves on the first base, in declaration order, that has the method — never on the enclosing type itself; as a value (`M:x@B`) it is the first base that binds |
 //! | `T:<type>` | a written type (`*Store`, `Box<dyn Backend>`, `http.Handler`) |
-//! | `C:<callee>` | the result of calling a function or constructor (`NewStore`, `Foo::new`) |
+//! | `C:<callee>` | the result of calling a function or constructor (`NewStore`, `Foo::new`); JS/TS may append `#f` (first argument is a function literal) or `#o` (another literal / `new`) to pick among call signatures |
 //! | `M:<name>@<hint>` | the result of calling method `name` on `<hint>` |
 //! | `F:<name>@<hint>` | field `name` of `<hint>` |
 //! | `Q:<hint>` | `<hint>` unwrapped (Rust `?`, `.unwrap()`); `A:<hint>` awaited |
@@ -20,6 +20,14 @@
 //! fields and function return types (JS/TS `Class.prototype` is `T:Class` when `Class` is
 //! not a local). Everything is best effort: an unknown expression yields no hint and the
 //! resolver falls back to name-based rules.
+//!
+//! JS/TS values: exported module-level `const`/`let`/`var` symbols carry their type as
+//! `ret` (declared, else the initializer's hint), and TS call signatures are fields named
+//! `()<shape>` (shape of the first parameter, [`param_shape`]; `0` = none) holding the
+//! return type. `C:f` where `f` is such a value (imported, same file or `ns.f`) calls it:
+//! a function type `(..) => R` gives `R`; an interface / type alias gives its fitting
+//! signatures (own, else alias target's, else bases'), resolved only when they agree.
+//! `C:v.m` / `C:ns.v.m` is method `m` of the value's type or its field `m`, called.
 //!
 //! `T:` names are bound where the hint was written: in JS/TS, a file declaring one type
 //! name twice (sibling test callbacks each with `class Store`) binds the declaration
@@ -1302,7 +1310,7 @@ impl<'a> Infer<'a> {
                     // Calling a local closure / function-typed variable.
                     return None;
                 }
-                mk("C:", &name)
+                mk("C:", &format!("{name}{}", self.arg_shape(e)))
             }
             "scoped_identifier" => {
                 let path = squash(&strip_generics(self.t(f)));
@@ -1329,7 +1337,15 @@ impl<'a> Infer<'a> {
                     && self.lookup(self.t(obj), obj).is_none()
                 {
                     // `pkg.F()`, `mod.f()`, `Class.create()`: a package-level callee.
-                    return mk("C:", &format!("{}.{fname}", self.t(obj)));
+                    let shape = self.arg_shape(e);
+                    return mk("C:", &format!("{}.{fname}{shape}", self.t(obj)));
+                }
+                if self.lang.is_js_family() {
+                    // `ns.value.m()`: a member of a module-level value in namespace `ns`.
+                    if let Some(p) = self.bare_path(obj, 0) {
+                        let shape = self.arg_shape(e);
+                        return mk("C:", &format!("{p}.{fname}{shape}"));
+                    }
                 }
                 let base = self.eval(obj, d)?;
                 if base == "L" {
@@ -1341,7 +1357,103 @@ impl<'a> Infer<'a> {
         }
     }
 
+    /// JS/TS: the shape of a call's first argument, appended to a `C:` hint to pick
+    /// among call signatures: `#f` a function literal, `#o` another literal or `new`.
+    fn arg_shape(&self, call: Node<'a>) -> &'static str {
+        if !self.lang.is_js_family() {
+            return "";
+        }
+        let Some(a) = call
+            .child_by_field_name("arguments")
+            .and_then(|a| a.named_child(0))
+        else {
+            return "";
+        };
+        match a.kind() {
+            "arrow_function" | "function_expression" | "function" | "generator_function" => "#f",
+            "object" | "array" | "string" | "number" | "template_string" | "new_expression"
+            | "true" | "false" => "#o",
+            _ => "",
+        }
+    }
+
+    /// `a.b` where `a` is not a local (a namespace import): the dotted text. Two levels
+    /// at most.
+    fn bare_path(&mut self, e: Node<'a>, depth: u8) -> Option<String> {
+        match e.kind() {
+            "member_expression" if depth == 0 => {
+                let (obj, field) = Self::member_parts(e)?;
+                if field.kind() != "property_identifier" {
+                    return None;
+                }
+                let head = self.bare_path(obj, depth + 1)?;
+                Some(format!("{head}.{}", self.t(field)))
+            }
+            "identifier" if depth > 0 => {
+                let n = self.t(e);
+                self.lookup(n, e).is_none().then(|| n.to_string())
+            }
+            _ => None,
+        }
+    }
+
     // ---- symbol facts --------------------------------------------------------
+
+    /// Type hint of a module-level JS/TS value (`variable_declarator`): its declared type,
+    /// else its initializer's.
+    pub(crate) fn value_type(&mut self, decl: Node<'a>) -> Option<String> {
+        if !self.supported() || !self.hints_enabled() {
+            return None;
+        }
+        if let Some(t) = decl
+            .child_by_field_name("type")
+            .and_then(|t| t.named_child(0))
+        {
+            return mk("T:", &squash(self.t(t)));
+        }
+        let v = decl.child_by_field_name("value")?;
+        self.eval(v, 0).filter(|h| h != "L")
+    }
+
+    /// A TS call signature (`<T>(fn: () => T): Box<T>` in an interface, or a function
+    /// type): the field `()<shape>` -> its return type, `<shape>` from the first
+    /// parameter's type (see [`param_shape`]).
+    fn call_sig(&self, sig: Node<'a>) -> Option<(String, String)> {
+        let ret = sig.child_by_field_name("return_type")?;
+        let ret = if ret.kind() == "type_annotation" {
+            ret.named_child(0)?
+        } else {
+            ret
+        };
+        let gens: Vec<String> = sig
+            .child_by_field_name("type_parameters")
+            .map(|tp| {
+                named(tp)
+                    .into_iter()
+                    .filter_map(|p| p.child_by_field_name("name"))
+                    .map(|n| self.t(n).to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let first = sig.child_by_field_name("parameters").and_then(|ps| {
+            named(ps).into_iter().find(|p| {
+                matches!(p.kind(), "required_parameter" | "optional_parameter")
+                    && p.child_by_field_name("pattern")
+                        .is_none_or(|n| self.t(n) != "this")
+            })
+        });
+        let shape = match first {
+            None => '0',
+            Some(p) => {
+                let ty = p
+                    .child_by_field_name("type")
+                    .and_then(|t| t.named_child(0))
+                    .map(|t| squash(self.t(t)));
+                param_shape(ty.as_deref(), &gens)
+            }
+        };
+        Some((format!("(){shape}"), mk("T:", &squash(self.t(ret)))?))
+    }
 
     /// Return type hint of a function/method definition node.
     pub(crate) fn ret_of(&self, def: Node<'a>) -> Option<String> {
@@ -1447,7 +1559,23 @@ impl<'a> Infer<'a> {
                 }
             }
             Lang::TypeScript | Lang::Tsx | Lang::JavaScript => {
-                let Some(body) = def.child_by_field_name("body") else {
+                let body = if def.kind() == "type_alias_declaration" {
+                    // `type F = (a: A) => R` / `type O = { m(): R; (x): Y }`
+                    let Some(v) = def.child_by_field_name("value") else {
+                        return out;
+                    };
+                    if v.kind() == "function_type" {
+                        out.extend(self.call_sig(v));
+                        return out;
+                    }
+                    if v.kind() != "object_type" {
+                        return out;
+                    }
+                    Some(v)
+                } else {
+                    def.child_by_field_name("body")
+                };
+                let Some(body) = body else {
                     return out;
                 };
                 let mut c = body.walk();
@@ -1472,6 +1600,7 @@ impl<'a> Infer<'a> {
                                 out.push((self.t(n).trim_start_matches('#').to_string(), h));
                             }
                         }
+                        "call_signature" => out.extend(self.call_sig(m)),
                         "method_definition" => {
                             let is_ctor = m
                                 .child_by_field_name("name")
@@ -1614,6 +1743,33 @@ const ITER_CALLBACKS: &[&str] = &[
     "findLast",
     "flatMap",
 ];
+
+/// Shape of a call signature's first parameter type: `f` a function type, `g` a type
+/// parameter / `any` / `unknown` / no annotation (accepts anything), `n` anything else.
+pub(crate) fn param_shape(ty: Option<&str>, generics: &[String]) -> char {
+    let Some(t) = ty.map(str::trim) else {
+        return 'g';
+    };
+    let mut depth = 0i32;
+    let b = t.as_bytes();
+    for (i, &c) in b.iter().enumerate() {
+        match c {
+            b'(' | b'[' | b'{' | b'<' => depth += 1,
+            b'>' if i > 0 && b[i - 1] == b'=' => {
+                if depth == 0 {
+                    return 'f';
+                }
+            }
+            b')' | b']' | b'}' | b'>' => depth -= 1,
+            _ => {}
+        }
+    }
+    if matches!(t, "any" | "unknown" | "Function") || generics.iter().any(|g| g == t) {
+        'g'
+    } else {
+        'n'
+    }
+}
 
 /// Whether `p` is the first named parameter in `ps`.
 fn first_param(ps: Node<'_>, p: Node<'_>) -> bool {

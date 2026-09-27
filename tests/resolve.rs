@@ -98,6 +98,29 @@ fn ts_factories_generics_and_super() {
     assert_eq!(target_line(&ix, b, 16, "add"), Some(13));
     assert_edge(&ix, b, 25, "run", "blocks.Parent.run", "exact");
     assert_edge(&ix, b, 30, "run", "blocks.Parent.run", "exact");
+    // Factory values: `computed(() => ..)` picks the call signature taking a function,
+    // `observable.box(1)` calls the `box` field's signature, `f.observable.list(..)` a
+    // function-typed field through a namespace, `computed.describe()` a method of the
+    // value's type.
+    let u = "packages/app/src/usefactories.ts";
+    assert_edge(
+        &ix,
+        u,
+        6,
+        "recompute",
+        "factories.Computed.recompute",
+        "exact",
+    );
+    assert_edge(&ix, u, 8, "get", "factories.Value.get", "exact");
+    assert_edge(&ix, u, 10, "get", "factories.Value.get", "exact");
+    assert_edge(
+        &ix,
+        u,
+        11,
+        "describe",
+        "factories.ComputedFactory.describe",
+        "exact",
+    );
 }
 
 /// Start line of the target of the edge `name` at `file:line`.

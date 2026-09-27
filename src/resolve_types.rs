@@ -118,6 +118,88 @@ fn std_iface(qualified: &str) -> Option<&'static [(&'static str, (usize, usize))
     })
 }
 
+/// A call signature of shape `sig` (`infer::param_shape`; `0` = no parameters) accepts a
+/// first argument of shape `arg` (`f` a function literal, `o` another literal, `None`
+/// unknown).
+fn shape_ok(arg: Option<char>, sig: char) -> bool {
+    match arg {
+        None => true,
+        Some('f') => matches!(sig, 'f' | 'g'),
+        Some(_) => matches!(sig, 'n' | 'g'),
+    }
+}
+
+/// `<T>(a: A, b: B) => R` / `(a: A) => R` (squashed TS type text) -> (shape of the first
+/// parameter, `R`).
+fn fn_type_parts(text: &str) -> Option<(char, String)> {
+    let mut t = text.trim();
+    let mut gens: Vec<String> = Vec::new();
+    if t.starts_with('<') {
+        let close = matching(t, 0)?;
+        gens = split_top(&t[1..close], ',')
+            .into_iter()
+            .map(|g| {
+                let g = g.trim();
+                let end = g.find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'));
+                g[..end.unwrap_or(g.len())].to_string()
+            })
+            .collect();
+        t = t[close + 1..].trim_start();
+    }
+    if !t.starts_with('(') {
+        return None;
+    }
+    let close = matching(t, 0)?;
+    let ret = t[close + 1..].trim_start().strip_prefix("=>")?.trim();
+    if ret.is_empty() {
+        return None;
+    }
+    let params = &t[1..close];
+    let shape = match split_top(params, ',')
+        .into_iter()
+        .map(str::trim)
+        .find(|p| !p.is_empty() && !p.starts_with("this:") && !p.starts_with("this?:"))
+    {
+        None => '0',
+        Some(p) => {
+            let ty = split_once_top(p, ':').map(|(_, ty)| ty);
+            crate::infer::param_shape(ty, &gens)
+        }
+    };
+    Some((shape, ret.to_string()))
+}
+
+/// Index of the bracket closing the one at byte `open` of `s` (`(`/`<`/`[`/`{`; a `>` of
+/// `=>` does not close anything).
+fn matching(s: &str, open: usize) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut depth = 0i32;
+    for (i, &c) in b.iter().enumerate().skip(open) {
+        match c {
+            b'(' | b'<' | b'[' | b'{' => depth += 1,
+            b'>' if i > 0 && b[i - 1] == b'=' => {}
+            b')' | b'>' | b']' | b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split at the first top-level `sep`.
+fn split_once_top(s: &str, sep: char) -> Option<(&str, &str)> {
+    let parts = split_top(s, sep);
+    if parts.len() < 2 {
+        return None;
+    }
+    let head = parts[0];
+    Some((head, &s[head.len() + sep.len_utf8()..]))
+}
+
 /// Count of top-level comma-separated items in `s` (empty = 0).
 fn arity(s: &str) -> usize {
     if s.trim().is_empty() {
@@ -501,9 +583,14 @@ fn split_top(s: &str, sep: char) -> Vec<&str> {
     let mut out = Vec::new();
     let mut depth = 0i32;
     let mut start = 0;
+    let mut prev = ' ';
     for (i, c) in s.char_indices() {
+        let arrow = c == '>' && prev == '=';
+        prev = c;
         match c {
             '<' | '(' | '[' | '{' => depth += 1,
+            // `=>` of a function type closes nothing.
+            '>' if arrow => {}
             '>' | ')' | ']' | '}' => depth -= 1,
             c if c == sep && depth == 0 => {
                 out.push(&s[start..i]);
@@ -868,6 +955,19 @@ impl Ctx {
 
     fn eval_call(&self, fi: usize, from: Option<i64>, callee: &str, d: u8) -> Val {
         let lang = self.files[fi].lang;
+        let (callee, shape) = match callee.rsplit_once('#') {
+            Some((c, sh)) => (c, sh.chars().next()),
+            None => (callee, None),
+        };
+        if lang.is_js_family() {
+            if let Some(v) = self.value_call(fi, callee, shape, d) {
+                return v;
+            }
+            if callee.matches('.').count() > 1 {
+                // `ns.value.m()` and `ns` is no namespace of ours: no guessing by name.
+                return Val::Ty(Ty::Unknown);
+            }
+        }
         let (qual, name) = if let Some((q, n)) = callee.rsplit_once("::") {
             (Some(q), n)
         } else if let Some((q, n)) = callee.rsplit_once('.') {
@@ -942,6 +1042,135 @@ impl Ctx {
         } else {
             Ty::Unknown
         })
+    }
+
+    /// A module-level JS/TS value's type (`const computed: Factory = ..`).
+    fn value_val(&self, fi: usize, path: &str, d: u8) -> Option<Val> {
+        let v = self.value_sym(fi, path)?;
+        let s = &self.syms[v];
+        Some(match s.ret.clone() {
+            Some(r) => self.eval_val(s.file, Some(s.id), s.line, &r, d),
+            None => Val::Ty(Ty::Unknown),
+        })
+    }
+
+    /// `f(..)` / `ns.f(..)` where `f` is a module-level value (a factory object with call
+    /// signatures, a function-typed const), or `v.m(..)` / `ns.v.m(..)`: member `m` of such
+    /// a value (a method, or a function-typed / callable field). `None`: no value there.
+    fn value_call(&self, fi: usize, callee: &str, shape: Option<char>, d: u8) -> Option<Val> {
+        if let Some(v) = self.value_val(fi, callee, d) {
+            return Some(self.call_val(&v, shape, d));
+        }
+        let (q, m) = callee.rsplit_once('.')?;
+        let v = self.value_val(fi, q, d)?;
+        let Ty::Known(t) = self.bind_val(&v, d) else {
+            return Some(Val::Ty(Ty::Unknown));
+        };
+        if let Some((ms, _)) = self.method_on(t, m, &mut HashSet::new(), d) {
+            let sym = &self.syms[ms];
+            return Some(match sym.ret.clone() {
+                Some(r) => self.eval_val(sym.file, Some(sym.id), sym.line, &r, d),
+                None => Val::Ty(Ty::Unknown),
+            });
+        }
+        let f = self.field_of(t, m, &mut HashSet::new(), d);
+        Some(match f {
+            Val::Ty(Ty::Unknown) => f,
+            f => self.call_val(&f, shape, d),
+        })
+    }
+
+    /// The result of calling a value of type `v`: a function type's return type, or the
+    /// call signatures of an interface / type alias (see [`Self::call_sigs`]).
+    fn call_val(&self, v: &Val, shape: Option<char>, d: u8) -> Val {
+        if d > MAX_DEPTH {
+            return Val::Ty(Ty::Unknown);
+        }
+        if let Val::Text {
+            fi,
+            from,
+            line,
+            text,
+            unwrap: false,
+            awaited: false,
+            elem: false,
+        } = v
+        {
+            if let Some((sh, ret)) = fn_type_parts(text) {
+                if !shape_ok(shape, sh) {
+                    return Val::Ty(Ty::Unknown);
+                }
+                return Val::Text {
+                    fi: *fi,
+                    from: *from,
+                    line: *line,
+                    text: ret,
+                    unwrap: false,
+                    awaited: false,
+                    elem: false,
+                };
+            }
+        }
+        match self.bind_val(v, d) {
+            Ty::Known(t) => self
+                .call_sigs(t, shape, &mut HashSet::new(), d + 1)
+                .unwrap_or(Val::Ty(Ty::Unknown)),
+            _ => Val::Ty(Ty::Unknown),
+        }
+    }
+
+    /// Calling a value of type `t` through its call signatures (fields `()<shape>`, see
+    /// `infer::param_shape`): those whose first parameter fits the first argument's
+    /// shape; the type's own before its alias target's and its bases' (TypeScript tries
+    /// derived overloads first). A result only when every fitting signature agrees on
+    /// the type; `None` when `t` has no fitting signature.
+    fn call_sigs(
+        &self,
+        t: usize,
+        shape: Option<char>,
+        seen: &mut HashSet<usize>,
+        d: u8,
+    ) -> Option<Val> {
+        if !seen.insert(t) || d > MAX_DEPTH {
+            return None;
+        }
+        let s = &self.syms[t];
+        let fits: Vec<Val> = s
+            .fields
+            .iter()
+            .filter_map(|(k, h)| {
+                let sh = k.strip_prefix("()")?.chars().next()?;
+                shape_ok(shape, sh).then(|| self.eval_val(s.file, Some(s.id), s.line, h, d + 1))
+            })
+            .collect();
+        if !fits.is_empty() {
+            return Some(self.agree(fits, d));
+        }
+        if let Some(target) = self.alias_target(t) {
+            if let Some(v) = self.call_sigs(target, shape, seen, d + 1) {
+                return Some(v);
+            }
+        }
+        let mut found: Vec<Val> = Vec::new();
+        for base in self.bases.get(&s.name).into_iter().flatten() {
+            if let Ty::Known(b) = self.find_type(s.file, None, base, Some(s.id), s.line) {
+                found.extend(self.call_sigs(b, shape, seen, d + 1));
+            }
+        }
+        (!found.is_empty()).then(|| self.agree(found, d))
+    }
+
+    /// The first of `vals` when all bind to one type, else unknown.
+    fn agree(&self, vals: Vec<Val>, d: u8) -> Val {
+        let mut it = vals.into_iter();
+        let Some(first) = it.next() else {
+            return Val::Ty(Ty::Unknown);
+        };
+        let ty = self.bind_val(&first, d);
+        if ty == Ty::Unknown || it.any(|v| self.bind_val(&v, d) != ty) {
+            return Val::Ty(Ty::Unknown);
+        }
+        first
     }
 
     fn any_type_named(&self, name: &str) -> bool {
@@ -1504,6 +1733,32 @@ impl Ctx {
         }
     }
 
+    /// JS/TS `v.m()` / `ns.v.m()` with no receiver hint, where `v` is a module-level value
+    /// of the repo (`computed.make_(..)`, `mobx.observable.box(..)`): `m` on its type.
+    pub(super) fn resolve_value_member(&self, e: &E, q: &str) -> Typed {
+        if !matches!(e.kind, EdgeKind::Call | EdgeKind::Value) {
+            return Typed::NoOpinion;
+        }
+        let Some(v) = self.value_val(e.file, q, 0) else {
+            return Typed::NoOpinion;
+        };
+        match self.bind_val(&v, 0) {
+            Ty::Known(t) => match self.method_on(t, &e.name, &mut HashSet::new(), 0) {
+                Some((m, via_base)) => Typed::Resolved(Some((
+                    m,
+                    if via_base {
+                        Confidence::Likely
+                    } else {
+                        Confidence::Exact
+                    },
+                ))),
+                None => Typed::NoOpinion,
+            },
+            Ty::External(_) => Typed::Resolved(None),
+            Ty::Unknown => Typed::NoOpinion,
+        }
+    }
+
     /// Resolve a receiver call through its type hint.
     pub(super) fn resolve_typed(&self, e: &E) -> Typed {
         let Some(hint) = e.hint.as_deref() else {
@@ -1591,6 +1846,24 @@ mod tests {
             go_shape("func (x T) Get() interface{} { return nil }", "Get"),
             Some((0, 1))
         );
+    }
+
+    #[test]
+    fn ts_function_types() {
+        assert_eq!(
+            fn_type_parts("<T=any>(initialValues?:T[],options?:O)=>IObservableArray<T>"),
+            Some(('n', "IObservableArray<T>".to_string()))
+        );
+        assert_eq!(
+            fn_type_parts("<T>(fn:()=>T,o?:O)=>Box<T>"),
+            Some(('f', "Box<T>".to_string()))
+        );
+        assert_eq!(fn_type_parts("<T>(v:T)=>T"), Some(('g', "T".to_string())));
+        assert_eq!(fn_type_parts("()=>void"), Some(('0', "void".to_string())));
+        assert_eq!(fn_type_parts("Map<K,V>"), None);
+        assert!(shape_ok(Some('f'), 'g') && !shape_ok(Some('f'), 'n'));
+        assert!(shape_ok(Some('o'), 'n') && !shape_ok(Some('o'), 'f'));
+        assert_eq!(split_top("a:()=>T,b:X", ','), vec!["a:()=>T", "b:X"]);
     }
 
     #[test]

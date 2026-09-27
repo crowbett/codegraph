@@ -60,6 +60,30 @@
         name: (identifier) @name
         value: [(string) (number) (template_string) (object) (array)]) @definition.const)))
 
+; module-level values (`export const computed: Factory = ... as any`): extract.rs keeps the
+; exported ones whose value is not a function, class or literal.
+(program
+  (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name) @definition.value))
+
+(program
+  (variable_declaration
+    (variable_declarator
+      name: (identifier) @name) @definition.value))
+
+(program
+  (export_statement
+    (lexical_declaration
+      (variable_declarator
+        name: (identifier) @name) @definition.value)))
+
+(program
+  (export_statement
+    (variable_declaration
+      (variable_declarator
+        name: (identifier) @name) @definition.value)))
+
 ; ---- references -----------------------------------------------------------
 (call_expression
   function: (identifier) @name) @reference.call

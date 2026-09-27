@@ -2491,6 +2491,24 @@ impl Ctx {
 
     /// Candidates named `name` in `files` (following JS/Python re-exports one level).
     fn lookup_in(&self, files: &[usize], name: &str, edge: EdgeKind, depth: u8) -> Vec<usize> {
+        let ok = |k: SymKind, l: Lang| {
+            kind_ok(edge, k, l)
+                // Go `pkg.F` never names a method.
+                && (k != SymKind::Method
+                    || l != Lang::Go
+                    || !matches!(edge, EdgeKind::Call | EdgeKind::Value))
+        };
+        self.lookup_in_by(files, name, &ok, depth)
+    }
+
+    /// [`Self::lookup_in`] with a symbol filter of its own (kind, language).
+    fn lookup_in_by(
+        &self,
+        files: &[usize],
+        name: &str,
+        ok: &dyn Fn(SymKind, Lang) -> bool,
+        depth: u8,
+    ) -> Vec<usize> {
         // No symbol may carry `name` itself (`export { f as g }`, `pub use f as g`): the
         // re-exports below still apply.
         let all: &[usize] = self.by_name.get(name).map_or(&[], Vec::as_slice);
@@ -2506,11 +2524,7 @@ impl Ctx {
                             .get(&p)
                             .is_some_and(|&pi| self.syms[pi].kind == SymKind::Module)
                     })
-                    && kind_ok(edge, self.syms[s].kind, self.files[self.syms[s].file].lang)
-                    // Go `pkg.F` never names a method.
-                    && (self.syms[s].kind != SymKind::Method
-                        || self.files[self.syms[s].file].lang != Lang::Go
-                        || !matches!(edge, EdgeKind::Call | EdgeKind::Value))
+                    && ok(self.syms[s].kind, self.files[self.syms[s].file].lang)
             })
             .collect();
         if !direct.is_empty() || depth == 0 {
@@ -2525,17 +2539,17 @@ impl Ctx {
             };
             if let Some((orig, tf)) = sc.names.get(name) {
                 if !tf.is_empty() && tf.as_slice() != [t] {
-                    out.extend(self.lookup_in(tf, orig, edge, depth - 1));
+                    out.extend(self.lookup_in_by(tf, orig, ok, depth - 1));
                 }
             }
             // `pub use a::*` / `export * from './a'`
             let lang = self.files[t].lang;
             if !sc.globs.is_empty() && lang == Lang::Rust {
-                out.extend(self.lookup_in(&sc.globs, name, edge, depth - 1));
+                out.extend(self.lookup_in_by(&sc.globs, name, ok, depth - 1));
             } else if !sc.globs.is_empty() && lang.is_js_family() {
                 // `export *` passes on exported names only.
                 out.extend(
-                    self.lookup_in(&sc.globs, name, edge, depth - 1)
+                    self.lookup_in_by(&sc.globs, name, ok, depth - 1)
                         .into_iter()
                         .filter(|&s| self.syms[s].exported),
                 );
@@ -2633,6 +2647,47 @@ impl Ctx {
             cur = s.parent.and_then(|p| self.by_id.get(&p).copied());
         }
         None
+    }
+
+    /// JS/TS module-level value (`const`/`let`/`var` symbol) named by `path` as seen from
+    /// file `fi`: `v` (this file, or imported by name) or `ns.v` (`ns` a namespace
+    /// import). `None` when not bound to one in the repo.
+    fn value_sym(&self, fi: usize, path: &str) -> Option<usize> {
+        if !self.files[fi].lang.is_js_family() {
+            return None;
+        }
+        let is_val =
+            |k: SymKind, l: Lang| matches!(k, SymKind::Const | SymKind::Var) && l.is_js_family();
+        let scope = self.scopes.get(fi)?;
+        let (files, name): (&[usize], &str) = match path.split_once('.') {
+            Some((ns, n)) if !n.contains('.') => (scope.modules.get(ns)?.as_slice(), n),
+            Some(_) => return None,
+            None => {
+                let local: Vec<usize> = self.by_file[fi]
+                    .iter()
+                    .copied()
+                    .filter(|&s| {
+                        let sym = &self.syms[s];
+                        sym.name == path
+                            && sym.parent.is_none()
+                            && is_val(sym.kind, Lang::TypeScript)
+                    })
+                    .collect();
+                if !local.is_empty() {
+                    return self.best(fi, &local);
+                }
+                let (orig, targets) = scope.names.get(path)?;
+                (targets.as_slice(), orig.as_str())
+            }
+        };
+        if files.is_empty() {
+            return None;
+        }
+        let m = self.lookup_in_by(files, name, &is_val, 3);
+        match m.as_slice() {
+            [one] => Some(*one),
+            _ => None,
+        }
     }
 
     /// Whether JS/TS file `fi` declares some type name more than once.
@@ -2753,6 +2808,12 @@ impl Ctx {
         match self.resolve_typed(e) {
             types::Typed::NoOpinion => {}
             types::Typed::Resolved(r) => return r,
+        }
+        if e.hint.is_none() && lang.is_js_family() {
+            match self.resolve_value_member(e, q) {
+                types::Typed::NoOpinion => {}
+                types::Typed::Resolved(r) => return r,
+            }
         }
         if lang == Lang::Rust && e.dot {
             // `x.f()` in Rust is a method call on a value, never a module path. With no
