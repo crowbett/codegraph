@@ -766,7 +766,7 @@ impl Ctx {
             return self.eval_call(fi, from, callee, d);
         }
         if let Some(g) = h.strip_prefix("G:") {
-            return self.eval_global(fi, from, g, d);
+            return self.eval_global(fi, g, d);
         }
         let (tag, rest) = h.split_at(2.min(h.len()));
         let Some((name, base)) = rest.split_once('@') else {
@@ -890,8 +890,8 @@ impl Ctx {
     fn go_global(&self, fi: usize, qual: Option<&str>, name: &str) -> Result<Option<usize>, ()> {
         let scope = &self.scopes[fi];
         let is_var = |s: usize| matches!(self.syms[s].kind, SymKind::Var | SymKind::Const);
-        let cands: Vec<usize> = match qual {
-            Some(q) => match scope.modules.get(q) {
+        let cands: Vec<usize> = if let Some(q) = qual {
+            match scope.modules.get(q) {
                 Some(t) if t.is_empty() => return Err(()),
                 Some(t) => self
                     .by_name
@@ -902,24 +902,23 @@ impl Ctx {
                     .filter(|&s| is_var(s) && t.contains(&self.syms[s].file))
                     .collect(),
                 None => return Ok(None),
-            },
-            None => {
-                // A package name bound in this file is not a var.
-                if scope.modules.contains_key(name) {
-                    return Ok(None);
-                }
-                let f = &self.files[fi];
-                self.by_name
-                    .get(name)
-                    .into_iter()
-                    .flatten()
-                    .copied()
-                    .filter(|&s| {
-                        let sf = &self.files[self.syms[s].file];
-                        is_var(s) && sf.lang == Lang::Go && sf.package == f.package
-                    })
-                    .collect()
             }
+        } else {
+            // A package name bound in this file is not a var.
+            if scope.modules.contains_key(name) {
+                return Ok(None);
+            }
+            let f = &self.files[fi];
+            self.by_name
+                .get(name)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|&s| {
+                    let sf = &self.files[self.syms[s].file];
+                    is_var(s) && sf.lang == Lang::Go && sf.package == f.package
+                })
+                .collect()
         };
         Ok(match cands.as_slice() {
             [s] => Some(*s),
@@ -929,7 +928,7 @@ impl Ctx {
 
     /// `G:` hint: a Go package-level var (`Name`, `pkg.Name`), or a field of one
     /// (`cfg.Field` where `cfg` is a var of this package declared in another file).
-    fn eval_global(&self, fi: usize, from: Option<i64>, g: &str, d: u8) -> Val {
+    fn eval_global(&self, fi: usize, g: &str, d: u8) -> Val {
         if self.files[fi].lang != Lang::Go {
             return Val::Ty(Ty::Unknown);
         }
@@ -939,7 +938,7 @@ impl Ctx {
         };
         if let Some(q) = qual {
             if !self.scopes[fi].modules.contains_key(q) {
-                return match self.bind_val(&self.eval_global(fi, from, q, d + 1), d + 1) {
+                return match self.bind_val(&self.eval_global(fi, q, d + 1), d + 1) {
                     Ty::Known(t) => self.field_of(t, name, &mut HashSet::new(), d + 1),
                     other => Val::Ty(other),
                 };
