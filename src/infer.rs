@@ -1700,6 +1700,45 @@ impl<'a> Infer<'a> {
     // ---- symbol facts --------------------------------------------------------
 
     /// Return type hint of a function/method definition node.
+    /// Python `def` without a return annotation: the hint its `return` statements agree
+    /// on (nested functions and classes excluded), if every one evaluates to it.
+    pub(crate) fn py_returned(&mut self, def: Node<'a>) -> Option<String> {
+        if self.lang != Lang::Python || def.child_by_field_name("return_type").is_some() {
+            return None;
+        }
+        let body = def.child_by_field_name("body")?;
+        let mut returns = Vec::new();
+        let mut stack = vec![body];
+        while let Some(n) = stack.pop() {
+            match n.kind() {
+                "function_definition" | "class_definition" | "lambda" => continue,
+                "return_statement" => {
+                    returns.push(n.named_child(0)?);
+                    if returns.len() > 8 {
+                        return None;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            let mut c = n.walk();
+            stack.extend(n.named_children(&mut c));
+        }
+        let mut out: Option<String> = None;
+        for r in returns {
+            let h = self.eval(r, 0)?;
+            if h == "L" {
+                return None;
+            }
+            match &out {
+                Some(o) if *o != h => return None,
+                Some(_) => {}
+                None => out = Some(h),
+            }
+        }
+        out
+    }
+
     pub(crate) fn ret_of(&self, def: Node<'a>) -> Option<String> {
         if !self.supported() {
             return None;

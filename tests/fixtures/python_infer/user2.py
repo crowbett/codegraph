@@ -31,3 +31,30 @@ def run(obj, table: dict[str, Command]):
         ctx2.fail("z")
     cli2.special()
     return [c2.make_context() for n, c2 in pairs()]
+
+
+def filter(items):
+    return items
+
+
+def uses_filter():
+    return filter([1])
+
+
+def make_bar():
+    b = progress()
+    return b
+
+
+def uses_helper():
+    make_bar().update(2)
+
+
+def pager():
+    from pkg.utils import helper
+
+    return helper()
+
+
+def helper():
+    return 2

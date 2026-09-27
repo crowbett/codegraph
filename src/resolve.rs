@@ -143,6 +143,8 @@ struct Scope {
     includes: Vec<usize>,
     /// Whether the file has any import at all (JS global-script detection).
     any_import: bool,
+    /// Python: (line, local name) of every import, to spot function-local imports.
+    import_lines: Vec<(u32, String)>,
 }
 
 struct Ctx {
@@ -1262,6 +1264,11 @@ fn resolve_edges(
         let to_file = targets.as_ref().and_then(|t| t.first().copied());
         if to_file.is_some() {
             stats.imports_resolved += 1;
+        }
+        if ctx.files[e.file].lang == Lang::Python {
+            scope
+                .import_lines
+                .extend(bindings.iter().map(|b| (e.line, b.local.clone())));
         }
         ctx.bind(e.file, &e.name, targets.as_deref(), &bindings, scope);
         outs[i].to_file = to_file.map(|t| ctx.files[t].id);
@@ -2997,6 +3004,28 @@ impl Ctx {
                 || (lang == Lang::Cpp && sym.container.is_some() && sym.container == self_ty)
                 || !matches!(e.kind, EdgeKind::Call | EdgeKind::Value)
         };
+        // Python: an `import` inside the enclosing function, before the use, binds the
+        // name locally over a module-level def of the same name.
+        if lang == Lang::Python && !scope.import_lines.is_empty() {
+            let span = e
+                .from_symbol
+                .and_then(|id| self.by_id.get(&id))
+                .map(|&i| (self.syms[i].line, self.syms[i].line + self.syms[i].span));
+            let local_import = span.is_some_and(|(a, b)| {
+                scope
+                    .import_lines
+                    .iter()
+                    .any(|(l, n)| n == &e.name && *l > a && *l <= b && *l < e.line)
+            });
+            if local_import {
+                if let Some((orig, targets)) = scope.names.get(&e.name) {
+                    let m = self.lookup_in(targets, orig, e.kind, 2);
+                    if let Some(r) = self.pick(fi, &m, Confidence::Exact, Confidence::Likely) {
+                        return Some(r);
+                    }
+                }
+            }
+        }
         // 1. Same file, innermost lexical scope first.
         let local: Vec<usize> = cands
             .iter()

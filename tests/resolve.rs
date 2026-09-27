@@ -425,4 +425,10 @@ fn python_typed_flow() {
     assert_edge(&ix, f, 32, "special", "pkg.ctx.Special.special", "exact");
     // A comprehension variable used before its `for` clause.
     assert_edge(&ix, f, 33, "make_context", make, "exact");
+    // A same-file `def filter` shadows the builtin.
+    assert_edge(&ix, f, 41, "filter", "user2.filter", "exact");
+    // An unannotated function returns what its `return` statements agree on.
+    assert_edge(&ix, f, 50, "update", "pkg.ctx.Bar.update", "exact");
+    // A function-local import shadows the module-level def of the same name.
+    assert_edge(&ix, f, 56, "helper", "pkg.utils.helper", "exact");
 }

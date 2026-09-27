@@ -396,7 +396,7 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
             continue;
         };
         if matches!(sym.kind, SymKind::Function | SymKind::Method) {
-            sym.ret = infer.ret_of(node);
+            sym.ret = infer.ret_of(node).or_else(|| infer.py_returned(node));
         } else if matches!(sym.kind, SymKind::Var | SymKind::Const) {
             sym.ret = infer.var_ret_of(node, &sym.name);
         } else if matches!(
@@ -442,6 +442,12 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
         .filter(|r| !def_names.contains(&r.name.start_byte()))
         .collect();
     ref_list.sort_by_key(|r| r.name.start_byte());
+    // Python: a builtin's name defined in this file (`def filter(..)`) is that def.
+    let shadowed: std::collections::HashSet<String> = if lang == Lang::Python {
+        facts.symbols.iter().map(|s| s.name.clone()).collect()
+    } else {
+        std::collections::HashSet::new()
+    };
     for (i, r) in ref_list.into_iter().enumerate() {
         if i % BUDGET_EVERY == 0 && infer.hints_enabled() && start.elapsed() > HINT_BUDGET {
             infer.disable_hints();
@@ -449,7 +455,9 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
         let name = text(r.name, src).to_string();
         if name.is_empty()
             || name == "_"
-            || (r.qualifier.is_none() && is_builtin(lang, r.kind, &name))
+            || (r.qualifier.is_none()
+                && is_builtin(lang, r.kind, &name)
+                && !shadowed.contains(&name))
         {
             continue;
         }
