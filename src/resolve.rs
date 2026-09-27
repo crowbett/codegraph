@@ -2502,9 +2502,9 @@ impl Ctx {
                             .is_some_and(|&pi| self.syms[pi].kind == SymKind::Module)
                     })
                     && kind_ok(edge, self.syms[s].kind, self.files[self.syms[s].file].lang)
-                    // Go `pkg.F` never names a method.
+                    // Go `pkg.F` / Rust `m::f` never names a method.
                     && (self.syms[s].kind != SymKind::Method
-                        || self.files[self.syms[s].file].lang != Lang::Go
+                        || !matches!(self.files[self.syms[s].file].lang, Lang::Go | Lang::Rust)
                         || !matches!(edge, EdgeKind::Call | EdgeKind::Value))
             })
             .collect();
@@ -2758,7 +2758,13 @@ impl Ctx {
         }
         // 3. Rust paths (`crate::a::f`, `super::f`, `a::b::Type::new`).
         if lang == Lang::Rust && (q.contains("::") || matches!(q, "crate" | "super")) {
-            let full = q.to_string();
+            let mut full = q.to_string();
+            if q.starts_with("super") {
+                match self.rust_inline_super(e, q, cands) {
+                    Ok(r) => return r,
+                    Err(rest) => full = rest,
+                }
+            }
             match self.rust_path(fi, &full) {
                 Some((files, None)) => {
                     let m = self.lookup_in(&files, &e.name, e.kind, 2);
@@ -2843,6 +2849,63 @@ impl Ctx {
             })
             .collect();
         self.pick(fi, &m, Confidence::Exact, Confidence::Likely)
+    }
+
+    /// `super::f` inside an inline `mod m { .. }`: each `super` first leaves an enclosing
+    /// inline module of the same file. `Ok(r)`: resolved within the file; `Err(q)`: the
+    /// qualifier left once the inline modules are used up, relative to the file's module.
+    fn rust_inline_super(
+        &self,
+        e: &E,
+        q: &str,
+        cands: &[usize],
+    ) -> Result<Option<(usize, Confidence)>, String> {
+        let mut mods: Vec<i64> = Vec::new();
+        let mut cur = e.from_symbol;
+        while let Some(i) = cur.and_then(|id| self.by_id.get(&id).copied()) {
+            let s = &self.syms[i];
+            if s.file != e.file {
+                break;
+            }
+            if s.kind == SymKind::Module {
+                mods.push(s.id);
+            }
+            cur = s.parent;
+        }
+        if mods.is_empty() {
+            return Err(q.to_string());
+        }
+        let segs: Vec<&str> = q.split("::").collect();
+        let k = segs.iter().take_while(|s| **s == "super").count();
+        if k > mods.len() {
+            return Err(segs[mods.len()..].join("::"));
+        }
+        // The module `k` levels up (the file itself when all inline modules are used up).
+        let target = mods.get(k).copied();
+        if k < segs.len() {
+            // `super::sub::f`: relative to the file's module, or (from a nested inline
+            // module) into a sibling inline module, which is not followed.
+            return match target {
+                None => Err(format!("self::{}", segs[k..].join("::"))),
+                Some(_) => Ok(None),
+            };
+        }
+        let m: Vec<usize> = cands
+            .iter()
+            .copied()
+            .filter(|&s| {
+                let sym = &self.syms[s];
+                sym.file == e.file
+                    && sym.parent == target
+                    && (sym.kind != SymKind::Method
+                        || !matches!(e.kind, EdgeKind::Call | EdgeKind::Value))
+            })
+            .collect();
+        if m.is_empty() && target.is_none() {
+            // Not defined in the file: imported into its module (`use x::f;`).
+            return Err("self".to_string());
+        }
+        Ok(self.pick(e.file, &m, Confidence::Exact, Confidence::Likely))
     }
 
     fn by_container(

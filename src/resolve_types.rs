@@ -974,6 +974,20 @@ impl Ctx {
         }
     }
 
+    /// Rust type symbols named `name` defined in module `files`, or re-exported there by a
+    /// `pub use` (not the directory-wide barrel guess of [`Ctx::reexported`]: a `#[cfg]`
+    /// twin module's items must stay unbound).
+    fn rust_type_syms_via(&self, files: &[usize], name: &str) -> Vec<usize> {
+        let direct = self.type_syms_in(files, name);
+        if !direct.is_empty() {
+            return direct;
+        }
+        self.lookup_in(files, name, EdgeKind::Ref, 2)
+            .into_iter()
+            .filter(|&s| self.syms[s].kind.is_type_like())
+            .collect()
+    }
+
     fn type_syms_in(&self, files: &[usize], name: &str) -> Vec<usize> {
         self.by_name
             .get(name)
@@ -993,10 +1007,13 @@ impl Ctx {
         if let Some(q) = qual {
             if lang == Lang::Rust {
                 return match self.rust_path(fi, &format!("{q}::{name}")) {
+                    // `stash::Repository`, `super::Buf`: also through `pub use` re-exports.
                     Some((files, Some(item))) => {
-                        self.pick_type(fi, &self.type_syms_in(&files, &item))
+                        self.pick_type(fi, &self.rust_type_syms_via(&files, &item))
                     }
-                    Some((files, None)) => self.pick_type(fi, &self.type_syms_in(&files, name)),
+                    Some((files, None)) => {
+                        self.pick_type(fi, &self.rust_type_syms_via(&files, name))
+                    }
                     None => {
                         let head = q.split("::").next().unwrap_or(q);
                         let bound = scope

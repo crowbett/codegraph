@@ -152,6 +152,33 @@ fn rust_items_nested_in_functions_stay_local() {
     );
 }
 
+#[test]
+fn rust_paths_through_reexports_and_inline_modules() {
+    let ix = index_fixture("rust_infer");
+    // Field typed `super::Buf` where buf/mod.rs has `pub use self::buf_impl::Buf`.
+    assert_edge(
+        &ix,
+        "src/buf/chain.rs",
+        7,
+        "remaining",
+        "buf::buf_impl::Buf::remaining",
+        "exact",
+    );
+    // `&infer::buf::Buf` from an integration test, through the same re-export.
+    assert_edge(
+        &ix,
+        "tests/reexp.rs",
+        2,
+        "remaining",
+        "buf::buf_impl::Buf::remaining",
+        "exact",
+    );
+    // `super::from_ns` inside an inline `mod imp` is the file's own function.
+    assert_edge(&ix, "src/sysx.rs", 7, "from_ns", "sysx::from_ns", "exact");
+    // `walker::scan()` is the module function, not the method `State::scan`.
+    assert_edge(&ix, "src/scan_use.rs", 4, "scan", "walker::scan", "exact");
+}
+
 fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
     let mut st = ix
         .store
