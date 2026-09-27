@@ -20,7 +20,7 @@
 //! yields no hint and the resolver falls back to name-based rules.
 //!
 //! Rust literals give `T:` hints of their std shape, `_` standing for an unknown part:
-//! `"s"` -> `T:&str`, `b"s"` -> `T:&[u8;_]`, `[x; n]` -> `T:[_;_]`, `vec![..]` ->
+//! `"s"` -> `T:&str`, `b"s"` -> `T:&[u8;_]`, `[0u8; n]` -> `T:[u8;_]`, `vec![..]` ->
 //! `T:Vec<_>`, `format!(..)` -> `T:String`, `x as T` -> `T:T`, a range index
 //! `&b"s"[..]` -> `T:[u8]`; module-level `const`/`static` items bind their declared type.
 //! A capitalized non-local value is a unit struct (`Special.put_u8(..)` -> `T:Special`),
@@ -1397,7 +1397,11 @@ impl<'a> Infer<'a> {
             "parenthesized_expression"
             | "non_null_expression"
             | "reference_expression"
-            | "expression_statement" => e.named_child(0).and_then(|c| self.eval(c, d)),
+            | "expression_statement" => e
+                // Rust `&mut x`: `mutable_specifier` is the first named child.
+                .child_by_field_name("value")
+                .or_else(|| e.named_child(0))
+                .and_then(|c| self.eval(c, d)),
             "unary_expression" => {
                 let inner = e
                     .child_by_field_name("operand")
@@ -1472,7 +1476,24 @@ impl<'a> Infer<'a> {
                     Some("T:&str".into())
                 }
             }
-            "array_expression" => Some("T:[_;_]".into()),
+            "array_expression" => {
+                // `[0u8; 10]`, `[b'X'; 8]`: the element type when a literal shows it.
+                let el = e.named_child(0).map_or("_", |x| {
+                    let t = self.t(x);
+                    match x.kind() {
+                        "char_literal" if t.starts_with('b') => "u8",
+                        "integer_literal" | "float_literal" => [
+                            "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64",
+                            "i128", "isize", "f32", "f64",
+                        ]
+                        .into_iter()
+                        .find(|s| t.ends_with(s))
+                        .unwrap_or("_"),
+                        _ => "_",
+                    }
+                });
+                mk("T:", &format!("[{el};_]"))
+            }
             "macro_invocation" => {
                 let m = e.child_by_field_name("macro")?;
                 match self.t(m) {

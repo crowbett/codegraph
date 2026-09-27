@@ -314,6 +314,15 @@ fn rust_std_wrappers_primitives_and_provided_methods() {
     );
 }
 
+#[test]
+fn rust_arrays_unsize_and_mut_references_keep_types() {
+    let ix = index_fixture("rust_infer");
+    // `[0u8; 4]` gets the methods of `impl Put for &mut [u8]`.
+    assert_edge(&ix, "src/arr.rs", 19, "put1", "arr::[u8]::put1", "exact");
+    // `let r = &mut Wide;` (the `mut` is not the referenced value).
+    assert_edge(&ix, "src/arr.rs", 21, "go", "arr::Wide::go", "exact");
+}
+
 fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
     let mut st = ix
         .store

@@ -1289,7 +1289,15 @@ impl Ctx {
                     // `&mut [u8]`: std, or an in-repo trait's extension (`impl BufMut for
                     // &mut [u8]`).
                     if let Some(slice) = rust_slice_type(text) {
-                        return Ty::External(self.ext_id(lang, &slice));
+                        // An array receiver also gets its slice's methods (`[u8; 10]` ->
+                        // `impl BufMut for &mut [u8]`).
+                        let unsized_ = split_top(&slice[1..slice.len() - 1], ';')
+                            .first()
+                            .map(|el| format!("[{el}]"));
+                        let id = self
+                            .ext_id(lang, &slice)
+                            .or_else(|| unsized_.and_then(|u| self.ext_id(lang, &u)));
+                        return Ty::External(id);
                     }
                 }
                 match normalize(lang, text, *unwrap, *awaited, 0) {
