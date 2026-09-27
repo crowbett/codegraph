@@ -238,3 +238,144 @@ fn cold_and_stored_paths_agree() {
         assert_eq!(cold, edge_dump(&store), "{fixture}");
     }
 }
+
+/// Refresh through a resolve cache that keeps every repo (whatever its size).
+fn refresh_cached(
+    store: &mut Store,
+    root: &std::path::Path,
+    cache: &mut codegraph::resolve::ResolveCache,
+) -> index::IndexStats {
+    let name = store.repos().unwrap()[0].name.clone();
+    index::refresh_repo_cached(
+        store,
+        &test_config(),
+        root,
+        &name,
+        &IndexOptions {
+            full: false,
+            budget: None,
+        },
+        cache,
+    )
+    .unwrap()
+}
+
+/// (fixture, file, edits applied in turn: each replaces `from` with `to`; an empty
+/// `from` appends).
+type Case = (
+    &'static str,
+    &'static str,
+    &'static [(&'static str, &'static str)],
+);
+
+/// `watch` and the MCP server keep a repo's resolution state between refreshes and only
+/// splice in the edited files. After every edit the graph must equal a whole-repo
+/// resolve of the same store.
+#[test]
+fn cached_resolve_matches_a_full_resolve() {
+    let cases: &[Case] = &[
+        (
+            "go",
+            "b/b.go",
+            &[
+                ("// Helper shares", "// Helper (edited) shares"),
+                ("func Helper() string", "func Extra() string { return Helper() }\n\nfunc Helper() string"),
+                ("func Helper() string { return \"b\" }", "func Helper2() string { return \"b\" }"),
+                ("func Helper2() string", "func Helper() string"),
+            ],
+        ),
+        (
+            "rust_infer",
+            "src/repo.rs",
+            &[
+                ("pub fn count(&self)", "pub fn counted(&self)"),
+                ("pub fn counted(&self)", "pub fn count(&self)"),
+                ("pub fn name(&self) -> &str {", "pub fn extra(&self) -> usize {\n        self.count()\n    }\n\n    pub fn name(&self) -> &str {"),
+            ],
+        ),
+        (
+            "ts_infer",
+            "packages/app/src/ann.ts",
+            &[
+                ("export function annFn() {}", "export function annFn2() {}"),
+                ("export function annFn2() {}", "export function annFn() {}\nexport function more() { annFn() }"),
+            ],
+        ),
+        (
+            "python",
+            "pkg/models.py",
+            &[
+                ("", "\n\ndef extra_fn():\n    return None\n"),
+                ("", "\n\ndef more_fn():\n    return extra_fn()\n"),
+            ],
+        ),
+    ];
+    for (fixture, file, edits) in cases {
+        let src = copy_fixture(fixture);
+        let root = src.path();
+        let db = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&db.path().join("g.db")).unwrap();
+        reindex(&mut store, root, false);
+        let mut cache = codegraph::resolve::ResolveCache::with_min_edges(0);
+        let path = root.join(file);
+        assert!(path.is_file(), "{fixture}: {file}");
+        for (i, (from, to)) in edits.iter().enumerate() {
+            let text = std::fs::read_to_string(&path).unwrap();
+            let edited = if from.is_empty() {
+                format!("{text}{to}")
+            } else {
+                assert!(
+                    text.contains(from),
+                    "{fixture} edit {i}: `{from}` not found"
+                );
+                text.replacen(from, to, 1)
+            };
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::fs::write(&path, edited).unwrap();
+            let st = refresh_cached(&mut store, root, &mut cache);
+            assert_eq!(st.parsed, 1, "{fixture} edit {i}");
+            let cached = edge_dump(&store);
+            let repo_id = store.repos().unwrap()[0].id;
+            codegraph::resolve::resolve_repo(&mut store, repo_id, root).unwrap();
+            assert_eq!(cached, edge_dump(&store), "{fixture} edit {i}");
+        }
+        // The first edit loads the repo; the rest are served from memory.
+        assert_eq!(cache.hits(), edits.len() as u64 - 1, "{fixture}");
+    }
+}
+
+/// Another connection writing the graph (a CLI `index` next to a running `watch`) makes
+/// the kept state stale: the next refresh must not use it.
+#[test]
+fn cached_resolve_ignores_state_another_writer_made_stale() {
+    let src = copy_fixture("go");
+    let root = src.path();
+    let db = tempfile::tempdir().unwrap();
+    let db_path = db.path().join("g.db");
+    let mut store = Store::open(&db_path).unwrap();
+    reindex(&mut store, root, false);
+    let mut cache = codegraph::resolve::ResolveCache::with_min_edges(0);
+    let b = root.join("b/b.go");
+    let edit = |from: &str, to: &str| {
+        let text = std::fs::read_to_string(&b).unwrap();
+        assert!(text.contains(from));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&b, text.replacen(from, to, 1)).unwrap();
+    };
+    edit("// Helper shares", "// Helper (1) shares");
+    refresh_cached(&mut store, root, &mut cache); // loads and keeps the repo
+
+    // Someone else re-indexes an edit through their own connection.
+    edit("func Helper() string", "func Helper9() string");
+    let mut other = Store::open(&db_path).unwrap();
+    reindex(&mut other, root, false);
+    drop(other);
+
+    edit("// Helper (1) shares", "// Helper (2) shares");
+    refresh_cached(&mut store, root, &mut cache);
+    assert_eq!(cache.hits(), 0, "stale state must not be used");
+    let cached = edge_dump(&store);
+    let repo_id = store.repos().unwrap()[0].id;
+    codegraph::resolve::resolve_repo(&mut store, repo_id, root).unwrap();
+    assert_eq!(cached, edge_dump(&store));
+}

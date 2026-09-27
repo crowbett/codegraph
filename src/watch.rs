@@ -247,6 +247,8 @@ struct Watch<'a> {
     opts: WatchOptions,
     skip: HashSet<String>,
     langs: HashSet<Lang>,
+    /// Keeps the last big repo's resolution state between re-indexes.
+    cache: crate::resolve::ResolveCache,
 }
 
 impl Watch<'_> {
@@ -347,6 +349,8 @@ impl Watch<'_> {
         for (idx, reason) in &rescans {
             let root = self.roots[*idx].clone();
             let t = Instant::now();
+            // A rescan writes through this connection without the cache seeing it.
+            self.cache.clear();
             match index::index_roots(
                 self.store,
                 self.cfg,
@@ -371,7 +375,14 @@ impl Watch<'_> {
                 continue; // covered by the rescan
             }
             let t = Instant::now();
-            match index::refresh_repo(self.store, self.cfg, &root, &name, &incremental()) {
+            match index::refresh_repo_cached(
+                self.store,
+                self.cfg,
+                &root,
+                &name,
+                &incremental(),
+                &mut self.cache,
+            ) {
                 Ok(stats) => emit(&WatchEvent::Reindex {
                     repo: name,
                     root: util::slash(&root),
@@ -459,6 +470,7 @@ pub fn watch(
         opts: opts.clone(),
         skip: cfg.skip_dirs.iter().map(|s| s.to_lowercase()).collect(),
         langs: cfg.languages.iter().copied().collect(),
+        cache: crate::resolve::ResolveCache::new(),
     };
 
     let initial = if opts.initial_index {
@@ -556,6 +568,7 @@ mod tests {
             opts: WatchOptions::default(),
             skip,
             langs,
+            cache: crate::resolve::ResolveCache::new(),
         };
         let mut batch = Batch::default();
         let now = Instant::now();

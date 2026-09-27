@@ -336,6 +336,8 @@ pub struct Server {
     /// Canonical configured roots: every path argument must resolve under one.
     roots: Vec<PathBuf>,
     last_refresh: HashMap<PathBuf, Instant>,
+    /// Keeps the last big repo's resolution state between auto-refreshes.
+    resolve_cache: crate::resolve::ResolveCache,
 }
 
 impl Server {
@@ -348,6 +350,7 @@ impl Server {
             cwd,
             roots,
             last_refresh: HashMap::new(),
+            resolve_cache: crate::resolve::ResolveCache::new(),
         }
     }
 
@@ -407,7 +410,14 @@ impl Server {
                 full: false,
                 budget: Some(left),
             };
-            match index::refresh_repo(&mut self.store, &self.cfg, &root, &name, &opts) {
+            match index::refresh_repo_cached(
+                &mut self.store,
+                &self.cfg,
+                &root,
+                &name,
+                &opts,
+                &mut self.resolve_cache,
+            ) {
                 Ok(st) => {
                     if st.parsed > 0 || st.removed > 0 {
                         eprintln!(

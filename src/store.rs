@@ -309,6 +309,13 @@ impl Store {
         Ok(())
     }
 
+    /// `PRAGMA data_version`: changes when another connection commits to the graph.
+    pub fn data_version(&self) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row("PRAGMA data_version", [], |r| r.get(0))?)
+    }
+
     /// Database file path.
     pub fn path(&self) -> &Path {
         &self.path

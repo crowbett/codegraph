@@ -73,6 +73,9 @@ pub struct ResolveStats {
     pub imports: usize,
     /// Derived Go interface-satisfaction edges.
     pub implicit_impls: usize,
+    /// Stored edges whose target this resolve changed.
+    #[serde(skip)]
+    pub updated: usize,
 }
 
 struct F {
@@ -714,12 +717,53 @@ const IMPLICIT: &str = r#"{"implicit":true}"#;
 
 /// Resolve every edge of a repo and write the results.
 pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<ResolveStats> {
+    resolve_full(store, repo_id, root, false).map(|(stats, _)| stats)
+}
+
+/// Load the whole repo, resolve it and write what changed; with `keep`, hand back the
+/// loaded state for later incremental re-resolves instead of freeing it.
+fn resolve_full(
+    store: &mut Store,
+    repo_id: i64,
+    root: &Path,
+    keep: bool,
+) -> Result<(ResolveStats, Option<Resident>)> {
     let t0 = std::time::Instant::now();
     let mut ctx = load_ctx(store, repo_id, root)?;
-    let (edges, implicit) = load_edges(store, repo_id, &ctx)?;
+    let (mut edges, implicit) = load_edges(store, repo_id, &ctx)?;
     crate::util::trace("resolve.load", t0);
+    let (stats, implicit) = resolve_and_write(store, repo_id, &mut ctx, &mut edges, &implicit, t0)?;
+    if keep {
+        let data_version = store.data_version()?;
+        return Ok((
+            stats,
+            Some(Resident {
+                repo_id,
+                ctx,
+                edges,
+                implicit,
+                data_version,
+            }),
+        ));
+    }
+    // Freeing millions of symbols and edges takes seconds; the caller doesn't wait for it.
+    std::thread::spawn(move || drop((ctx, edges)));
+    Ok((stats, None))
+}
+
+/// Resolve `edges`, write the rows whose target changed plus the derived edges (replacing
+/// `implicit`), and bring the edges' stored values up to date in memory. Returns the
+/// stats and the ids of the new derived edges.
+fn resolve_and_write(
+    store: &mut Store,
+    repo_id: i64,
+    ctx: &mut Ctx,
+    edges: &mut [E],
+    implicit: &[i64],
+    t0: std::time::Instant,
+) -> Result<(ResolveStats, Vec<i64>)> {
     let mut stats = ResolveStats::default();
-    let outs = resolve_edges(&mut ctx, &edges, &mut stats, t0);
+    let outs = resolve_edges(ctx, edges, &mut stats, t0);
     crate::util::trace("resolve.pass2", t0);
     let tx = store.conn_mut().transaction()?;
     {
@@ -727,30 +771,253 @@ pub fn resolve_repo(store: &mut Store, repo_id: i64, root: &Path) -> Result<Reso
             "UPDATE edges SET to_symbol = ?2, confidence = ?3, to_file = ?4,
                 from_symbol = COALESCE(?5, from_symbol) WHERE id = ?1",
         )?;
-        for (e, o) in edges.iter().zip(&outs) {
+        for (e, o) in edges.iter_mut().zip(&outs) {
             let changed = e.old_to != o.to
                 || e.old_conf.as_deref() != o.conf
                 || e.old_to_file != o.to_file
                 || (o.from.is_some() && o.from != e.from_symbol);
             if changed {
+                stats.updated += 1;
                 st.execute(params![e.id, o.to, o.conf, o.to_file, o.from])?;
+                e.old_to = o.to;
+                e.old_conf = o.conf.map(str::to_string);
+                e.old_to_file = o.to_file;
+                if o.from.is_some() {
+                    e.from_symbol = o.from;
+                }
             }
         }
         // Derived edges are replaced in the same transaction as everything else.
         // By id: a filter on the repo's edges would walk millions of rows.
         let mut del = tx.prepare_cached("DELETE FROM edges WHERE id = ?1")?;
-        for id in &implicit {
+        for id in implicit {
             del.execute([id])?;
         }
     }
-    write_implicit_and_counts(&tx, repo_id, &ctx, &mut stats)?;
+    let implicit = write_implicit_and_counts(&tx, repo_id, ctx, &mut stats)?;
     tx.commit()?;
     crate::util::trace("resolve.write", t0);
-    // Freeing millions of symbols and edges takes seconds; the caller doesn't wait for it.
-    std::thread::spawn(move || drop((ctx, edges)));
+    Ok((stats, implicit))
+}
+
+/// A repo's resolution state kept in memory between re-indexes (`watch`, MCP refresh),
+/// so an edit reloads only the edited files' symbols and edges instead of the whole
+/// repo (seconds on a kernel-sized repo).
+pub struct Resident {
+    repo_id: i64,
+    ctx: Ctx,
+    edges: Vec<E>,
+    /// Ids of the derived edges the last resolve wrote.
+    implicit: Vec<i64>,
+    /// `PRAGMA data_version` after the last write: another connection writing the graph
+    /// changes it, and the state is then stale.
+    data_version: i64,
+}
+
+/// Holds the [`Resident`] state of at most one repo: the last big one resolved.
+pub struct ResolveCache {
+    resident: Option<Resident>,
+    min_edges: usize,
+    hits: u64,
+}
+
+impl Default for ResolveCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ResolveCache {
+    /// Keeps repos with at least 100k edges (smaller ones resolve in well under a second
+    /// from the store).
+    pub fn new() -> Self {
+        Self::with_min_edges(100_000)
+    }
+
+    /// Keeps repos with at least `min_edges` edges.
+    pub fn with_min_edges(min_edges: usize) -> Self {
+        Self {
+            resident: None,
+            min_edges,
+            hits: 0,
+        }
+    }
+
+    /// Forget the kept state (after writes this cache did not see, like a root rescan).
+    pub fn clear(&mut self) {
+        if let Some(r) = self.resident.take() {
+            std::thread::spawn(move || drop(r));
+        }
+    }
+
+    /// Re-resolves served from the kept state.
+    pub fn hits(&self) -> u64 {
+        self.hits
+    }
+}
+
+/// Resolve a repo after an incremental re-index, from `cache` when it holds this repo's
+/// state and nobody else wrote the graph since; otherwise load it whole (and keep it if
+/// it is big). `changed`: (old file id, new file id) of every re-parsed file;
+/// `structural`: files were added or removed, or `--full`.
+pub fn resolve_with_cache(
+    store: &mut Store,
+    repo_id: i64,
+    root: &Path,
+    cache: &mut ResolveCache,
+    changed: &[(i64, i64)],
+    structural: bool,
+) -> Result<ResolveStats> {
+    let data_version = store.data_version()?;
+    if let Some(r) = cache.resident.take() {
+        let usable = !structural
+            && !changed.is_empty()
+            && r.repo_id == repo_id
+            && r.data_version == data_version;
+        if usable {
+            if let Some((stats, r)) = resolve_changed(store, r, changed)? {
+                cache.hits += 1;
+                cache.resident = Some(r);
+                if std::env::var_os("CODEGRAPH_VERIFY_RESIDENT").is_some() {
+                    // A whole-repo resolve over the result must find nothing to change.
+                    let check = resolve_repo(store, repo_id, root)?;
+                    eprintln!(
+                        "[verify] resident resolve: {} edge(s) differ",
+                        check.updated
+                    );
+                    if let Some(r) = cache.resident.as_mut() {
+                        // It rewrote the derived edges: pick up their new ids.
+                        let mut st = store.conn().prepare(
+                            "SELECT e.id FROM edges e JOIN files f ON f.id = e.file_id
+                             WHERE f.repo_id = ?1 AND e.kind = 'impl' AND e.extra = ?2",
+                        )?;
+                        r.implicit = st
+                            .query_map(params![repo_id, IMPLICIT], |row| row.get(0))?
+                            .collect::<rusqlite::Result<Vec<i64>>>()?;
+                        r.data_version = store.data_version()?;
+                    }
+                }
+                return Ok(stats);
+            }
+        } else {
+            std::thread::spawn(move || drop(r));
+        }
+    }
+    let (stats, r) = resolve_full(store, repo_id, root, true)?;
+    if let Some(r) = r {
+        if r.edges.len() >= cache.min_edges {
+            cache.resident = Some(r);
+        } else {
+            std::thread::spawn(move || drop(r));
+        }
+    }
     Ok(stats)
 }
 
+/// Splice the re-parsed files into `r` and re-resolve in memory. `None` (nothing written)
+/// when a file changed more than its contents (path, language, module or package), which
+/// needs the whole-repo path.
+fn resolve_changed(
+    store: &mut Store,
+    mut r: Resident,
+    changed: &[(i64, i64)],
+) -> Result<Option<(ResolveStats, Resident)>> {
+    let t0 = std::time::Instant::now();
+    let old_idx: HashMap<i64, usize> = r
+        .ctx
+        .files
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.id, i))
+        .collect();
+    let list = changed
+        .iter()
+        .map(|c| c.1.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut rows: HashMap<i64, (String, String, String, String, Option<String>)> = HashMap::new();
+    {
+        let mut st = store.conn().prepare(&format!(
+            "SELECT id, path, lang, module, package, pkgname FROM files WHERE id IN ({list})"
+        ))?;
+        let mut q = st.query([])?;
+        while let Some(row) = q.next()? {
+            rows.insert(
+                row.get(0)?,
+                (
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ),
+            );
+        }
+    }
+    let mut changed_fi: HashSet<usize> = HashSet::new();
+    for (old, new) in changed {
+        let (Some(&fi), Some(row)) = (old_idx.get(old), rows.get(new)) else {
+            return Ok(None);
+        };
+        let f = &r.ctx.files[fi];
+        let same = f.path == row.0
+            && f.lang.as_str() == row.1
+            && f.module == row.2
+            && f.package == row.3
+            && f.pkgname == row.4;
+        if !same {
+            return Ok(None);
+        }
+        changed_fi.insert(fi);
+    }
+    for (old, new) in changed {
+        r.ctx.files[old_idx[old]].id = *new;
+    }
+    let file_idx: HashMap<i64, usize> = r
+        .ctx
+        .files
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.id, i))
+        .collect();
+    r.edges.retain(|e| !changed_fi.contains(&e.file));
+    let mut new_syms: Vec<S> = Vec::new();
+    {
+        let conn = store.conn();
+        let mut st = conn.prepare(&format!(
+            "SELECT {SYM_COLS} FROM symbols WHERE file_id IN ({list})"
+        ))?;
+        let mut q = st.query([])?;
+        while let Some(row) = q.next()? {
+            if let Some(s) = sym_row(row, &file_idx)? {
+                new_syms.push(s);
+            }
+        }
+        let mut st = conn.prepare(&format!(
+            "SELECT {EDGE_COLS} FROM edges WHERE file_id IN ({list})"
+        ))?;
+        let mut q = st.query([])?;
+        while let Some(row) = q.next()? {
+            match edge_row(row, &file_idx)? {
+                Some(Ok(e)) => r.edges.push(e),
+                Some(Err(id)) => r.implicit.push(id),
+                None => {}
+            }
+        }
+    }
+    // New rows get the highest ids, so this is normally already sorted.
+    if !r.edges.is_sorted_by_key(|e| e.id) {
+        r.edges.par_sort_unstable_by_key(|e| e.id);
+    }
+    r.ctx.replace_file_syms(&changed_fi, new_syms);
+    r.ctx.reset_derived();
+    crate::util::trace("resolve.splice", t0);
+    let (stats, implicit) =
+        resolve_and_write(store, r.repo_id, &mut r.ctx, &mut r.edges, &r.implicit, t0)?;
+    r.implicit = implicit;
+    r.data_version = store.data_version()?;
+    Ok(Some((stats, r)))
+}
 /// A file's freshly extracted references, not stored yet (bulk loads).
 pub struct Pending {
     /// Row id of the file.
@@ -1097,7 +1364,8 @@ fn write_implicit_and_counts(
     repo_id: i64,
     ctx: &Ctx,
     stats: &mut ResolveStats,
-) -> Result<()> {
+) -> Result<Vec<i64>> {
+    let mut ids = Vec::new();
     let mut ins = tx.prepare_cached(
         "INSERT INTO edges(repo_id, file_id, from_symbol, name, kind, line, col, to_symbol,
             to_file, confidence, extra)
@@ -1107,7 +1375,7 @@ fn write_implicit_and_counts(
     )?;
     for (t, i) in ctx.go_implicit_impls() {
         let iface = &ctx.syms[i];
-        ins.execute(params![
+        let n = ins.execute(params![
             repo_id,
             iface.name,
             iface.id,
@@ -1115,6 +1383,9 @@ fn write_implicit_and_counts(
             IMPLICIT,
             ctx.syms[t].id
         ])?;
+        if n > 0 {
+            ids.push(tx.last_insert_rowid());
+        }
         stats.implicit_impls += 1;
     }
     tx.execute(
@@ -1130,7 +1401,7 @@ fn write_implicit_and_counts(
             stats.name_only as i64,
         ],
     )?;
-    Ok(())
+    Ok(ids)
 }
 /// Pass-2 result for one edge: (target, confidence) and the from-symbol override.
 type Resolved = (Option<(usize, Confidence)>, Option<i64>);
@@ -1247,6 +1518,133 @@ where
 /// Below this many rowids a repo is read on one connection.
 const PAR_ROWS_MIN: i64 = 200_000;
 
+/// Columns [`sym_row`] decodes.
+const SYM_COLS: &str = "id, file_id, parent_id, name, kind, container, exported, is_default, \
+    recv, end_line - start_line, qkey, ret, fields, signature, start_line";
+
+/// One `symbols` row (selected as [`SYM_COLS`]); `None` for a file or kind we skip.
+fn sym_row(r: &rusqlite::Row<'_>, file_idx: &HashMap<i64, usize>) -> rusqlite::Result<Option<S>> {
+    let fid: i64 = r.get(1)?;
+    let kind: String = r.get(4)?;
+    let (Some(&file), Some(kind)) = (file_idx.get(&fid), SymKind::parse(&kind)) else {
+        return Ok(None);
+    };
+    let fields: Option<String> = r.get(12)?;
+    Ok(Some(S {
+        id: r.get(0)?,
+        file,
+        parent: r.get(2)?,
+        name: r.get(3)?,
+        kind,
+        container: r.get(5)?,
+        exported: r.get(6)?,
+        is_default: r.get(7)?,
+        recv: r.get(8)?,
+        span: r.get::<_, i64>(9)?.max(0) as u32,
+        qkey: r.get(10)?,
+        ret: r.get(11)?,
+        fields: fields
+            .and_then(|f| serde_json::from_str(&f).ok())
+            .unwrap_or_default(),
+        sig: r.get(13)?,
+        line: r.get(14)?,
+    }))
+}
+
+/// Columns [`edge_row`] decodes.
+const EDGE_COLS: &str = "id, file_id, from_symbol, from_name, name, qualifier, kind, extra, \
+    to_symbol, confidence, to_file, line";
+
+/// One `edges` row (selected as [`EDGE_COLS`]): `Ok` an edge to resolve, `Err` the id of a
+/// derived edge the previous resolve wrote, `None` for a file or kind we skip.
+fn edge_row(
+    r: &rusqlite::Row<'_>,
+    file_idx: &HashMap<i64, usize>,
+) -> rusqlite::Result<Option<std::result::Result<E, i64>>> {
+    let fid: i64 = r.get(1)?;
+    let kind: String = r.get(6)?;
+    let (Some(&file), Some(kind)) = (file_idx.get(&fid), EdgeKind::parse(&kind)) else {
+        return Ok(None);
+    };
+    let extra: Option<String> = r.get(7)?;
+    if extra.as_deref() == Some(IMPLICIT) {
+        return Ok(Some(Err(r.get(0)?)));
+    }
+    let (hint, dot) = if kind == EdgeKind::Import {
+        (None, false)
+    } else {
+        ref_hint(extra.as_deref())
+    };
+    Ok(Some(Ok(E {
+        id: r.get(0)?,
+        file,
+        from_symbol: r.get(2)?,
+        from_name: r.get(3)?,
+        name: r.get(4)?,
+        qualifier: r.get(5)?,
+        kind,
+        extra,
+        old_to: r.get(8)?,
+        old_conf: r.get(9)?,
+        old_to_file: r.get(10)?,
+        hint,
+        dot,
+        line: r.get(11)?,
+    })))
+}
+
+/// by_name, by_member, by_id, by_file.
+type SymTables = (
+    HashMap<String, Vec<usize>>,
+    HashMap<(String, String), Vec<usize>>,
+    HashMap<i64, usize>,
+    Vec<Vec<usize>>,
+);
+
+/// Symbol lookup tables, built side by side (millions of symbols on large repos).
+fn sym_tables(syms: &[S], nfiles: usize) -> SymTables {
+    let ((by_name, by_member), (by_id, by_file)) = rayon::join(
+        || {
+            rayon::join(
+                || {
+                    let mut m: HashMap<String, Vec<usize>> = HashMap::with_capacity(syms.len() / 2);
+                    for (i, s) in syms.iter().enumerate() {
+                        m.entry(s.name.clone()).or_default().push(i);
+                    }
+                    m
+                },
+                || {
+                    let mut m: HashMap<(String, String), Vec<usize>> = HashMap::new();
+                    for (i, s) in syms.iter().enumerate() {
+                        if let (SymKind::Method, Some(c)) = (s.kind, &s.container) {
+                            m.entry((c.clone(), s.name.clone())).or_default().push(i);
+                        }
+                    }
+                    m
+                },
+            )
+        },
+        || {
+            rayon::join(
+                || {
+                    let mut m: HashMap<i64, usize> = HashMap::with_capacity(syms.len());
+                    for (i, s) in syms.iter().enumerate() {
+                        m.insert(s.id, i);
+                    }
+                    m
+                },
+                || {
+                    let mut v: Vec<Vec<usize>> = vec![Vec::new(); nfiles];
+                    for (i, s) in syms.iter().enumerate() {
+                        v[s.file].push(i);
+                    }
+                    v
+                },
+            )
+        },
+    );
+    (by_name, by_member, by_id, by_file)
+}
 /// The repo's files and symbols, with their lookup tables.
 fn load_ctx(store: &Store, repo_id: i64, root: &Path) -> Result<Ctx> {
     let t0 = std::time::Instant::now();
@@ -1294,81 +1692,13 @@ fn load_ctx(store: &Store, repo_id: i64, root: &Path) -> Result<Ctx> {
         &path,
         "symbols",
         repo_id,
-        "SELECT id, file_id, parent_id, name, kind, container, exported, is_default, recv,
-                end_line - start_line, qkey, ret, fields, signature, start_line
-         FROM symbols WHERE +repo_id = ?1 AND id BETWEEN ?2 AND ?3",
-        |r| {
-            let fid: i64 = r.get(1)?;
-            let kind: String = r.get(4)?;
-            let (Some(&file), Some(kind)) = (file_idx.get(&fid), SymKind::parse(&kind)) else {
-                return Ok(None);
-            };
-            let fields: Option<String> = r.get(12)?;
-            Ok(Some(S {
-                id: r.get(0)?,
-                file,
-                parent: r.get(2)?,
-                name: r.get(3)?,
-                kind,
-                container: r.get(5)?,
-                exported: r.get(6)?,
-                is_default: r.get(7)?,
-                recv: r.get(8)?,
-                span: r.get::<_, i64>(9)?.max(0) as u32,
-                qkey: r.get(10)?,
-                ret: r.get(11)?,
-                fields: fields
-                    .and_then(|f| serde_json::from_str(&f).ok())
-                    .unwrap_or_default(),
-                sig: r.get(13)?,
-                line: r.get(14)?,
-            }))
-        },
+        &format!("SELECT {SYM_COLS} FROM symbols WHERE +repo_id = ?1 AND id BETWEEN ?2 AND ?3"),
+        |r| sym_row(r, &file_idx),
     )?;
     // `files` is in path order, so (file index, id) is (path, id).
     syms.par_sort_unstable_by_key(|s| (s.file, s.id));
     crate::util::trace("resolve.load.syms", t0);
-    // Symbol lookup tables, built side by side (millions of symbols on large repos).
-    let ((by_name, by_member), (by_id, by_file)) = rayon::join(
-        || {
-            rayon::join(
-                || {
-                    let mut m: HashMap<String, Vec<usize>> = HashMap::with_capacity(syms.len() / 2);
-                    for (i, s) in syms.iter().enumerate() {
-                        m.entry(s.name.clone()).or_default().push(i);
-                    }
-                    m
-                },
-                || {
-                    let mut m: HashMap<(String, String), Vec<usize>> = HashMap::new();
-                    for (i, s) in syms.iter().enumerate() {
-                        if let (SymKind::Method, Some(c)) = (s.kind, &s.container) {
-                            m.entry((c.clone(), s.name.clone())).or_default().push(i);
-                        }
-                    }
-                    m
-                },
-            )
-        },
-        || {
-            rayon::join(
-                || {
-                    let mut m: HashMap<i64, usize> = HashMap::with_capacity(syms.len());
-                    for (i, s) in syms.iter().enumerate() {
-                        m.insert(s.id, i);
-                    }
-                    m
-                },
-                || {
-                    let mut v: Vec<Vec<usize>> = vec![Vec::new(); files.len()];
-                    for (i, s) in syms.iter().enumerate() {
-                        v[s.file].push(i);
-                    }
-                    v
-                },
-            )
-        },
-    );
+    let (by_name, by_member, by_id, by_file) = sym_tables(&syms, files.len());
     let mut ctx = Ctx {
         root: root.to_path_buf(),
         by_file,
@@ -1444,42 +1774,8 @@ fn load_edges(store: &Store, repo_id: i64, ctx: &Ctx) -> Result<(Vec<E>, Vec<i64
         &path,
         "edges",
         repo_id,
-        "SELECT id, file_id, from_symbol, from_name, name, qualifier, kind, extra,
-                to_symbol, confidence, to_file, line
-         FROM edges WHERE +repo_id = ?1 AND id BETWEEN ?2 AND ?3",
-        |r| {
-            let fid: i64 = r.get(1)?;
-            let kind: String = r.get(6)?;
-            let (Some(&file), Some(kind)) = (file_idx.get(&fid), EdgeKind::parse(&kind)) else {
-                return Ok(None);
-            };
-            let extra: Option<String> = r.get(7)?;
-            if extra.as_deref() == Some(IMPLICIT) {
-                // Derived by the previous resolve; replaced by `resolve_repo`.
-                return Ok(Some(Err(r.get(0)?)));
-            }
-            let (hint, dot) = if kind == EdgeKind::Import {
-                (None, false)
-            } else {
-                ref_hint(extra.as_deref())
-            };
-            Ok(Some(Ok(E {
-                id: r.get(0)?,
-                file,
-                from_symbol: r.get(2)?,
-                from_name: r.get(3)?,
-                name: r.get(4)?,
-                qualifier: r.get(5)?,
-                kind,
-                extra,
-                old_to: r.get(8)?,
-                old_conf: r.get(9)?,
-                old_to_file: r.get(10)?,
-                hint,
-                dot,
-                line: r.get(11)?,
-            })))
-        },
+        &format!("SELECT {EDGE_COLS} FROM edges WHERE +repo_id = ?1 AND id BETWEEN ?2 AND ?3"),
+        |r| edge_row(r, &file_idx),
     )?;
     let mut edges = Vec::with_capacity(rows.len());
     let mut implicit = Vec::new();
@@ -1495,6 +1791,98 @@ fn load_edges(store: &Store, repo_id: i64, ctx: &Ctx) -> Result<(Vec<E>, Vec<i64
 }
 
 impl Ctx {
+    /// Swap the symbols of re-parsed files `fis` for `new`, keeping `syms` in exactly the
+    /// (file, id) order a fresh load gives: resolution breaks ties by symbol index, so
+    /// appending would change results. Each file's symbols are one contiguous slice; it is
+    /// replaced in place and every later index in the lookup tables shifts by the size
+    /// difference (a pass over the tables, much cheaper than rebuilding them).
+    fn replace_file_syms(&mut self, fis: &HashSet<usize>, new: Vec<S>) {
+        let mut by_file: HashMap<usize, Vec<S>> = HashMap::new();
+        for s in new {
+            by_file.entry(s.file).or_default().push(s);
+        }
+        let mut order: Vec<usize> = fis.iter().copied().collect();
+        order.sort_unstable();
+        for fi in order {
+            let mut add = by_file.remove(&fi).unwrap_or_default();
+            add.sort_unstable_by_key(|s| s.id);
+            self.splice_file_syms(fi, add);
+        }
+    }
+
+    fn splice_file_syms(&mut self, fi: usize, add: Vec<S>) {
+        // Start of `fi`'s slice: after every symbol of an earlier file.
+        let start = self.syms.partition_point(|s| s.file < fi);
+        let old_n = self.syms[start..].partition_point(|s| s.file == fi);
+        let new_n = add.len();
+        let end = start + old_n;
+        let shift = |j: usize| -> Option<usize> {
+            if j < start {
+                Some(j)
+            } else if j < end {
+                None
+            } else {
+                Some(j + new_n - old_n)
+            }
+        };
+        for list in self.by_name.values_mut().chain(self.by_member.values_mut()) {
+            if list.last().is_some_and(|&j| j < start) {
+                continue;
+            }
+            list.retain_mut(|j| match shift(*j) {
+                Some(k) => {
+                    *j = k;
+                    true
+                }
+                None => false,
+            });
+        }
+        self.by_id.retain(|_, j| match shift(*j) {
+            Some(k) => {
+                *j = k;
+                true
+            }
+            None => false,
+        });
+        for list in &mut self.by_file {
+            for j in list.iter_mut() {
+                if let Some(k) = shift(*j) {
+                    *j = k;
+                }
+            }
+        }
+        self.syms.splice(start..end, add);
+        self.by_file[fi] = (start..start + new_n).collect();
+        for i in start..start + new_n {
+            let s = &self.syms[i];
+            self.by_id.insert(s.id, i);
+            let list = self.by_name.entry(s.name.clone()).or_default();
+            let at = list.partition_point(|&j| j < i);
+            list.insert(at, i);
+            if let (SymKind::Method, Some(c)) = (s.kind, &s.container) {
+                let list = self
+                    .by_member
+                    .entry((c.clone(), s.name.clone()))
+                    .or_default();
+                let at = list.partition_point(|&j| j < i);
+                list.insert(at, i);
+            }
+        }
+    }
+
+    /// Clear what a resolve derives (scopes, mentions, bases, `#[path]` modules, external
+    /// type ids, the type memo) before resolving the same context again.
+    fn reset_derived(&mut self) {
+        self.scopes = Vec::new();
+        self.mentioned = vec![HashSet::new(); self.files.len()];
+        self.bases.clear();
+        self.path_mods.clear();
+        self.path_parent.clear();
+        self.ext_names.clear();
+        self.ext_ids.clear();
+        self.memo = Mutex::new(HashMap::new());
+    }
+
     /// `package.json` files of JS/TS packages inside the repo (monorepo workspaces), so a
     /// bare import of a sibling package (`@scope/core`) resolves to its sources.
     fn load_js_packages(&mut self) {

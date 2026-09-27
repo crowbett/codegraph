@@ -271,3 +271,18 @@ gain). Deferred: a scoped re-resolve for 1-file edits (needs every file's scope 
 `mentioned` set because of re-exports and return-type evaluation in the defining file, so
 it would save ~35% of the 1-file path for real correctness risk); a resident resolver in
 `watch` is the bigger lever.
+
+## Round 5 — resident resolver for `watch` (2026-09-26 evening)
+
+- `watch` and the MCP server keep the last big repo's resolver state (`ResolveCache`);
+  an edit splices only the edited files in and re-resolves in memory. Linux per-edit
+  re-index 12 s -> 3.5–3.7 s (numbers in docs/SCALE.md). Tests: cached == whole-repo
+  resolve after every edit on 4 fixtures, stale state after another connection writes is
+  not used (`PRAGMA data_version`; the test fails without the check).
+- First Linux verification found 53 then 2–4 differing edges. The 53: appended symbols
+  changed tie-breaks (resolution compares symbol indices), fixed by splicing in load order.
+  The 2–4: the whole-repo resolver itself was non-deterministic — Python `import ksft`
+  with two `ksft.py` candidates took the first hit of a `HashMap` walk, whose order is
+  random per process. Sorted; a full resolve now reproduces itself.
+- Mistake: stopping a test watcher with `taskkill /IM codegraph.exe` also killed the
+  installed codegraph MCP server of the running Claude session; kill by PID.

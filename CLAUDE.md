@@ -40,7 +40,11 @@ src/render.rs    human text (also the MCP `content` text, uncolored); `via`/conf
 src/output.rs    --json envelope, ANSI Style, Table; src/config.rs codegraph.toml
 src/mcp.rs       hand-rolled stdio MCP server (read-only tools, auto-refresh of the asked repo)
 src/watch.rs     `watch` / `mcp --watch`: notify events -> path filter -> per-repo debounce ->
-                 index::refresh_repo (root rescan when a repo appears/vanishes); busy retry
+                 index::refresh_repo_cached (root rescan when a repo appears/vanishes); busy retry.
+                 The watcher and the MCP server keep a big repo's resolver state in memory
+                 (resolve::ResolveCache): an edit splices in the re-parsed files and
+                 re-resolves without reloading the repo; `CODEGRAPH_VERIFY_RESIDENT=1` checks
+                 each such resolve against a whole-repo one
 tests/fixtures/<lang>/  mini projects; tests/lang.rs snapshots them (insta) + asserts resolution
 tests/fixtures/{go,rust,ts}_infer/  typed-receiver resolution fixtures, asserted in tests/resolve.rs
 tests/graph.rs incremental.rs cli.rs resolve.rs   graph algorithms, re-index, binary + MCP

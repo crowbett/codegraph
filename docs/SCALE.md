@@ -118,6 +118,25 @@ loading all symbols and edges back because resolution is whole-repo. Going much 
 means a scoped re-resolve (only files whose edges can change) or keeping the resolver
 resident in `watch`/`mcp --watch`.
 
+## Re-indexing an edit in `watch` / `mcp --watch` (2026-09-26 evening)
+
+The one-file cost was a whole-repo reload (~7 s of 11.5 M rows) plus a whole-repo resolve.
+Long-running callers now keep the repo's resolver state in memory (`resolve::ResolveCache`,
+repos with at least 100k edges): an edit reloads only the edited files' symbols and edges,
+splices them into the symbol array at their load-order position (resolution breaks ties
+by symbol index, so appending changed results; the splice shifts later indices instead of
+rebuilding the tables), and re-resolves in memory. Structural changes (files added or
+removed, a module or package change, `--full`) and writes by any other connection
+(`PRAGMA data_version`) fall back to the whole-repo path.
+
+Linux, `codegraph watch`, one-line edits to `kernel/sched/core.c`: first edit 9.7 s (loads
+the state), then **3.5–3.7 s** per edit (was ~12 s; 32–37 s this morning): walk ~0.6 s,
+parse+write ~0.3 s, splice ~0.3 s, re-resolve ~2 s, write ~0.3 s. Verified with
+`CODEGRAPH_VERIFY_RESIDENT=1` (a whole-repo resolve after each cached one): 0 edges differ
+across comment, add-function, rename-a-widely-used-function and revert edits. Getting under
+a second needs re-resolving only the affected edges; not done (return-type and inheritance
+chains through the edited file make the affected set hard to bound safely).
+
 ## Profile of the cold Linux index (baseline)
 
 Phase/sub-phase timers in a scratch copy of the crate (never committed); two runs: as-is,

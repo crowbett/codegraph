@@ -362,7 +362,9 @@ fn index_roots_inner(
         for (repo_root, files) in repos {
             seen_repos.insert(repo_root.clone());
             let name = repo_name(&root, &repo_root);
-            index_repo(store, cfg, &name, &repo_root, files, opts, start, stats)?;
+            index_repo(
+                store, cfg, &name, &repo_root, files, opts, start, stats, None,
+            )?;
         }
         // Repos under this root that no longer have any source files.
         for r in store.repos()? {
@@ -388,6 +390,31 @@ pub fn refresh_repo(
     name: &str,
     opts: &IndexOptions,
 ) -> Result<IndexStats> {
+    refresh_repo_inner(store, cfg, repo_root, name, opts, None)
+}
+
+/// [`refresh_repo`] for long-running callers (`watch`, the MCP server): `cache` keeps a
+/// big repo's resolution state in memory between refreshes, so an edit re-resolves
+/// without reloading the whole repo.
+pub fn refresh_repo_cached(
+    store: &mut Store,
+    cfg: &Config,
+    repo_root: &Path,
+    name: &str,
+    opts: &IndexOptions,
+    cache: &mut resolve::ResolveCache,
+) -> Result<IndexStats> {
+    refresh_repo_inner(store, cfg, repo_root, name, opts, Some(cache))
+}
+
+fn refresh_repo_inner(
+    store: &mut Store,
+    cfg: &Config,
+    repo_root: &Path,
+    name: &str,
+    opts: &IndexOptions,
+    cache: Option<&mut resolve::ResolveCache>,
+) -> Result<IndexStats> {
     let start = Instant::now();
     let mut stats = IndexStats::default();
     store.recover_fts(false)?;
@@ -401,7 +428,9 @@ pub fn refresh_repo(
             find_repo(&dir, repo_root, &mut memo) == repo_root
         })
         .collect();
-    index_repo(store, cfg, name, repo_root, files, opts, start, &mut stats)?;
+    index_repo(
+        store, cfg, name, repo_root, files, opts, start, &mut stats, cache,
+    )?;
     // Refreshes run per MCP call and per watch batch: count this repo only, from the
     // counts its last resolve stored.
     stats.symbols = store
@@ -442,6 +471,7 @@ fn index_repo(
     opts: &IndexOptions,
     start: Instant,
     stats: &mut IndexStats,
+    cache: Option<&mut resolve::ResolveCache>,
 ) -> Result<()> {
     let t0 = Instant::now();
     let found = classify(repo_root, files, cfg);
@@ -502,6 +532,9 @@ fn index_repo(
     // A repo with no stored files (cold index, new repo): keep its references in memory,
     // resolve them, and insert each edge once with its target.
     let mut pending: Option<Vec<resolve::Pending>> = existing.is_empty().then(Vec::new);
+    // For the resolve cache: (old id, new id) of re-parsed files, and whether files were
+    // added or removed.
+    let mut changes = Changes::default();
     // Parse in parallel and write as results arrive: the single SQLite writer overlaps
     // the parsers, and a bounded channel caps how many parsed files sit in memory.
     let (sender, receiver) = std::sync::mpsc::sync_channel::<(usize, Outcome)>(512);
@@ -533,6 +566,7 @@ fn index_repo(
                 &mut rs,
                 stats,
                 pending.as_mut(),
+                &mut changes,
             );
         }
         parse_wall = producer.join().unwrap_or_default();
@@ -548,6 +582,7 @@ fn index_repo(
         if !present.contains(rel.as_str()) {
             store::delete_file(&tx, row.id)?;
             rs.removed += 1;
+            changes.structural = true;
         }
     }
     tx.commit()?;
@@ -557,9 +592,22 @@ fn index_repo(
     stats.removed += rs.removed;
     if rs.parsed > 0 || rs.removed > 0 || opts.full {
         let t_res = Instant::now();
-        rs.resolve = Some(match pending {
-            Some(p) => resolve::resolve_and_insert(store, repo_id, repo_root, p)?,
-            None => resolve::resolve_repo(store, repo_id, repo_root)?,
+        rs.resolve = Some(match (pending, cache) {
+            (Some(p), cache) => {
+                if let Some(c) = cache {
+                    c.clear();
+                }
+                resolve::resolve_and_insert(store, repo_id, repo_root, p)?
+            }
+            (None, Some(c)) => resolve::resolve_with_cache(
+                store,
+                repo_id,
+                repo_root,
+                c,
+                &changes.reparsed,
+                changes.structural || opts.full,
+            )?,
+            (None, None) => resolve::resolve_repo(store, repo_id, repo_root)?,
         });
         stats.resolve_ms += t_res.elapsed().as_millis();
         stats.changed_repos.push(rs);
@@ -569,6 +617,15 @@ fn index_repo(
 }
 
 /// Apply one parse outcome inside the repo's write transaction.
+/// Files an incremental index changed, for the resolve cache.
+#[derive(Default)]
+struct Changes {
+    /// (old file id, new file id) of re-parsed files.
+    reparsed: Vec<(i64, i64)>,
+    /// Files were added or removed.
+    structural: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_outcome(
     tx: &rusqlite::Connection,
@@ -580,6 +637,7 @@ fn write_outcome(
     rs: &mut RepoStats,
     stats: &mut IndexStats,
     pending: Option<&mut Vec<resolve::Pending>>,
+    changes: &mut Changes,
 ) -> Result<()> {
     match o {
         Outcome::Unchanged => stats.unchanged += 1,
@@ -595,6 +653,7 @@ fn write_outcome(
             if let Some(o) = existing.get(&f.rel) {
                 store::delete_file(tx, o.id)?;
                 rs.removed += 1;
+                changes.structural = true;
             }
         }
         Outcome::Parsed(b) => {
@@ -617,6 +676,10 @@ fn write_outcome(
                 },
                 pending.is_none(),
             )?;
+            match existing.get(&f.rel) {
+                Some(o) => changes.reparsed.push((o.id, file_id)),
+                None => changes.structural = true,
+            }
             if let Some(p) = pending {
                 p.push(resolve::Pending {
                     file_id,
