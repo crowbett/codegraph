@@ -57,3 +57,4 @@ pub mod gen;
 pub mod conv;
 pub mod pat;
 pub mod turbo;
+pub mod assoc2;

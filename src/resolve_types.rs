@@ -1329,6 +1329,11 @@ impl Ctx {
             .flatten()
             .copied()
             .filter(|&s| self.syms[s].kind.is_type_like() && files.contains(&self.syms[s].file))
+            // A Rust associated type (`type Item = u8;` in an impl) is no module item.
+            .filter(|&s| {
+                self.syms[s].container.is_none()
+                    || self.files[self.syms[s].file].lang != Lang::Rust
+            })
             .collect()
     }
 
@@ -1425,6 +1430,8 @@ impl Ctx {
                     o == lang || (lang.is_js_family() && o.is_js_family())
                 }
             })
+            // Rust associated types are not named bare.
+            .filter(|&s| lang != Lang::Rust || self.syms[s].container.is_none())
             .collect();
         let same_unit: Vec<usize> = all
             .iter()
@@ -1452,6 +1459,10 @@ impl Ctx {
     /// Whether Rust item `s` can be named from inside symbol `from`: a module-level item,
     /// or one nested in a function/type that encloses `from`.
     fn rust_item_visible(&self, s: usize, from: Option<i64>) -> bool {
+        if self.syms[s].container.is_some() {
+            // An associated type (`type Value = Value;` in an impl): only `Self::Value`.
+            return false;
+        }
         let Some(p) = self.syms[s].parent else {
             return true;
         };

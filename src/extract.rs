@@ -1308,6 +1308,13 @@ fn build_symbols<'t>(
                 container = Some(ty);
             }
         }
+        if lang == Lang::Rust && matches!(kind, SymKind::Type | SymKind::Const) {
+            // An associated type/const (`type Item = u8;` in an impl) belongs to the impl's
+            // type: `Self::Item` names it, a bare `Item` does not.
+            if let Some((ty, _)) = rust_impl_of(nav, d.node, src) {
+                container = Some(ty);
+            }
+        }
         if let Some(scope) = d.scope {
             // C++ `void a::Foo::bar()`: scope is the qualified_identifier.
             if let Some(s) = scope.child_by_field_name("scope") {

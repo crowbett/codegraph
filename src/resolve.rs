@@ -2655,6 +2655,13 @@ impl Ctx {
                     self.files[self.syms[s].file].lang,
                 )
             })
+            // A Rust impl's associated type (`type Item = u8;`) implements the trait's
+            // declaration, which is what `Self::Item` names.
+            .filter(|&s| {
+                lang != Lang::Rust
+                    || self.syms[s].kind != SymKind::Type
+                    || self.syms[s].container.is_none()
+            })
             .collect();
         match e.qualifier.as_deref() {
             Some(q) if !q.is_empty() => self.resolve_qualified(e, q, &cands, scope, lang),
@@ -3047,6 +3054,22 @@ impl Ctx {
             // A local variable or parameter, not a repo symbol.
             return None;
         }
+        // Rust associated types/consts (`type Item = u8;` in an impl) are named through
+        // their type (`Self::Item`), never bare.
+        let assoc_free: Vec<usize>;
+        let cands = if lang == Lang::Rust {
+            assoc_free = cands
+                .iter()
+                .copied()
+                .filter(|&s| {
+                    let sym = &self.syms[s];
+                    !(matches!(sym.kind, SymKind::Type | SymKind::Const) && sym.container.is_some())
+                })
+                .collect();
+            &assoc_free[..]
+        } else {
+            cands
+        };
         let fi = e.file;
         let f = &self.files[fi];
         let (self_ty, _) = self.self_type(e.from_symbol);

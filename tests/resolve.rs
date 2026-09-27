@@ -278,6 +278,21 @@ fn rust_turbofish_calls_in_macro_tokens() {
     assert_eq!(edge(&ix.store, "src/turbo.rs", 11, "Vec"), None);
 }
 
+#[test]
+fn rust_associated_types_are_not_module_items() {
+    let ix = index_fixture("rust_infer");
+    // `type Num = u8;` inside `impl Mk for Cnt` does not shadow the imported `Num`.
+    assert_edge(&ix, "src/assoc2.rs", 13, "Num", "pat::Num", "exact");
+    assert_edge(
+        &ix,
+        "src/assoc2.rs",
+        14,
+        "as_f64",
+        "pat::Num::as_f64",
+        "exact",
+    );
+}
+
 fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
     let mut st = ix
         .store
