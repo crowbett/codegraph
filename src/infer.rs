@@ -7,6 +7,7 @@
 //! | hint | meaning |
 //! |---|---|
 //! | `S` | the enclosing type (`self`, `this`, a Go receiver) |
+//! | `B` | the bases of the enclosing type (`super`): a call resolves on the first base, in declaration order, that has the method — never on the enclosing type itself; as a value (`M:x@B`) it is the first base that binds |
 //! | `T:<type>` | a written type (`*Store`, `Box<dyn Backend>`, `http.Handler`) |
 //! | `C:<callee>` | the result of calling a function or constructor (`NewStore`, `Foo::new`) |
 //! | `M:<name>@<hint>` | the result of calling method `name` on `<hint>` |
@@ -16,8 +17,13 @@
 //! | `L` | a local variable or parameter with no known type (never a repo symbol) |
 //!
 //! Evidence comes from parameters, `let`/`:=`/`const`/assignments, struct and class
-//! fields and function return types. Everything is best effort: an unknown expression
-//! yields no hint and the resolver falls back to name-based rules.
+//! fields and function return types (JS/TS `Class.prototype` is `T:Class` when `Class` is
+//! not a local). Everything is best effort: an unknown expression yields no hint and the
+//! resolver falls back to name-based rules.
+//!
+//! `T:` names are bound where the hint was written: in JS/TS, a file declaring one type
+//! name twice (sibling test callbacks each with `class Store`) binds the declaration
+//! closest before the reference.
 //!
 //! ## Cost
 //!
@@ -1187,6 +1193,8 @@ impl<'a> Infer<'a> {
                 _ => Some("S".into()),
             },
             "self" | "this" => Some("S".into()),
+            // `super.m()`: the enclosing class's bases.
+            "super" if self.lang.is_js_family() => Some("B".into()),
             "identifier" => {
                 let name = self.t(e).to_string();
                 if self.lang == Lang::Python && matches!(name.as_str(), "self" | "cls") {
@@ -1226,6 +1234,18 @@ impl<'a> Infer<'a> {
             }
             "field_expression" | "selector_expression" | "member_expression" | "attribute" => {
                 let (obj, field) = Self::member_parts(e)?;
+                // `Parent.prototype.m()`: an instance of class `Parent` (not of a local or
+                // an ES5 constructor function).
+                if self.lang.is_js_family()
+                    && self.t(field) == "prototype"
+                    && obj.kind() == "identifier"
+                {
+                    let name = self.t(obj);
+                    return match self.lookup(name, obj) {
+                        Some(_) => None,
+                        None => mk("T:", name),
+                    };
+                }
                 let base = self.eval(obj, d)?;
                 if base == "L" {
                     return None;

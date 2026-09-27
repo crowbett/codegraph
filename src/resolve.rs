@@ -182,10 +182,13 @@ struct Ctx {
     /// Per-file import scopes (filled after the import pass).
     scopes: Vec<Scope>,
     memo: Memo,
+    /// Files declaring some type name more than once (see `types::find_type`).
+    dup_types: Mutex<HashMap<usize, bool>>,
 }
 
-/// Evaluated receiver hints keyed by (file, enclosing symbol, hint).
-type Memo = Mutex<HashMap<(usize, Option<i64>, String), types::Ty>>;
+/// Evaluated receiver hints keyed by (file, enclosing symbol, line, hint); the line is 0
+/// unless the file declares a type name twice.
+type Memo = Mutex<HashMap<(usize, Option<i64>, u32, String), types::Ty>>;
 
 fn dir_of(p: &str) -> &str {
     p.rfind('/').map_or("", |i| &p[..i])
@@ -1727,6 +1730,7 @@ fn load_ctx(store: &Store, repo_id: i64, root: &Path) -> Result<Ctx> {
         ts_base: None,
         scopes: Vec::new(),
         memo: Mutex::new(HashMap::new()),
+        dup_types: Mutex::new(HashMap::new()),
     };
     for (i, f) in ctx.files.iter().enumerate() {
         ctx.paths.insert(f.path.clone(), i);
@@ -1881,6 +1885,7 @@ impl Ctx {
         self.ext_names.clear();
         self.ext_ids.clear();
         self.memo = Mutex::new(HashMap::new());
+        self.dup_types = Mutex::new(HashMap::new());
     }
 
     /// `package.json` files of JS/TS packages inside the repo (monorepo workspaces), so a
@@ -2607,6 +2612,46 @@ impl Ctx {
     ) -> Option<(usize, Confidence)> {
         let b = self.best(fi, cands)?;
         Some((b, if cands.len() == 1 { single } else { many }))
+    }
+
+    /// The type symbol enclosing symbol `from`: a class/struct/trait, or the type whose
+    /// body declares the enclosing method. `None` when the method's type is only known by
+    /// name (Go receivers, Rust `impl` blocks): use [`Self::self_type`] then.
+    fn self_sym(&self, from: Option<i64>) -> Option<usize> {
+        let mut cur = from.and_then(|id| self.by_id.get(&id).copied());
+        while let Some(i) = cur {
+            let s = &self.syms[i];
+            if s.kind.is_type_like() {
+                return Some(i);
+            }
+            if s.kind == SymKind::Method {
+                let p = s.parent.and_then(|p| self.by_id.get(&p).copied())?;
+                let ps = &self.syms[p];
+                return (ps.kind.is_type_like() && s.container.as_deref() == Some(&ps.name))
+                    .then_some(p);
+            }
+            cur = s.parent.and_then(|p| self.by_id.get(&p).copied());
+        }
+        None
+    }
+
+    /// Whether JS/TS file `fi` declares some type name more than once.
+    fn dup_types(&self, fi: usize) -> bool {
+        if !self.files[fi].lang.is_js_family() {
+            return false;
+        }
+        let mut memo = self
+            .dup_types
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *memo.entry(fi).or_insert_with(|| {
+            let mut seen: HashSet<&str> = HashSet::new();
+            self.by_file[fi]
+                .iter()
+                .map(|&s| &self.syms[s])
+                .filter(|s| s.kind.is_type_like())
+                .any(|s| !seen.insert(s.name.as_str()))
+        })
     }
 
     /// Type name of the enclosing method/class of symbol `from`.

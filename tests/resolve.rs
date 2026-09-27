@@ -91,6 +91,27 @@ fn ts_factories_generics_and_super() {
         edges_to(&ix, "inherit", "Box"),
         vec!["generic.Named".to_string()]
     );
+    // Sibling test callbacks each declaring `class Store`: the one declared before the
+    // call. `super.run()` is the base's method, `Parent.prototype.run()` Parent's.
+    let b = "packages/app/src/blocks.ts";
+    assert_eq!(target_line(&ix, b, 8, "add"), Some(5));
+    assert_eq!(target_line(&ix, b, 16, "add"), Some(13));
+    assert_edge(&ix, b, 25, "run", "blocks.Parent.run", "exact");
+    assert_edge(&ix, b, 30, "run", "blocks.Parent.run", "exact");
+}
+
+/// Start line of the target of the edge `name` at `file:line`.
+fn target_line(ix: &common::Indexed, file: &str, line: u32, name: &str) -> Option<u32> {
+    ix.store
+        .conn()
+        .query_row(
+            "SELECT ts.start_line FROM edges e JOIN files f ON f.id = e.file_id
+             JOIN symbols ts ON ts.id = e.to_symbol
+             WHERE f.path = ?1 AND e.line = ?2 AND e.name = ?3 LIMIT 1",
+            rusqlite::params![file, line, name],
+            |r| r.get(0),
+        )
+        .ok()
 }
 
 #[test]

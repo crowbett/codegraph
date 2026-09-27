@@ -34,6 +34,9 @@ enum Val {
     Text {
         fi: usize,
         from: Option<i64>,
+        /// Line the text is seen from (a reference, or the symbol it belongs to): picks
+        /// among same-file definitions sharing a name.
+        line: u32,
         text: String,
         unwrap: bool,
         awaited: bool,
@@ -644,8 +647,10 @@ fn normalize(lang: Lang, text: &str, unwrap: bool, awaited: bool, depth: u8) -> 
 
 impl Ctx {
     /// Evaluate a receiver hint in file `fi` (reference inside symbol `from`).
-    pub(super) fn eval_hint(&self, fi: usize, from: Option<i64>, hint: &str) -> Ty {
-        let key = (fi, from, hint.to_string());
+    pub(super) fn eval_hint(&self, fi: usize, from: Option<i64>, line: u32, hint: &str) -> Ty {
+        // The line only matters in a file declaring one type name twice.
+        let line = if self.dup_types(fi) { line } else { 0 };
+        let key = (fi, from, line, hint.to_string());
         if let Some(&t) = self
             .memo
             .lock()
@@ -654,7 +659,7 @@ impl Ctx {
         {
             return t;
         }
-        let v = self.eval_val(fi, from, hint, 0);
+        let v = self.eval_val(fi, from, line, hint, 0);
         let t = self.bind_val(&v, 0);
         self.memo
             .lock()
@@ -663,17 +668,29 @@ impl Ctx {
         t
     }
 
-    fn eval_val(&self, fi: usize, from: Option<i64>, h: &str, depth: u8) -> Val {
+    fn eval_val(&self, fi: usize, from: Option<i64>, line: u32, h: &str, depth: u8) -> Val {
         if depth > MAX_DEPTH {
             return Val::Ty(Ty::Unknown);
         }
         let d = depth + 1;
         if h == "S" {
+            if let Some(t) = self.self_sym(from) {
+                return Val::Ty(Ty::Known(t));
+            }
             let (ty, _) = self.self_type(from);
             return Val::Ty(match ty {
-                Some(name) => self.find_type(fi, None, &name, from),
+                Some(name) => self.find_type(fi, None, &name, from, line),
                 None => Ty::Unknown,
             });
+        }
+        if h == "B" {
+            // The base type of the enclosing type: the first base that binds.
+            return Val::Ty(
+                self.base_types(fi, from, line)
+                    .into_iter()
+                    .next()
+                    .unwrap_or(Ty::Unknown),
+            );
         }
         if h == "L" {
             return Val::Ty(Ty::Unknown);
@@ -682,6 +699,7 @@ impl Ctx {
             return Val::Text {
                 fi,
                 from,
+                line,
                 text: t.to_string(),
                 unwrap: false,
                 awaited: false,
@@ -689,10 +707,11 @@ impl Ctx {
             };
         }
         if let Some(inner) = h.strip_prefix("E:") {
-            return match self.eval_val(fi, from, inner, d) {
+            return match self.eval_val(fi, from, line, inner, d) {
                 Val::Text {
                     fi,
                     from,
+                    line,
                     text,
                     unwrap,
                     awaited,
@@ -700,6 +719,7 @@ impl Ctx {
                 } => Val::Text {
                     fi,
                     from,
+                    line,
                     text,
                     unwrap,
                     awaited,
@@ -710,10 +730,11 @@ impl Ctx {
         }
         if let Some(inner) = h.strip_prefix("Q:").or_else(|| h.strip_prefix("A:")) {
             let is_q = h.starts_with('Q');
-            return match self.eval_val(fi, from, inner, d) {
+            return match self.eval_val(fi, from, line, inner, d) {
                 Val::Text {
                     fi,
                     from,
+                    line,
                     text,
                     unwrap,
                     awaited,
@@ -721,6 +742,7 @@ impl Ctx {
                 } => Val::Text {
                     fi,
                     from,
+                    line,
                     text,
                     unwrap: unwrap || is_q,
                     awaited: awaited || !is_q,
@@ -739,7 +761,7 @@ impl Ctx {
         match tag {
             "M:" => {
                 let lang = self.files[fi].lang;
-                let bv = self.eval_val(fi, from, base, d);
+                let bv = self.eval_val(fi, from, line, base, d);
                 let bt = self.bind_val(&bv, d);
                 // The receiver's own method wins over the name-based shortcuts below
                 // (`Db::read`, `Bag.values` are not std's).
@@ -748,7 +770,7 @@ impl Ctx {
                         return match self.syms[m].ret.clone() {
                             Some(r) => {
                                 let mf = self.syms[m].file;
-                                self.eval_val(mf, Some(self.syms[m].id), &r, d)
+                                self.eval_val(mf, Some(self.syms[m].id), self.syms[m].line, &r, d)
                             }
                             None => Val::Ty(Ty::Unknown),
                         };
@@ -761,7 +783,7 @@ impl Ctx {
                         return match self.syms[m].ret.clone() {
                             Some(r) => {
                                 let mf = self.syms[m].file;
-                                self.eval_val(mf, Some(self.syms[m].id), &r, d)
+                                self.eval_val(mf, Some(self.syms[m].id), self.syms[m].line, &r, d)
                             }
                             None => Val::Ty(Ty::Unknown),
                         };
@@ -785,6 +807,7 @@ impl Ctx {
                     if let Val::Text {
                         fi,
                         from,
+                        line,
                         text,
                         awaited,
                         elem,
@@ -794,6 +817,7 @@ impl Ctx {
                         return Val::Text {
                             fi,
                             from,
+                            line,
                             text,
                             unwrap: true,
                             awaited,
@@ -807,7 +831,7 @@ impl Ctx {
                     Ty::Unknown => Val::Ty(Ty::Unknown),
                 }
             }
-            "F:" => match self.bind_val(&self.eval_val(fi, from, base, d), d) {
+            "F:" => match self.bind_val(&self.eval_val(fi, from, line, base, d), d) {
                 Ty::Known(t) => self.field_of(t, name, &mut HashSet::new(), d),
                 other => Val::Ty(other),
             },
@@ -824,13 +848,13 @@ impl Ctx {
         }
         let s = &self.syms[t];
         if let Some((_, h)) = s.fields.iter().find(|(k, _)| k == name) {
-            return self.eval_val(s.file, Some(s.id), h, d + 1);
+            return self.eval_val(s.file, Some(s.id), s.line, h, d + 1);
         }
         // Go embedded fields promote their fields.
         for (k, h) in &s.fields {
             if k.starts_with('~') {
                 if let Ty::Known(b) =
-                    self.bind_val(&self.eval_val(s.file, Some(s.id), h, d + 1), d + 1)
+                    self.bind_val(&self.eval_val(s.file, Some(s.id), s.line, h, d + 1), d + 1)
                 {
                     let v = self.field_of(b, name, seen, d + 1);
                     if !matches!(v, Val::Ty(Ty::Unknown)) {
@@ -873,7 +897,7 @@ impl Ctx {
                 return Val::Ty(Ty::Known(s));
             }
             return match sym.ret.clone() {
-                Some(r) => self.eval_val(sym.file, Some(sym.id), &r, d),
+                Some(r) => self.eval_val(sym.file, Some(sym.id), sym.line, &r, d),
                 None => Val::Ty(Ty::Unknown),
             };
         }
@@ -885,7 +909,7 @@ impl Ctx {
                     Some((a, b)) => (Some(a), b),
                     None => (None, q),
                 };
-                if let Ty::Known(t) = self.find_type(fi, tq, tn, from) {
+                if let Ty::Known(t) = self.find_type(fi, tq, tn, from, 0) {
                     return Val::Ty(Ty::Known(t));
                 }
             }
@@ -932,6 +956,7 @@ impl Ctx {
             Val::Text {
                 fi,
                 from,
+                line,
                 text,
                 unwrap,
                 awaited,
@@ -961,13 +986,16 @@ impl Ctx {
                 match normalize(lang, text, *unwrap, *awaited, 0) {
                     Norm::External => Ty::External(None),
                     Norm::Unknown => Ty::Unknown,
-                    Norm::SelfType => match self.self_type(*from).0 {
-                        Some(n) => self.find_type(*fi, None, &n, *from),
-                        None => Ty::Unknown,
+                    Norm::SelfType => match self.self_sym(*from) {
+                        Some(t) => Ty::Known(t),
+                        None => match self.self_type(*from).0 {
+                            Some(n) => self.find_type(*fi, None, &n, *from, *line),
+                            None => Ty::Unknown,
+                        },
                     },
                     Norm::Name(q, n) => {
                         let _ = d;
-                        self.find_type(*fi, q.as_deref(), &n, *from)
+                        self.find_type(*fi, q.as_deref(), &n, *from, *line)
                     }
                 }
             }
@@ -985,7 +1013,17 @@ impl Ctx {
     }
 
     /// Bind a type name as seen from file `fi`.
-    fn find_type(&self, fi: usize, qual: Option<&str>, name: &str, from: Option<i64>) -> Ty {
+    /// `line`: where the name is seen from (0 = unknown); in JS/TS several same-file types
+    /// of that name (sibling test callbacks each declaring `class Store`) resolve to the
+    /// closest one declared at or before it (classes are block-scoped, declared before use).
+    fn find_type(
+        &self,
+        fi: usize,
+        qual: Option<&str>,
+        name: &str,
+        from: Option<i64>,
+        line: u32,
+    ) -> Ty {
         let f = &self.files[fi];
         let lang = f.lang;
         let scope = &self.scopes[fi];
@@ -1026,6 +1064,15 @@ impl Ctx {
         }
         // Same file.
         let local = self.type_syms_in(&[fi], name);
+        if local.len() > 1 && line > 0 && lang.is_js_family() {
+            if let Some(&s) = local
+                .iter()
+                .filter(|&&s| self.syms[s].line <= line)
+                .max_by_key(|&&s| (self.syms[s].line, std::cmp::Reverse(s)))
+            {
+                return Ty::Known(s);
+            }
+        }
         if !local.is_empty() {
             return self.pick_type(fi, &local);
         }
@@ -1153,9 +1200,10 @@ impl Ctx {
         // Go: promoted through embedded fields.
         for (k, h) in &ts.fields {
             if k.starts_with('~') {
-                if let Ty::Known(b) =
-                    self.bind_val(&self.eval_val(ts.file, Some(ts.id), h, d + 1), d + 1)
-                {
+                if let Ty::Known(b) = self.bind_val(
+                    &self.eval_val(ts.file, Some(ts.id), ts.line, h, d + 1),
+                    d + 1,
+                ) {
                     if let Some((m, _)) = self.method_on(b, name, seen, d + 1) {
                         return Some((m, true));
                     }
@@ -1164,7 +1212,7 @@ impl Ctx {
         }
         // Traits / base classes / implemented interfaces.
         for base in self.bases.get(&ts.name).into_iter().flatten() {
-            let Ty::Known(b) = self.find_type(ts.file, None, base, Some(ts.id)) else {
+            let Ty::Known(b) = self.find_type(ts.file, None, base, Some(ts.id), ts.line) else {
                 continue;
             };
             if let Some((m, _)) = self.method_on(b, name, seen, d + 1) {
@@ -1272,7 +1320,7 @@ impl Ctx {
             if !k.starts_with('~') {
                 continue;
             }
-            match self.bind_val(&self.eval_val(s.file, Some(s.id), h, 0), 0) {
+            match self.bind_val(&self.eval_val(s.file, Some(s.id), s.line, h, 0), 0) {
                 Ty::Known(j) if self.syms[j].kind == SymKind::Interface => {
                     set.extend(self.iface_methods(j, methods, seen)?);
                 }
@@ -1304,7 +1352,9 @@ impl Ctx {
         }
         for (k, h) in &s.fields {
             if k.starts_with('~') {
-                if let Ty::Known(b) = self.bind_val(&self.eval_val(s.file, Some(s.id), h, 0), 0) {
+                if let Ty::Known(b) =
+                    self.bind_val(&self.eval_val(s.file, Some(s.id), s.line, h, 0), 0)
+                {
                     self.type_methods(b, methods, out, seen);
                 } else {
                     // Embedding a stdlib interface promotes its methods.
@@ -1332,6 +1382,7 @@ impl Ctx {
         let v = Val::Text {
             fi: s.file,
             from: Some(s.id),
+            line: s.line,
             text: rhs.to_string(),
             unwrap: false,
             awaited: false,
@@ -1398,6 +1449,61 @@ impl Ctx {
         }
     }
 
+    /// Types of the bases of the type enclosing `from` (declaration order: superclass
+    /// before interfaces, Python MRO order), each bound where the type is declared.
+    fn base_types(&self, fi: usize, from: Option<i64>, line: u32) -> Vec<Ty> {
+        let t = match self.self_sym(from) {
+            Some(t) => t,
+            None => match self.self_type(from).0 {
+                Some(n) => match self.find_type(fi, None, &n, from, line) {
+                    Ty::Known(t) => t,
+                    _ => return Vec::new(),
+                },
+                None => return Vec::new(),
+            },
+        };
+        let ts = &self.syms[t];
+        let mut seen: HashSet<&str> = HashSet::new();
+        self.bases
+            .get(&ts.name)
+            .into_iter()
+            .flatten()
+            .filter(|b| seen.insert(b.as_str()) && *b != &ts.name)
+            .map(|b| self.find_type(ts.file, None, b, Some(ts.id), ts.line))
+            .collect()
+    }
+
+    /// `super.m()` (hint `B`): `m` looked up on the bases of the enclosing type, never on
+    /// the type itself. The first base (in declaration order) that has it wins; exact when
+    /// that base declares it, likely when inherited further up. Every base outside the
+    /// repo: the call does not land in the repo.
+    fn resolve_super(&self, e: &E) -> Typed {
+        let bases = self.base_types(e.file, e.from_symbol, e.line);
+        let mut all_external = !bases.is_empty();
+        for b in bases {
+            match b {
+                Ty::Known(t) => {
+                    all_external = false;
+                    if let Some((m, via)) = self.method_on(t, &e.name, &mut HashSet::new(), 0) {
+                        let c = if via {
+                            Confidence::Likely
+                        } else {
+                            Confidence::Exact
+                        };
+                        return Typed::Resolved(Some((m, c)));
+                    }
+                }
+                Ty::External(_) => {}
+                Ty::Unknown => all_external = false,
+            }
+        }
+        if all_external {
+            Typed::Resolved(None)
+        } else {
+            Typed::NoOpinion
+        }
+    }
+
     /// Resolve a receiver call through its type hint.
     pub(super) fn resolve_typed(&self, e: &E) -> Typed {
         let Some(hint) = e.hint.as_deref() else {
@@ -1406,7 +1512,10 @@ impl Ctx {
         if hint == "L" || !matches!(e.kind, EdgeKind::Call | EdgeKind::Value) {
             return Typed::NoOpinion;
         }
-        match self.eval_hint(e.file, e.from_symbol, hint) {
+        if hint == "B" {
+            return self.resolve_super(e);
+        }
+        match self.eval_hint(e.file, e.from_symbol, e.line, hint) {
             Ty::Unknown => Typed::NoOpinion,
             Ty::External(Some(id)) => Typed::Resolved(
                 self.extension_method(e.file, id, &e.name)
