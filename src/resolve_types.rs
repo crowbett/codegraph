@@ -515,6 +515,27 @@ fn split_top(s: &str, sep: char) -> Vec<&str> {
     out
 }
 
+/// `F` for a Rust type text `F`, `&F`, `&'a mut F` (a candidate bare generic), else "".
+fn generic_core(text: &str) -> &str {
+    let mut t = text.trim();
+    loop {
+        let before = t;
+        t = t.trim_start_matches(['&', ' ']);
+        if let Some(rest) = t.strip_prefix('\'') {
+            t = rest.trim_start_matches(|c: char| c.is_alphanumeric() || c == '_');
+        }
+        t = t.strip_prefix("mut ").unwrap_or(t);
+        if t == before {
+            break;
+        }
+    }
+    if t.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        t
+    } else {
+        ""
+    }
+}
+
 /// The normalized slice/array name (`[u8]`) of a Rust type text behind references
 /// (`&'a mut [u8]`), or `None` for anything else.
 fn rust_slice_type(text: &str) -> Option<String> {
@@ -835,11 +856,69 @@ impl Ctx {
                 }
             }
             "F:" => match self.bind_val(&self.eval_val(fi, from, base, d), d) {
-                Ty::Known(t) => self.field_of(t, name, &mut HashSet::new(), d),
+                Ty::Known(t) => {
+                    let v = self.field_of(t, name, &mut HashSet::new(), d);
+                    self.rust_generic_field(fi, from, v)
+                }
                 other => Val::Ty(other),
             },
             _ => Val::Ty(Ty::Unknown),
         }
+    }
+
+    /// A Rust field typed with a bare generic (`formatter: F`, `read: R`) is bound by the
+    /// generics in scope at the access (`impl<W, F: Formatter> Serializer<W, F>`): its
+    /// type text is re-read in the caller's context.
+    fn rust_generic_field(&self, fi: usize, from: Option<i64>, v: Val) -> Val {
+        let Val::Text {
+            fi: tfi,
+            text,
+            unwrap,
+            awaited,
+            elem,
+            ..
+        } = &v
+        else {
+            return v;
+        };
+        if self.files[*tfi].lang != Lang::Rust {
+            return v;
+        }
+        let core = generic_core(text);
+        if self.generic_bound(from, core).is_none() {
+            return v;
+        }
+        Val::Text {
+            fi,
+            from,
+            text: text.clone(),
+            unwrap: *unwrap,
+            awaited: *awaited,
+            elem: *elem,
+        }
+    }
+
+    /// The bound hint of Rust generic parameter `name` in scope of symbol `from` (its
+    /// innermost enclosing function, whose `fields` hold `<T>` -> `T:<bound>`), with the
+    /// function's (file, id).
+    fn generic_bound(&self, from: Option<i64>, name: &str) -> Option<(usize, i64, &str)> {
+        if name.is_empty() || !name.chars().next().is_some_and(char::is_uppercase) {
+            return None;
+        }
+        let mut cur = from.and_then(|id| self.by_id.get(&id).copied());
+        for _ in 0..64 {
+            let s = &self.syms[cur?];
+            if matches!(s.kind, SymKind::Function | SymKind::Method) {
+                let key = format!("<{name}>");
+                return s
+                    .fields
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, h)| (s.file, s.id, h.as_str()));
+            }
+            cur = s.parent.and_then(|p| self.by_id.get(&p).copied());
+        }
+        None
     }
 
     fn field_of(&self, t: usize, name: &str, seen: &mut HashSet<usize>, d: u8) -> Val {
@@ -1037,7 +1116,13 @@ impl Ctx {
         let f = &self.files[fi];
         let lang = f.lang;
         let scope = &self.scopes[fi];
-        let _ = from;
+        if lang == Lang::Rust && qual.is_none() {
+            // A generic parameter with a single trait bound: that trait.
+            if let Some((gfi, gid, h)) = self.generic_bound(from, name) {
+                let bound = h.to_string();
+                return self.bind_val(&self.eval_val(gfi, Some(gid), &bound, 0), 0);
+            }
+        }
         if let Some(q) = qual {
             if lang == Lang::Rust {
                 return match self.rust_path(fi, &format!("{q}::{name}")) {
@@ -1480,6 +1565,31 @@ impl Ctx {
         match found.as_slice() {
             [m] => Some(*m),
             _ => None,
+        }
+    }
+
+    /// `R::discard(..)` / `F::as_cast(..)` where `R` is a generic parameter of the
+    /// enclosing function or impl with a single trait bound: the method on that trait
+    /// (`NoOpinion` = the qualifier is no such generic).
+    pub(super) fn rust_generic_path(&self, e: &E, q: &str) -> Typed {
+        let Some((gfi, gid, h)) = self.generic_bound(e.from_symbol, q) else {
+            return Typed::NoOpinion;
+        };
+        let h = h.to_string();
+        match self.bind_val(&self.eval_val(gfi, Some(gid), &h, 0), 0) {
+            Ty::Known(t) => Typed::Resolved(
+                self.method_on(t, &e.name, &mut HashSet::new(), 0)
+                    .map(|(m, via_base)| {
+                        let c = if via_base {
+                            Confidence::Likely
+                        } else {
+                            Confidence::Exact
+                        };
+                        (m, c)
+                    }),
+            ),
+            Ty::External(_) => Typed::Resolved(None),
+            Ty::Unknown => Typed::NoOpinion,
         }
     }
 

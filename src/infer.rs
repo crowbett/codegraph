@@ -19,6 +19,12 @@
 //! fields and function return types. Everything is best effort: an unknown expression
 //! yields no hint and the resolver falls back to name-based rules.
 //!
+//! Rust generic parameters with a single meaningful bound are substituted in parameter
+//! and return types directly; the function symbol also records them in its `fields` as
+//! `(<T>, T:<bound>)` ([`Infer::generic_fields`]) so the resolver can bind what only it
+//! sees: a field typed with a bare generic (`self.formatter` of `formatter: F` inside
+//! `impl<W, F: Formatter>`) and a generic path qualifier (`R::discard(..)`).
+//!
 //! ## Cost
 //!
 //! In tree-sitter 0.27 `Node::parent`, `prev_sibling` and `next_sibling` walk down from
@@ -1350,6 +1356,20 @@ impl<'a> Infer<'a> {
             Lang::C | Lang::Cpp => return None,
         };
         mk("T:", &squash(self.t(r)))
+    }
+
+    /// Rust generic parameters in scope of function `def` (its own and its `impl`'s) with a
+    /// single meaningful bound, as (`<T>`, `T:<bound>`): stored in the function symbol's
+    /// `fields`, so the resolver can bind a field or path typed with a bare generic
+    /// (`self.formatter: F`, `R::discard(..)`) to the bound trait.
+    pub(crate) fn generic_fields(&self, def: Node<'a>) -> Vec<(String, String)> {
+        if self.lang != Lang::Rust {
+            return Vec::new();
+        }
+        self.generics(def)
+            .into_iter()
+            .filter_map(|(n, b)| Some((format!("<{n}>"), mk("T:", &b?)?)))
+            .collect()
     }
 
     /// Field hints of a struct/class definition node: (name, hint). Go embedded fields

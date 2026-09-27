@@ -2709,6 +2709,12 @@ impl Ctx {
             types::Typed::NoOpinion => {}
             types::Typed::Resolved(r) => return r,
         }
+        if lang == Lang::Rust && !e.dot {
+            // `R::discard(..)` with `R: Read`: the bound trait's method.
+            if let types::Typed::Resolved(r) = self.rust_generic_path(e, q) {
+                return r;
+            }
+        }
         if lang == Lang::Rust && e.dot {
             // `x.f()` in Rust is a method call on a value, never a module path. With no
             // type evidence a name match is right less than a third of the time.

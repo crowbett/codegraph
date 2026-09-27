@@ -209,6 +209,29 @@ fn rust_impls_for_references_and_slices() {
     );
 }
 
+#[test]
+fn rust_generic_parameters_bind_to_their_bound() {
+    let ix = index_fixture("rust_infer");
+    // Field `formatter: F` read inside `impl<W, F: Formatter>`.
+    assert_edge(
+        &ix,
+        "src/gen.rs",
+        14,
+        "write_null",
+        "gen::Formatter::write_null",
+        "exact",
+    );
+    // `R::discard(r)` with `R: Reader`.
+    assert_edge(
+        &ix,
+        "src/gen.rs",
+        23,
+        "discard",
+        "gen::Reader::discard",
+        "exact",
+    );
+}
+
 fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
     let mut st = ix
         .store
