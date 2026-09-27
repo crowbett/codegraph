@@ -186,6 +186,29 @@ fn rust_trait_overloads_on_typed_receivers() {
     assert_eq!(edge(&ix.store, "src/overload.rs", 18, "extend"), None);
 }
 
+#[test]
+fn rust_impls_for_references_and_slices() {
+    let ix = index_fixture("rust_infer");
+    // `impl<'a> Show for &'a Point`: the methods belong to Point.
+    assert_edge(
+        &ix,
+        "src/slices.rs",
+        27,
+        "show",
+        "slices::Point::show",
+        "exact",
+    );
+    // `impl PutBytes for &mut [u8]` on a `&mut [u8]` receiver.
+    assert_edge(
+        &ix,
+        "src/slices.rs",
+        26,
+        "put_bytes",
+        "slices::[u8]::put_bytes",
+        "exact",
+    );
+}
+
 fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
     let mut st = ix
         .store

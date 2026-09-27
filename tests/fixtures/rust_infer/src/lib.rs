@@ -52,3 +52,4 @@ pub mod sysx;
 pub mod walker;
 pub mod scan_use;
 pub mod overload;
+pub mod slices;

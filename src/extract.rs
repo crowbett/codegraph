@@ -941,13 +941,51 @@ fn declarator_name(mut node: Node<'_>) -> Option<(Node<'_>, Option<Node<'_>>)> {
 }
 
 /// `*Store[T]` / `&mut Vec<T>` / `Foo<'a>` -> `Store` / `Vec` / `Foo`.
+/// `[u8]` / `[MaybeUninit<u8>]` (whitespace removed) for a type text starting with a
+/// Rust slice or array; `None` when the brackets do not close.
+pub(crate) fn rust_slice_name(s: &str) -> Option<String> {
+    let mut depth = 0i32;
+    for (i, c) in s.char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    let inner: String = s[..=i].chars().filter(|c| !c.is_whitespace()).collect();
+                    return Some(inner);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Rust references keep their lifetime out (`&'a mut Serializer` -> `Serializer`), and a
+/// Rust slice is its own normalized name (`&mut [u8]` -> `[u8]`, the container of the
+/// methods of `impl BufMut for &mut [u8]`).
 pub(crate) fn base_type_name(s: &str) -> String {
-    let s = s.trim();
+    let mut s = s.trim();
+    loop {
+        let before = s;
+        s = s.trim_start_matches(['*', '&', ' ']);
+        if let Some(rest) = s.strip_prefix('\'') {
+            s = rest.trim_start_matches(|c: char| c.is_alphanumeric() || c == '_');
+        }
+        for kw in ["mut ", "dyn ", "const "] {
+            s = s.strip_prefix(kw).unwrap_or(s);
+        }
+        if s == before {
+            break;
+        }
+    }
+    if s.starts_with('[') && !s.starts_with("[]") {
+        if let Some(slice) = rust_slice_name(s) {
+            return slice;
+        }
+    }
     let cut = s.find(['<', '[', '(']).unwrap_or(s.len());
     let s = &s[..cut];
-    let s = s.trim_start_matches(['*', '&', ' ']);
-    let s = s.strip_prefix("mut ").unwrap_or(s);
-    let s = s.strip_prefix("dyn ").unwrap_or(s);
     let last = s.rsplit("::").next().unwrap_or(s);
     let last = last.rsplit('.').next().unwrap_or(last);
     last.trim().to_string()
@@ -1944,6 +1982,14 @@ fn helper() {}
         assert_eq!(clip("abcdef", 3), "abc…");
         assert_eq!(base_type_name("*Store[T]"), "Store");
         assert_eq!(base_type_name("&mut Vec<u8>"), "Vec");
+        assert_eq!(base_type_name("&'a mut Serializer<W, F>"), "Serializer");
+        assert_eq!(base_type_name("&mut [u8]"), "[u8]");
+        assert_eq!(
+            base_type_name("&mut [MaybeUninit< u8 >]"),
+            "[MaybeUninit<u8>]"
+        );
+        assert_eq!(base_type_name("*const T"), "T");
+        assert_eq!(base_type_name("[]byte"), "");
         assert_eq!(normalize_qualifier("Vec::<u8>"), "Vec");
         assert_eq!(
             go_receiver("(s *Store)"),

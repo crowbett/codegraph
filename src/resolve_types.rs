@@ -236,6 +236,8 @@ fn element_of(lang: Lang, text: &str) -> Option<String> {
                     t = t.find(' ').map_or("", |i| &t[i + 1..]);
                 }
                 t = t.strip_prefix("mut ").unwrap_or(t);
+                // Squashed `&mut[T]`.
+                t = t.strip_prefix("mut[").map_or(t, |_| &t[3..]);
                 if t == before {
                     break;
                 }
@@ -511,6 +513,31 @@ fn split_top(s: &str, sep: char) -> Vec<&str> {
     }
     out.push(&s[start..]);
     out
+}
+
+/// The normalized slice/array name (`[u8]`) of a Rust type text behind references
+/// (`&'a mut [u8]`), or `None` for anything else.
+fn rust_slice_type(text: &str) -> Option<String> {
+    let mut t = text.trim();
+    loop {
+        let before = t;
+        t = t.trim_start_matches(['&', ' ']);
+        if let Some(rest) = t.strip_prefix('\'') {
+            t = rest.trim_start_matches(|c: char| c.is_alphanumeric() || c == '_');
+        }
+        // Squashed hints drop the space: `&mut[u8]`.
+        if let Some(rest) = t.strip_prefix("mut") {
+            if rest.starts_with([' ', '[']) {
+                t = rest;
+            }
+        }
+        if t == before {
+            break;
+        }
+    }
+    t.starts_with('[')
+        .then(|| crate::extract::rust_slice_name(t))
+        .flatten()
 }
 
 /// Normalized type reference: optional qualifier (module path) + simple name.
@@ -958,6 +985,13 @@ impl Ctx {
                 } else {
                     text
                 };
+                if lang == Lang::Rust && !*unwrap {
+                    // `&mut [u8]`: std, or an in-repo trait's extension (`impl BufMut for
+                    // &mut [u8]`).
+                    if let Some(slice) = rust_slice_type(text) {
+                        return Ty::External(self.ext_id(lang, &slice));
+                    }
+                }
                 match normalize(lang, text, *unwrap, *awaited, 0) {
                     Norm::External => Ty::External(None),
                     Norm::Unknown => Ty::Unknown,
