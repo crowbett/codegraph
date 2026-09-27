@@ -91,6 +91,22 @@
     type: (type_identifier) @name)
   type: (_) @impl_for) @reference.impl
 
+; supertraits (`trait Float: Number + ops::Add`): methods of `Number` are callable on a
+; `T: Float`
+(trait_item
+  bounds: (trait_bounds
+    (type_identifier) @name)) @reference.inherit
+
+(trait_item
+  bounds: (trait_bounds
+    (generic_type
+      type: (type_identifier) @name))) @reference.inherit
+
+(trait_item
+  bounds: (trait_bounds
+    (scoped_type_identifier
+      name: (type_identifier) @name))) @reference.inherit
+
 ; calls inside macro arguments: token trees are not parsed as expressions, so
 ; `assert_eq!(f(x), y)`, `vec![t(1)]`, `format!("{}", id.short())` are matched on tokens.
 (token_tree

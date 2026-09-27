@@ -61,3 +61,4 @@ pub mod assoc2;
 pub mod prim;
 pub mod arr;
 pub mod tmacro;
+pub mod sup;

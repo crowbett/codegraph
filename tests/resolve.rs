@@ -349,6 +349,20 @@ fn rust_macro_tokens_default_calls() {
     assert_eq!(kind, "ref");
 }
 
+#[test]
+fn rust_supertrait_methods_on_generic_bounds() {
+    let ix = index_fixture("rust_infer");
+    // `F: Float` with `trait Float: AsCast`: `F::as_cast` is AsCast's.
+    assert_edge(
+        &ix,
+        "src/sup.rs",
+        10,
+        "as_cast",
+        "sup::AsCast::as_cast",
+        "likely",
+    );
+}
+
 fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
     let mut st = ix
         .store
