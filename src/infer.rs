@@ -410,7 +410,8 @@ impl<'a> Infer<'a> {
             }
             "token_tree" if self.t(q).starts_with('(') => {
                 // `<recv>.m(args)` / `path::f(args)` / `f(args)`
-                let m = prev.filter(|p| p.kind() == "identifier")?;
+                // `default` is a (contextual) keyword token: `X::default()`.
+                let m = prev.filter(|p| matches!(p.kind(), "identifier" | "default"))?;
                 let before = nav.prev_sibling(m);
                 match before.map(|b| b.kind()) {
                     Some(".") => {

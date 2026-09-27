@@ -323,6 +323,32 @@ fn rust_arrays_unsize_and_mut_references_keep_types() {
     assert_edge(&ix, "src/arr.rs", 21, "go", "arr::Wide::go", "exact");
 }
 
+#[test]
+fn rust_macro_tokens_default_calls() {
+    let ix = index_fixture("rust_infer");
+    // `assert!(Kp::default().is_empty())`: `default` is a keyword token; the chain still
+    // types the receiver, and `Kp` is a path segment, not a call of `Kp`.
+    assert_edge(
+        &ix,
+        "src/tmacro.rs",
+        17,
+        "is_empty",
+        "tmacro::Kp::is_empty",
+        "exact",
+    );
+    let kind: String = ix
+        .store
+        .conn()
+        .query_row(
+            "SELECT e.kind FROM edges e JOIN files f ON f.id = e.file_id
+             WHERE f.path = 'src/tmacro.rs' AND e.line = 17 AND e.name = 'Kp'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kind, "ref");
+}
+
 fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
     let mut st = ix
         .store

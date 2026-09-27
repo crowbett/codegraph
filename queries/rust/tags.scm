@@ -116,6 +116,16 @@
   .
   (token_tree . "(")) @reference.call
 
+; `Type::default()` in macro arguments (`default` is a keyword token there)
+(token_tree
+  (identifier) @qualifier
+  .
+  "::"
+  .
+  "default" @name
+  .
+  (token_tree . "(")) @reference.call
+
 ; turbofish calls in macro arguments: `from_str::<Value>(..)`, `x.into_float::<f64>()`,
 ; `from_str::<BTreeMap<u128, ()>>(j)`, `serde_json::from_str::<T>(..)`. The query only
 ; anchors on `name :: <`; extract.rs checks the `<..>` closes and a `(..)` follows.

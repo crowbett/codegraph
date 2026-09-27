@@ -360,6 +360,24 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
                 if lang == Lang::Rust && !token_turbofish_ok(&nav, name) {
                     continue;
                 }
+                // `Kp` in a macro's `Kp::default()` is a path segment, not a call.
+                let kind = if lang == Lang::Rust
+                    && kind == EdgeKind::Call
+                    && !token_call_adjacent(&nav, name)
+                {
+                    // ...and `Id` in `from_str::<Id>(x)` a type argument.
+                    let type_like = text(name, src).starts_with(|c: char| c.is_ascii_uppercase())
+                        && nav
+                            .next_sibling(name)
+                            .is_some_and(|n| matches!(n.kind(), ">" | ">>" | ","));
+                    if type_like || nav.next_sibling(name).is_some_and(|n| n.kind() == "::") {
+                        EdgeKind::Ref
+                    } else {
+                        continue;
+                    }
+                } else {
+                    kind
+                };
                 let cand = RefCand {
                     kind,
                     name,
@@ -608,6 +626,21 @@ fn token_turbofish_ok<'t>(nav: &Nav<'t>, name: Node<'t>) -> bool {
     false
 }
 
+/// A call matched on macro tokens must have its `(..)` (or turbofish `::`) right after
+/// the name: query anchors skip anonymous tokens, so `Kp::default()` (`default` is a
+/// keyword token) would otherwise read as a call of `Kp`.
+fn token_call_adjacent<'t>(nav: &Nav<'t>, name: Node<'t>) -> bool {
+    if nav.parent(name).is_none_or(|p| p.kind() != "token_tree") {
+        return true;
+    }
+    match nav.next_sibling(name) {
+        // `f(..)`, or a nested macro `m!(..)`.
+        Some(n) if matches!(n.kind(), "token_tree" | "!") => true,
+        Some(n) if n.kind() == "::" => nav.next_sibling(n).is_some_and(|x| x.kind() == "<"),
+        _ => false,
+    }
+}
+
 /// `x` in `x.f()` (a field expression or a `.` token in a macro token tree).
 fn is_dot_receiver<'t>(nav: &Nav<'t>, q: Node<'t>) -> bool {
     match nav.parent(q) {
@@ -663,6 +696,8 @@ fn rust_builtin_use<'t>(nav: &Nav<'t>, name: Node<'t>, text: &str) -> bool {
         || nav
             .parent(name)
             .is_some_and(|p| p.kind() == "macro_invocation")
+        // `format!(..)` nested in another macro's tokens.
+        || nav.next_sibling(name).is_some_and(|n| n.kind() == "!")
 }
 
 /// Language builtins that can never resolve inside a repo; dropped at extraction to
