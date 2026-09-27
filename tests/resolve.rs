@@ -124,6 +124,19 @@ fn ts_factories_generics_and_super() {
     // `Map<K, V>.get(k)` is a `V`.
     let m = "packages/app/src/maps.ts";
     assert_edge(&ix, m, 7, "get", "factories.Value.get", "exact");
+    // Narrowing: a type-guard function, a type-guard-typed value (also inside a
+    // callback), `instanceof`.
+    let g = "packages/app/src/guards.ts";
+    assert_edge(&ix, g, 12, "get", "factories.Value.get", "exact");
+    assert_edge(
+        &ix,
+        g,
+        15,
+        "recompute",
+        "factories.Computed.recompute",
+        "exact",
+    );
+    assert_edge(&ix, g, 18, "read", "maps.Holder.read", "exact");
 }
 
 /// Start line of the target of the edge `name` at `file:line`.

@@ -14,6 +14,7 @@
 //! | `F:<name>@<hint>` | field `name` of `<hint>` |
 //! | `Q:<hint>` | `<hint>` unwrapped (Rust `?`, `.unwrap()`); `A:<hint>` awaited |
 //! | `E:<hint>` | an element of the collection `<hint>` (loop variables, callback params) |
+//! | `G:<guard>@<hint>` | a variable narrowed by type guard `<guard>` (see JS/TS narrowing), else `<hint>` |
 //! | `L` | a local variable or parameter with no known type (never a repo symbol) |
 //!
 //! Evidence comes from parameters, `let`/`:=`/`const`/assignments, struct and class
@@ -29,6 +30,11 @@
 //! signatures (own, else alias target's, else bases'), resolved only when they agree.
 //! `C:v.m` / `C:ns.v.m` is method `m` of the value's type or its field `m`, called.
 //! `M:get@<hint>` on a TS `Map<K, V>` / `WeakMap` / `ReadonlyMap` is a `V`.
+//!
+//! JS/TS narrowing: a variable read inside the consequence of `if (x instanceof C)` is
+//! `T:C`; inside `if (G(x))` (also `&&` chains and `?:`) it is `G:<G>@<hint>`: the type
+//! guard `G` (a function or function-typed value whose type reads `x is T`) asserts `T`;
+//! when `G` is no type guard, `<hint>` (the variable's own hint) applies.
 //!
 //! `T:` names are bound where the hint was written: in JS/TS, a file declaring one type
 //! name twice (sibling test callbacks each with `class Store`) binds the declaration
@@ -1213,7 +1219,19 @@ impl<'a> Infer<'a> {
                 }
                 match self.lookup(&name, e) {
                     Some(dcl) if dcl.func => None,
-                    Some(dcl) => Some(self.decl_hint(&dcl, depth).unwrap_or_else(|| "L".into())),
+                    Some(dcl) => {
+                        let h = self.decl_hint(&dcl, depth).unwrap_or_else(|| "L".into());
+                        if self.lang.is_js_family() {
+                            match self.narrowed(e, &name, dcl.at) {
+                                Some(Narrow::Type(t)) => return mk("T:", &t).or(Some(h)),
+                                Some(Narrow::Guard(g)) => {
+                                    return mk(&format!("G:{g}@"), &h).or(Some(h));
+                                }
+                                None => {}
+                            }
+                        }
+                        Some(h)
+                    }
                     None => None,
                 }
             }
@@ -1353,6 +1371,85 @@ impl<'a> Infer<'a> {
                     return None;
                 }
                 mk(&format!("M:{fname}@"), &base)
+            }
+            _ => None,
+        }
+    }
+
+    /// JS/TS narrowing of variable `name` (declared at byte `at`) at `e`: inside the
+    /// consequence of the innermost `if (G(name))` / `if (name instanceof C)` (also in
+    /// `&&` chains and `?:`) after the declaration.
+    fn narrowed(&mut self, e: Node<'a>, name: &str, at: usize) -> Option<Narrow> {
+        let nav = self.nav;
+        let mut child = e;
+        let mut cur = nav.parent(e);
+        while let Some(p) = cur {
+            // A callback keeps the narrowing of a variable declared outside it (TypeScript
+            // does so for variables never reassigned); one declared inside ends the walk.
+            if self.is_function(p) && at >= p.start_byte() {
+                return None;
+            }
+            let (cond, cons) = match p.kind() {
+                "if_statement" | "ternary_expression" => (
+                    p.child_by_field_name("condition"),
+                    p.child_by_field_name("consequence"),
+                ),
+                _ => (None, None),
+            };
+            if let (Some(cond), Some(cons)) = (cond, cons) {
+                if cons.id() == child.id() && p.start_byte() >= at {
+                    if let Some(n) = self.guard(cond, name, 0) {
+                        return Some(n);
+                    }
+                }
+            }
+            child = p;
+            cur = nav.parent(p);
+        }
+        None
+    }
+
+    /// The narrowing a condition proves for `name`.
+    fn guard(&mut self, c: Node<'a>, name: &str, depth: u8) -> Option<Narrow> {
+        if depth > MAX_DEPTH {
+            return None;
+        }
+        match c.kind() {
+            "parenthesized_expression" => self.guard(c.named_child(0)?, name, depth + 1),
+            "call_expression" => {
+                let arg = c.child_by_field_name("arguments")?.named_child(0)?;
+                if arg.kind() != "identifier" || self.t(arg) != name {
+                    return None;
+                }
+                let f = c.child_by_field_name("function")?;
+                let callee = match f.kind() {
+                    "identifier" => {
+                        let g = self.t(f);
+                        // A local variable holding a function is no module-level guard.
+                        if self.lookup_local(g, f).is_some_and(|d| !d.func) {
+                            return None;
+                        }
+                        g.to_string()
+                    }
+                    "member_expression" => self.bare_path(f, 0)?,
+                    _ => return None,
+                };
+                Some(Narrow::Guard(callee))
+            }
+            "binary_expression" => {
+                let op = c.child_by_field_name("operator").map(|o| self.t(o))?;
+                let l = c.child_by_field_name("left")?;
+                let r = c.child_by_field_name("right")?;
+                match op {
+                    "instanceof" if l.kind() == "identifier" && self.t(l) == name => {
+                        matches!(r.kind(), "identifier" | "member_expression")
+                            .then(|| Narrow::Type(squash(self.t(r))))
+                    }
+                    "&&" => self
+                        .guard(l, name, depth + 1)
+                        .or_else(|| self.guard(r, name, depth + 1)),
+                    _ => None,
+                }
             }
             _ => None,
         }
@@ -1744,6 +1841,14 @@ const ITER_CALLBACKS: &[&str] = &[
     "findLast",
     "flatMap",
 ];
+
+/// What a condition proves about a variable (see `Infer::narrowed`).
+enum Narrow {
+    /// `x instanceof C`: the written type.
+    Type(String),
+    /// `G(x)`: whatever type guard `G` asserts.
+    Guard(String),
+}
 
 /// Shape of a call signature's first parameter type: `f` a function type, `g` a type
 /// parameter / `any` / `unknown` / no annotation (accepts anything), `n` anything else.

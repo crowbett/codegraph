@@ -559,6 +559,17 @@ fn builtin_type(lang: Lang, name: &str) -> bool {
     list.contains(&name)
 }
 
+/// (qualifier, name) of a callee path (`a::b::f`, `pkg.f`, `f`).
+fn split_callee(callee: &str) -> (Option<&str>, &str) {
+    if let Some((q, n)) = callee.rsplit_once("::") {
+        (Some(q), n)
+    } else if let Some((q, n)) = callee.rsplit_once('.') {
+        (Some(q), n)
+    } else {
+        (None, callee)
+    }
+}
+
 /// `V` of a TS `Map<K, V>` / `WeakMap` / `ReadonlyMap` type text (nullable allowed).
 fn map_value(text: &str) -> Option<&str> {
     let parts: Vec<&str> = split_top(text.trim(), '|')
@@ -862,6 +873,15 @@ impl Ctx {
         if let Some(callee) = h.strip_prefix("C:") {
             return self.eval_call(fi, from, callee, d);
         }
+        if let Some(rest) = h.strip_prefix("G:") {
+            let Some((guard, base)) = rest.split_once('@') else {
+                return Val::Ty(Ty::Unknown);
+            };
+            return match self.guard_type(fi, from, guard) {
+                Some(v) => v,
+                None => self.eval_val(fi, from, line, base, d),
+            };
+        }
         let (tag, rest) = h.split_at(2.min(h.len()));
         let Some((name, base)) = rest.split_once('@') else {
             return Val::Ty(Ty::Unknown);
@@ -1014,30 +1034,8 @@ impl Ctx {
                 return Val::Ty(Ty::Unknown);
             }
         }
-        let (qual, name) = if let Some((q, n)) = callee.rsplit_once("::") {
-            (Some(q), n)
-        } else if let Some((q, n)) = callee.rsplit_once('.') {
-            (Some(q), n)
-        } else {
-            (None, callee)
-        };
-        let fake = E {
-            id: 0,
-            file: fi,
-            from_symbol: from,
-            from_name: None,
-            name: name.to_string(),
-            qualifier: qual.map(str::to_string),
-            kind: EdgeKind::Call,
-            extra: None,
-            old_to: None,
-            old_conf: None,
-            old_to_file: None,
-            hint: None,
-            dot: false,
-            line: 0,
-        };
-        if let Some((s, _)) = self.resolve_edge(&fake, &self.scopes[fi]) {
+        let (qual, name) = split_callee(callee);
+        if let Some((s, _)) = self.resolve_callee(fi, from, callee) {
             let sym = &self.syms[s];
             if sym.kind.is_type_like() {
                 return Val::Ty(Ty::Known(s));
@@ -1087,6 +1085,63 @@ impl Ctx {
             Ty::External(ext)
         } else {
             Ty::Unknown
+        })
+    }
+
+    /// The symbol a call of `callee` (`f`, `pkg.f`, `T::f`) from file `fi` lands on.
+    fn resolve_callee(
+        &self,
+        fi: usize,
+        from: Option<i64>,
+        callee: &str,
+    ) -> Option<(usize, Confidence)> {
+        let (qual, name) = split_callee(callee);
+        let fake = E {
+            id: 0,
+            file: fi,
+            from_symbol: from,
+            from_name: None,
+            name: name.to_string(),
+            qualifier: qual.map(str::to_string),
+            kind: EdgeKind::Call,
+            extra: None,
+            old_to: None,
+            old_conf: None,
+            old_to_file: None,
+            hint: None,
+            dot: false,
+            line: 0,
+        };
+        self.resolve_edge(&fake, &self.scopes[fi])
+    }
+
+    /// JS/TS hint `G:<guard>@..`: the type a type guard asserts (`(x: any) => x is Foo`,
+    /// `function isFoo(x): x is Foo`), `guard` being a function or a function-typed value
+    /// of the repo. `None` when it is no type guard.
+    fn guard_type(&self, fi: usize, from: Option<i64>, guard: &str) -> Option<Val> {
+        let s = match self.value_sym(fi, guard) {
+            Some(v) => v,
+            None => match self.resolve_callee(fi, from, guard)? {
+                (s, c) if c != Confidence::NameOnly && self.syms[s].kind.is_callable() => s,
+                _ => return None,
+            },
+        };
+        let sym = &self.syms[s];
+        let text = sym.ret.as_deref()?.strip_prefix("T:")?;
+        let ret = fn_type_parts(text).map_or_else(|| text.to_string(), |(_, r)| r);
+        let (_, ty) = ret.split_once(" is ")?;
+        let ty = ty.trim();
+        if ty.is_empty() {
+            return None;
+        }
+        Some(Val::Text {
+            fi: sym.file,
+            from: Some(sym.id),
+            line: sym.line,
+            text: ty.to_string(),
+            unwrap: false,
+            awaited: false,
+            elem: false,
         })
     }
 
