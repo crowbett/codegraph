@@ -2272,12 +2272,15 @@ impl Ctx {
         if dots == 0 && !module.is_empty() {
             // Repo root is not the Python root: unique suffix match.
             let suffix = format!(".{module}");
-            let hits: Vec<usize> = self
+            let mut hits: Vec<usize> = self
                 .py_mods
                 .iter()
                 .filter(|(k, _)| k.ends_with(&suffix))
                 .flat_map(|(_, v)| v.iter().copied())
                 .collect();
+            // HashMap order is random per process: without this the first of two
+            // candidates flipped between runs.
+            hits.sort_unstable();
             if !hits.is_empty() && hits.len() <= 2 {
                 return Some(hits);
             }
