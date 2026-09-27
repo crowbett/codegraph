@@ -189,10 +189,18 @@ struct Ctx {
     /// Per-file import scopes (filled after the import pass).
     scopes: Vec<Scope>,
     memo: Memo,
+    /// Files declaring some type name more than once (see `types::find_type`).
+    dup_types: Mutex<HashMap<usize, bool>>,
+    /// JS/TS `C:` hints -> the object literal the callee returns (see `types::object_at`).
+    obj_memo: ObjMemo,
 }
 
-/// Evaluated receiver hints keyed by (file, enclosing symbol, hint).
-type Memo = Mutex<HashMap<(usize, Option<i64>, String), types::Ty>>;
+/// Evaluated receiver hints keyed by (file, enclosing symbol, line, hint); the line is 0
+/// unless the file declares a type name twice.
+type Memo = Mutex<HashMap<(usize, Option<i64>, u32, String), types::Ty>>;
+
+/// (file, enclosing symbol, hint) -> (file, first line, last line) of an object literal.
+type ObjMemo = Mutex<HashMap<(usize, Option<i64>, String), Option<(usize, u32, u32)>>>;
 
 fn dir_of(p: &str) -> &str {
     p.rfind('/').map_or("", |i| &p[..i])
@@ -1741,6 +1749,8 @@ fn load_ctx(store: &Store, repo_id: i64, root: &Path) -> Result<Ctx> {
         ts_base: None,
         scopes: Vec::new(),
         memo: Mutex::new(HashMap::new()),
+        dup_types: Mutex::new(HashMap::new()),
+        obj_memo: Mutex::new(HashMap::new()),
     };
     for (i, f) in ctx.files.iter().enumerate() {
         ctx.paths.insert(f.path.clone(), i);
@@ -1897,6 +1907,8 @@ impl Ctx {
         self.ext_names.clear();
         self.ext_ids.clear();
         self.memo = Mutex::new(HashMap::new());
+        self.dup_types = Mutex::new(HashMap::new());
+        self.obj_memo = Mutex::new(HashMap::new());
     }
 
     /// `package.json` files of JS/TS packages inside the repo (monorepo workspaces), so a
@@ -2510,6 +2522,24 @@ impl Ctx {
 
     /// Candidates named `name` in `files` (following JS/Python re-exports one level).
     fn lookup_in(&self, files: &[usize], name: &str, edge: EdgeKind, depth: u8) -> Vec<usize> {
+        let ok = |k: SymKind, l: Lang| {
+            kind_ok(edge, k, l)
+                // Go `pkg.F` never names a method.
+                && (k != SymKind::Method
+                    || l != Lang::Go
+                    || !matches!(edge, EdgeKind::Call | EdgeKind::Value))
+        };
+        self.lookup_in_by(files, name, &ok, depth)
+    }
+
+    /// [`Self::lookup_in`] with a symbol filter of its own (kind, language).
+    fn lookup_in_by(
+        &self,
+        files: &[usize],
+        name: &str,
+        ok: &dyn Fn(SymKind, Lang) -> bool,
+        depth: u8,
+    ) -> Vec<usize> {
         // No symbol may carry `name` itself (`export { f as g }`, `pub use f as g`): the
         // re-exports below still apply.
         let all: &[usize] = self.by_name.get(name).map_or(&[], Vec::as_slice);
@@ -2525,11 +2555,7 @@ impl Ctx {
                             .get(&p)
                             .is_some_and(|&pi| self.syms[pi].kind == SymKind::Module)
                     })
-                    && kind_ok(edge, self.syms[s].kind, self.files[self.syms[s].file].lang)
-                    // Go `pkg.F` never names a method.
-                    && (self.syms[s].kind != SymKind::Method
-                        || self.files[self.syms[s].file].lang != Lang::Go
-                        || !matches!(edge, EdgeKind::Call | EdgeKind::Value))
+                    && ok(self.syms[s].kind, self.files[self.syms[s].file].lang)
             })
             .collect();
         if !direct.is_empty() || depth == 0 {
@@ -2544,17 +2570,17 @@ impl Ctx {
             };
             if let Some((orig, tf)) = sc.names.get(name) {
                 if !tf.is_empty() && tf.as_slice() != [t] {
-                    out.extend(self.lookup_in(tf, orig, edge, depth - 1));
+                    out.extend(self.lookup_in_by(tf, orig, ok, depth - 1));
                 }
             }
             // `pub use a::*` / `export * from './a'`
             let lang = self.files[t].lang;
             if !sc.globs.is_empty() && lang == Lang::Rust {
-                out.extend(self.lookup_in(&sc.globs, name, edge, depth - 1));
+                out.extend(self.lookup_in_by(&sc.globs, name, ok, depth - 1));
             } else if !sc.globs.is_empty() && lang.is_js_family() {
                 // `export *` passes on exported names only.
                 out.extend(
-                    self.lookup_in(&sc.globs, name, edge, depth - 1)
+                    self.lookup_in_by(&sc.globs, name, ok, depth - 1)
                         .into_iter()
                         .filter(|&s| self.syms[s].exported),
                 );
@@ -2633,6 +2659,87 @@ impl Ctx {
         Some((b, if cands.len() == 1 { single } else { many }))
     }
 
+    /// The type symbol enclosing symbol `from`: a class/struct/trait, or the type whose
+    /// body declares the enclosing method. `None` when the method's type is only known by
+    /// name (Go receivers, Rust `impl` blocks): use [`Self::self_type`] then.
+    fn self_sym(&self, from: Option<i64>) -> Option<usize> {
+        let mut cur = from.and_then(|id| self.by_id.get(&id).copied());
+        while let Some(i) = cur {
+            let s = &self.syms[i];
+            if s.kind.is_type_like() {
+                return Some(i);
+            }
+            if s.kind == SymKind::Method {
+                let p = s.parent.and_then(|p| self.by_id.get(&p).copied())?;
+                let ps = &self.syms[p];
+                return (ps.kind.is_type_like() && s.container.as_deref() == Some(&ps.name))
+                    .then_some(p);
+            }
+            cur = s.parent.and_then(|p| self.by_id.get(&p).copied());
+        }
+        None
+    }
+
+    /// JS/TS module-level value (`const`/`let`/`var` symbol) named by `path` as seen from
+    /// file `fi`: `v` (this file, or imported by name) or `ns.v` (`ns` a namespace
+    /// import). `None` when not bound to one in the repo.
+    fn value_sym(&self, fi: usize, path: &str) -> Option<usize> {
+        if !self.files[fi].lang.is_js_family() {
+            return None;
+        }
+        let is_val =
+            |k: SymKind, l: Lang| matches!(k, SymKind::Const | SymKind::Var) && l.is_js_family();
+        let scope = self.scopes.get(fi)?;
+        let (files, name): (&[usize], &str) = match path.split_once('.') {
+            Some((ns, n)) if !n.contains('.') => (scope.modules.get(ns)?.as_slice(), n),
+            Some(_) => return None,
+            None => {
+                let local: Vec<usize> = self.by_file[fi]
+                    .iter()
+                    .copied()
+                    .filter(|&s| {
+                        let sym = &self.syms[s];
+                        sym.name == path
+                            && sym.parent.is_none()
+                            && is_val(sym.kind, Lang::TypeScript)
+                    })
+                    .collect();
+                if !local.is_empty() {
+                    return self.best(fi, &local);
+                }
+                let (orig, targets) = scope.names.get(path)?;
+                (targets.as_slice(), orig.as_str())
+            }
+        };
+        if files.is_empty() {
+            return None;
+        }
+        let m = self.lookup_in_by(files, name, &is_val, 3);
+        match m.as_slice() {
+            [one] => Some(*one),
+            _ => None,
+        }
+    }
+
+    /// Whether JS/TS file `fi` declares some type name more than once.
+    fn dup_types(&self, fi: usize) -> bool {
+        if !self.files[fi].lang.is_js_family() {
+            return false;
+        }
+        let mut memo = self
+            .dup_types
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *memo.entry(fi).or_insert_with(|| {
+            let mut seen: HashSet<&str> = HashSet::new();
+            self.by_file[fi]
+                .iter()
+                .map(|&s| &self.syms[s])
+                .filter(|s| s.kind.is_type_like())
+                .any(|s| !seen.insert(s.name.as_str()))
+        })
+    }
+
     /// Type name of the enclosing method/class of symbol `from`.
     fn self_type(&self, from: Option<i64>) -> (Option<String>, Option<String>) {
         let mut cur = from.and_then(|id| self.by_id.get(&id).copied());
@@ -2689,7 +2796,7 @@ impl Ctx {
         let fi = e.file;
         // Python `super().m()`: only the bases of the enclosing class; never a guess.
         if lang == Lang::Python && q.starts_with("super(") {
-            return self.resolve_super(e);
+            return self.resolve_py_super(e);
         }
         let (self_ty, recv) = self.self_type(e.from_symbol);
         // 1. self-like (unless TS declared `this` explicitly: `function f(this: T)`, whose
@@ -2736,6 +2843,12 @@ impl Ctx {
         match self.resolve_typed(e) {
             types::Typed::NoOpinion => {}
             types::Typed::Resolved(r) => return r,
+        }
+        if e.hint.is_none() && lang.is_js_family() {
+            match self.resolve_value_member(e, q) {
+                types::Typed::NoOpinion => {}
+                types::Typed::Resolved(r) => return r,
+            }
         }
         if lang == Lang::Rust && e.dot {
             // `x.f()` in Rust is a method call on a value, never a module path. With no

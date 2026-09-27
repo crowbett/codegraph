@@ -7,13 +7,16 @@
 //! | hint | meaning |
 //! |---|---|
 //! | `S` | the enclosing type (`self`, `this`, a Go receiver) |
+//! | `B` | the bases of the enclosing type (`super`): a call resolves on the first base, in declaration order, that has the method — never on the enclosing type itself; as a value (`M:x@B`) it is the first base that binds |
 //! | `T:<type>` | a written type (`*Store`, `Box<dyn Backend>`, `http.Handler`) |
-//! | `C:<callee>` | the result of calling a function or constructor (`NewStore`, `Foo::new`) |
+//! | `C:<callee>` | the result of calling a function or constructor (`NewStore`, `Foo::new`); JS/TS may append `#f` (first argument is a function literal) or `#o` (another literal / `new`) to pick among call signatures |
 //! | `M:<name>@<hint>` | the result of calling method `name` on `<hint>` |
 //! | `F:<name>@<hint>` | field `name` of `<hint>` |
 //! | `Q:<hint>` | `<hint>` unwrapped (Rust `?`, `.unwrap()`); `A:<hint>` awaited |
 //! | `E:<hint>` | an element of the collection `<hint>` (loop variables, callback params) |
 //! | `G:<name>` / `G:<pkg>.<name>` | Go: a package-level var/const not declared in this file (same package, or of imported package `pkg`); evaluated through the var's stored type. `G:<var>.<field>` when `<var>` is not a package |
+//! | `N:<guard>@<hint>` | a variable narrowed by type guard `<guard>` (see JS/TS narrowing), else `<hint>` |
+//! | `O:<a>-<b>` | JS/TS: the object literal / inline object type on lines `a..=b` of the file the hint belongs to (a parameter typed `{ m(): X }`, or the return of an unannotated function returning `{ m() {..} }`): its methods are the method symbols written there (the first on the line when two such types share one) |
 //! | `L` | a local variable or parameter with no known type (never a repo symbol) |
 //!
 //! Go package-level vars and consts store their type hint as the symbol's `ret` (the
@@ -22,8 +25,27 @@
 //! to the function's result.
 //!
 //! Evidence comes from parameters, `let`/`:=`/`const`/assignments, struct and class
-//! fields and function return types. Everything is best effort: an unknown expression
-//! yields no hint and the resolver falls back to name-based rules.
+//! fields and function return types (JS/TS `Class.prototype` is `T:Class` when `Class` is
+//! not a local). Everything is best effort: an unknown expression yields no hint and the
+//! resolver falls back to name-based rules.
+//!
+//! JS/TS values: exported module-level `const`/`let`/`var` symbols carry their type as
+//! `ret` (declared, else the initializer's hint), and TS call signatures are fields named
+//! `()<shape>` (shape of the first parameter, [`param_shape`]; `0` = none) holding the
+//! return type. `C:f` where `f` is such a value (imported, same file or `ns.f`) calls it:
+//! a function type `(..) => R` gives `R`; an interface / type alias gives its fitting
+//! signatures (own, else alias target's, else bases'), resolved only when they agree.
+//! `C:v.m` / `C:ns.v.m` is method `m` of the value's type or its field `m`, called.
+//! `M:get@<hint>` on a TS `Map<K, V>` / `WeakMap` / `ReadonlyMap` is a `V`.
+//!
+//! JS/TS narrowing: a variable read inside the consequence of `if (x instanceof C)` is
+//! `T:C`; inside `if (G(x))` (also `&&` chains and `?:`) it is `G:<G>@<hint>`: the type
+//! guard `G` (a function or function-typed value whose type reads `x is T`) asserts `T`;
+//! when `G` is no type guard, `<hint>` (the variable's own hint) applies.
+//!
+//! `T:` names are bound where the hint was written: in JS/TS, a file declaring one type
+//! name twice (sibling test callbacks each with `class Store`) binds the declaration
+//! closest before the reference.
 //!
 //! ## Cost
 //!
@@ -734,11 +756,14 @@ impl<'a> Infer<'a> {
                 if let Some(ps) = f.child_by_field_name("parameters") {
                     let mut c = ps.walk();
                     for p in ps.named_children(&mut c) {
-                        let ty = p
-                            .child_by_field_name("type")
-                            .and_then(|t| t.named_child(0))
-                            .and_then(|t| subst(&squash(self.t(t)), &gens))
-                            .and_then(|t| mk("T:", &t));
+                        let tn = p.child_by_field_name("type").and_then(|t| t.named_child(0));
+                        let ty = match tn {
+                            // `(v: { entries(): X })`: the members written there.
+                            Some(t) if t.kind() == "object_type" => object_hint(t),
+                            _ => tn
+                                .and_then(|t| subst(&squash(self.t(t)), &gens))
+                                .and_then(|t| mk("T:", &t)),
+                        };
                         let pat = p.child_by_field_name("pattern").unwrap_or(p);
                         if let (Some(s), None, "identifier") = (src, &ty, pat.kind()) {
                             if first_param(ps, p) {
@@ -1406,6 +1431,8 @@ impl<'a> Infer<'a> {
                 _ => Some("S".into()),
             },
             "self" | "this" => Some("S".into()),
+            // `super.m()`: the enclosing class's bases.
+            "super" if self.lang.is_js_family() => Some("B".into()),
             "identifier" => {
                 let name = self.t(e).to_string();
                 if self.lang == Lang::Python && matches!(name.as_str(), "self" | "cls") {
@@ -1423,7 +1450,19 @@ impl<'a> Infer<'a> {
                         mk("D:", &h)
                     }
                     Some(dcl) if dcl.func => None,
-                    Some(dcl) => Some(self.decl_hint(&dcl, depth).unwrap_or_else(|| "L".into())),
+                    Some(dcl) => {
+                        let h = self.decl_hint(&dcl, depth).unwrap_or_else(|| "L".into());
+                        if self.lang.is_js_family() {
+                            match self.narrowed(e, &name, dcl.at) {
+                                Some(Narrow::Type(t)) => return mk("T:", &t).or(Some(h)),
+                                Some(Narrow::Guard(g)) => {
+                                    return mk(&format!("N:{g}@"), &h).or(Some(h));
+                                }
+                                None => {}
+                            }
+                        }
+                        Some(h)
+                    }
                     // Go: a package-level var declared in another file (or a package
                     // name, which the resolver tells apart).
                     None if self.lang == Lang::Go => mk("G:", &name),
@@ -1473,6 +1512,18 @@ impl<'a> Infer<'a> {
                     if obj.kind() == "identifier" && self.lookup(self.t(obj), obj).is_none() {
                         return mk("G:", &format!("{}.{}", self.t(obj), self.t(field)));
                     }
+                }
+                // `Parent.prototype.m()`: an instance of class `Parent` (not of a local or
+                // an ES5 constructor function).
+                if self.lang.is_js_family()
+                    && self.t(field) == "prototype"
+                    && obj.kind() == "identifier"
+                {
+                    let name = self.t(obj);
+                    return match self.lookup(name, obj) {
+                        Some(_) => None,
+                        None => mk("T:", name),
+                    };
                 }
                 let base = self.eval(obj, d)?;
                 if base == "L" {
@@ -1646,7 +1697,7 @@ impl<'a> Infer<'a> {
                         let lit = d.value.filter(|v| v.kind() == "func_literal")?;
                         self.ret_of(lit)
                     }
-                    _ => mk("C:", &name),
+                    _ => mk("C:", &format!("{name}{}", self.arg_shape(e))),
                 }
             }
             "scoped_identifier" => {
@@ -1674,7 +1725,15 @@ impl<'a> Infer<'a> {
                     && self.lookup(self.t(obj), obj).is_none()
                 {
                     // `pkg.F()`, `mod.f()`, `Class.create()`: a package-level callee.
-                    return mk("C:", &format!("{}.{fname}", self.t(obj)));
+                    let shape = self.arg_shape(e);
+                    return mk("C:", &format!("{}.{fname}{shape}", self.t(obj)));
+                }
+                if self.lang.is_js_family() {
+                    // `ns.value.m()`: a member of a module-level value in namespace `ns`.
+                    if let Some(p) = self.bare_path(obj, 0) {
+                        let shape = self.arg_shape(e);
+                        return mk("C:", &format!("{p}.{fname}{shape}"));
+                    }
                 }
                 // Python `pkg.mod.f()`: a dotted module path whose root is not a local.
                 if self.lang == Lang::Python && obj.kind() == "attribute" {
@@ -1697,7 +1756,182 @@ impl<'a> Infer<'a> {
         }
     }
 
+    /// JS/TS narrowing of variable `name` (declared at byte `at`) at `e`: inside the
+    /// consequence of the innermost `if (G(name))` / `if (name instanceof C)` (also in
+    /// `&&` chains and `?:`) after the declaration.
+    fn narrowed(&mut self, e: Node<'a>, name: &str, at: usize) -> Option<Narrow> {
+        let nav = self.nav;
+        let mut child = e;
+        let mut cur = nav.parent(e);
+        while let Some(p) = cur {
+            // A callback keeps the narrowing of a variable declared outside it (TypeScript
+            // does so for variables never reassigned); one declared inside ends the walk.
+            if self.is_function(p) && at >= p.start_byte() {
+                return None;
+            }
+            let (cond, cons) = match p.kind() {
+                "if_statement" | "ternary_expression" => (
+                    p.child_by_field_name("condition"),
+                    p.child_by_field_name("consequence"),
+                ),
+                _ => (None, None),
+            };
+            if let (Some(cond), Some(cons)) = (cond, cons) {
+                if cons.id() == child.id() && p.start_byte() >= at {
+                    if let Some(n) = self.guard(cond, name, 0) {
+                        return Some(n);
+                    }
+                }
+            }
+            child = p;
+            cur = nav.parent(p);
+        }
+        None
+    }
+
+    /// The narrowing a condition proves for `name`.
+    fn guard(&mut self, c: Node<'a>, name: &str, depth: u8) -> Option<Narrow> {
+        if depth > MAX_DEPTH {
+            return None;
+        }
+        match c.kind() {
+            "parenthesized_expression" => self.guard(c.named_child(0)?, name, depth + 1),
+            "call_expression" => {
+                let arg = c.child_by_field_name("arguments")?.named_child(0)?;
+                if arg.kind() != "identifier" || self.t(arg) != name {
+                    return None;
+                }
+                let f = c.child_by_field_name("function")?;
+                let callee = match f.kind() {
+                    "identifier" => {
+                        let g = self.t(f);
+                        // A local variable holding a function is no module-level guard.
+                        if self.lookup_local(g, f).is_some_and(|d| !d.func) {
+                            return None;
+                        }
+                        g.to_string()
+                    }
+                    "member_expression" => self.bare_path(f, 0)?,
+                    _ => return None,
+                };
+                Some(Narrow::Guard(callee))
+            }
+            "binary_expression" => {
+                let op = c.child_by_field_name("operator").map(|o| self.t(o))?;
+                let l = c.child_by_field_name("left")?;
+                let r = c.child_by_field_name("right")?;
+                match op {
+                    "instanceof" if l.kind() == "identifier" && self.t(l) == name => {
+                        matches!(r.kind(), "identifier" | "member_expression")
+                            .then(|| Narrow::Type(squash(self.t(r))))
+                    }
+                    "&&" => self
+                        .guard(l, name, depth + 1)
+                        .or_else(|| self.guard(r, name, depth + 1)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// JS/TS: the shape of a call's first argument, appended to a `C:` hint to pick
+    /// among call signatures: `#f` a function literal, `#o` another literal or `new`.
+    fn arg_shape(&self, call: Node<'a>) -> &'static str {
+        if !self.lang.is_js_family() {
+            return "";
+        }
+        let Some(a) = call
+            .child_by_field_name("arguments")
+            .and_then(|a| a.named_child(0))
+        else {
+            return "";
+        };
+        match a.kind() {
+            "arrow_function" | "function_expression" | "function" | "generator_function" => "#f",
+            "object" | "array" | "string" | "number" | "template_string" | "new_expression"
+            | "true" | "false" => "#o",
+            _ => "",
+        }
+    }
+
+    /// `a.b` where `a` is not a local (a namespace import): the dotted text. Two levels
+    /// at most.
+    fn bare_path(&mut self, e: Node<'a>, depth: u8) -> Option<String> {
+        match e.kind() {
+            "member_expression" if depth == 0 => {
+                let (obj, field) = Self::member_parts(e)?;
+                if field.kind() != "property_identifier" {
+                    return None;
+                }
+                let head = self.bare_path(obj, depth + 1)?;
+                Some(format!("{head}.{}", self.t(field)))
+            }
+            "identifier" if depth > 0 => {
+                let n = self.t(e);
+                self.lookup(n, e).is_none().then(|| n.to_string())
+            }
+            _ => None,
+        }
+    }
+
     // ---- symbol facts --------------------------------------------------------
+
+    /// Type hint of a module-level JS/TS value (`variable_declarator`): its declared type,
+    /// else its initializer's.
+    pub(crate) fn value_type(&mut self, decl: Node<'a>) -> Option<String> {
+        if !self.supported() || !self.hints_enabled() {
+            return None;
+        }
+        if let Some(t) = decl
+            .child_by_field_name("type")
+            .and_then(|t| t.named_child(0))
+        {
+            return mk("T:", &squash(self.t(t)));
+        }
+        let v = decl.child_by_field_name("value")?;
+        self.eval(v, 0).filter(|h| h != "L")
+    }
+
+    /// A TS call signature (`<T>(fn: () => T): Box<T>` in an interface, or a function
+    /// type): the field `()<shape>` -> its return type, `<shape>` from the first
+    /// parameter's type (see [`param_shape`]).
+    fn call_sig(&self, sig: Node<'a>) -> Option<(String, String)> {
+        let ret = sig.child_by_field_name("return_type")?;
+        let ret = if ret.kind() == "type_annotation" {
+            ret.named_child(0)?
+        } else {
+            ret
+        };
+        let gens: Vec<String> = sig
+            .child_by_field_name("type_parameters")
+            .map(|tp| {
+                named(tp)
+                    .into_iter()
+                    .filter_map(|p| p.child_by_field_name("name"))
+                    .map(|n| self.t(n).to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let first = sig.child_by_field_name("parameters").and_then(|ps| {
+            named(ps).into_iter().find(|p| {
+                matches!(p.kind(), "required_parameter" | "optional_parameter")
+                    && p.child_by_field_name("pattern")
+                        .is_none_or(|n| self.t(n) != "this")
+            })
+        });
+        let shape = match first {
+            None => '0',
+            Some(p) => {
+                let ty = p
+                    .child_by_field_name("type")
+                    .and_then(|t| t.named_child(0))
+                    .map(|t| squash(self.t(t)));
+                param_shape(ty.as_deref(), &gens)
+            }
+        };
+        Some((format!("(){shape}"), mk("T:", &squash(self.t(ret)))?))
+    }
 
     /// Return type hint of a function/method definition node.
     /// Python `def` without a return annotation: the hint its `return` statements agree
@@ -1758,8 +1992,17 @@ impl<'a> Infer<'a> {
                 return subst(&squash(self.t(r)), &b).and_then(|t| mk("T:", &t));
             }
             Lang::TypeScript | Lang::Tsx | Lang::JavaScript => {
-                let r = def.child_by_field_name("return_type")?;
-                r.named_child(0).unwrap_or(r)
+                if let Some(r) = def.child_by_field_name("return_type") {
+                    r.named_child(0).unwrap_or(r)
+                } else {
+                    // Unannotated, returning an object literal: its methods.
+                    let f = if def.kind() == "variable_declarator" {
+                        def.child_by_field_name("value")?
+                    } else {
+                        def
+                    };
+                    return self.returned_object(f).and_then(object_hint);
+                }
             }
             Lang::Python => def.child_by_field_name("return_type")?,
             Lang::C | Lang::Cpp => return None,
@@ -1809,6 +2052,44 @@ impl<'a> Infer<'a> {
             return mk("C:", &squash(self.t(f)));
         }
         self.eval(v, 0).filter(|h| h != "L")
+    }
+
+    /// The object literal a JS/TS function returns, when that is its only `return`
+    /// (or an arrow's expression body).
+    fn returned_object(&self, f: Node<'a>) -> Option<Node<'a>> {
+        if !self.is_function(f) {
+            return None;
+        }
+        let body = f.child_by_field_name("body")?;
+        let unparen = |n: Node<'a>| {
+            let mut n = n;
+            while n.kind() == "parenthesized_expression" {
+                n = n.named_child(0)?;
+            }
+            Some(n)
+        };
+        if body.kind() != "statement_block" {
+            return unparen(body).filter(|o| o.kind() == "object");
+        }
+        let mut rets = Vec::new();
+        let mut stack = vec![body];
+        while let Some(n) = stack.pop() {
+            if n.kind() == "return_statement" {
+                rets.push(n);
+                if rets.len() > 1 {
+                    return None;
+                }
+                continue;
+            }
+            if n.id() != body.id() && self.is_function(n) {
+                continue;
+            }
+            stack.extend(named(n));
+        }
+        let [r] = rets.as_slice() else {
+            return None;
+        };
+        unparen(r.named_child(0)?).filter(|o| o.kind() == "object")
     }
 
     /// Field hints of a struct/class definition node: (name, hint). Go embedded fields
@@ -1886,7 +2167,23 @@ impl<'a> Infer<'a> {
                 }
             }
             Lang::TypeScript | Lang::Tsx | Lang::JavaScript => {
-                let Some(body) = def.child_by_field_name("body") else {
+                let body = if def.kind() == "type_alias_declaration" {
+                    // `type F = (a: A) => R` / `type O = { m(): R; (x): Y }`
+                    let Some(v) = def.child_by_field_name("value") else {
+                        return out;
+                    };
+                    if v.kind() == "function_type" {
+                        out.extend(self.call_sig(v));
+                        return out;
+                    }
+                    if v.kind() != "object_type" {
+                        return out;
+                    }
+                    Some(v)
+                } else {
+                    def.child_by_field_name("body")
+                };
+                let Some(body) = body else {
                     return out;
                 };
                 let mut c = body.walk();
@@ -1911,6 +2208,7 @@ impl<'a> Infer<'a> {
                                 out.push((self.t(n).trim_start_matches('#').to_string(), h));
                             }
                         }
+                        "call_signature" => out.extend(self.call_sig(m)),
                         "method_definition" => {
                             let is_ctor = m
                                 .child_by_field_name("name")
@@ -2053,6 +2351,53 @@ const ITER_CALLBACKS: &[&str] = &[
     "findLast",
     "flatMap",
 ];
+
+/// `O:<first line>-<last line>` of an object literal / inline object type.
+fn object_hint(o: Node<'_>) -> Option<String> {
+    mk(
+        "O:",
+        &format!(
+            "{}-{}",
+            o.start_position().row + 1,
+            o.end_position().row + 1
+        ),
+    )
+}
+
+/// What a condition proves about a variable (see `Infer::narrowed`).
+enum Narrow {
+    /// `x instanceof C`: the written type.
+    Type(String),
+    /// `G(x)`: whatever type guard `G` asserts.
+    Guard(String),
+}
+
+/// Shape of a call signature's first parameter type: `f` a function type, `g` a type
+/// parameter / `any` / `unknown` / no annotation (accepts anything), `n` anything else.
+pub(crate) fn param_shape(ty: Option<&str>, generics: &[String]) -> char {
+    let Some(t) = ty.map(str::trim) else {
+        return 'g';
+    };
+    let mut depth = 0i32;
+    let b = t.as_bytes();
+    for (i, &c) in b.iter().enumerate() {
+        match c {
+            b'(' | b'[' | b'{' | b'<' => depth += 1,
+            b'>' if i > 0 && b[i - 1] == b'=' => {
+                if depth == 0 {
+                    return 'f';
+                }
+            }
+            b')' | b']' | b'}' | b'>' => depth -= 1,
+            _ => {}
+        }
+    }
+    if matches!(t, "any" | "unknown" | "Function") || generics.iter().any(|g| g == t) {
+        'g'
+    } else {
+        'n'
+    }
+}
 
 /// Whether `p` is the first named parameter in `ps`.
 fn first_param(ps: Node<'_>, p: Node<'_>) -> bool {

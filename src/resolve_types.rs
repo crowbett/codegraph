@@ -34,6 +34,9 @@ enum Val {
     Text {
         fi: usize,
         from: Option<i64>,
+        /// Line the text is seen from (a reference, or the symbol it belongs to): picks
+        /// among same-file definitions sharing a name.
+        line: u32,
         text: String,
         unwrap: bool,
         awaited: bool,
@@ -232,6 +235,88 @@ fn std_iface(qualified: &str) -> Option<&'static [(&'static str, (usize, usize))
         ],
         _ => return None,
     })
+}
+
+/// A call signature of shape `sig` (`infer::param_shape`; `0` = no parameters) accepts a
+/// first argument of shape `arg` (`f` a function literal, `o` another literal, `None`
+/// unknown).
+fn shape_ok(arg: Option<char>, sig: char) -> bool {
+    match arg {
+        None => true,
+        Some('f') => matches!(sig, 'f' | 'g'),
+        Some(_) => matches!(sig, 'n' | 'g'),
+    }
+}
+
+/// `<T>(a: A, b: B) => R` / `(a: A) => R` (squashed TS type text) -> (shape of the first
+/// parameter, `R`).
+fn fn_type_parts(text: &str) -> Option<(char, String)> {
+    let mut t = text.trim();
+    let mut gens: Vec<String> = Vec::new();
+    if t.starts_with('<') {
+        let close = matching(t, 0)?;
+        gens = split_top(&t[1..close], ',')
+            .into_iter()
+            .map(|g| {
+                let g = g.trim();
+                let end = g.find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'));
+                g[..end.unwrap_or(g.len())].to_string()
+            })
+            .collect();
+        t = t[close + 1..].trim_start();
+    }
+    if !t.starts_with('(') {
+        return None;
+    }
+    let close = matching(t, 0)?;
+    let ret = t[close + 1..].trim_start().strip_prefix("=>")?.trim();
+    if ret.is_empty() {
+        return None;
+    }
+    let params = &t[1..close];
+    let shape = match split_top(params, ',')
+        .into_iter()
+        .map(str::trim)
+        .find(|p| !p.is_empty() && !p.starts_with("this:") && !p.starts_with("this?:"))
+    {
+        None => '0',
+        Some(p) => {
+            let ty = split_once_top(p, ':').map(|(_, ty)| ty);
+            crate::infer::param_shape(ty, &gens)
+        }
+    };
+    Some((shape, ret.to_string()))
+}
+
+/// Index of the bracket closing the one at byte `open` of `s` (`(`/`<`/`[`/`{`; a `>` of
+/// `=>` does not close anything).
+fn matching(s: &str, open: usize) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut depth = 0i32;
+    for (i, &c) in b.iter().enumerate().skip(open) {
+        match c {
+            b'(' | b'<' | b'[' | b'{' => depth += 1,
+            b'>' if i > 0 && b[i - 1] == b'=' => {}
+            b')' | b'>' | b']' | b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split at the first top-level `sep`.
+fn split_once_top(s: &str, sep: char) -> Option<(&str, &str)> {
+    let parts = split_top(s, sep);
+    if parts.len() < 2 {
+        return None;
+    }
+    let head = parts[0];
+    Some((head, &s[head.len() + sep.len_utf8()..]))
 }
 
 /// Count of top-level comma-separated items in `s` (empty = 0).
@@ -593,6 +678,49 @@ fn builtin_type(lang: Lang, name: &str) -> bool {
     list.contains(&name)
 }
 
+/// A TS primitive type or literal type (`boolean`, `"a"`, `42`, `false`).
+fn ts_primitive(t: &str) -> bool {
+    matches!(
+        t,
+        "boolean" | "string" | "number" | "bigint" | "symbol" | "void" | "true" | "false"
+    ) || t.starts_with(['"', '\'', '`'])
+        || t.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit() || c == '-')
+}
+
+/// (qualifier, name) of a callee path (`a::b::f`, `pkg.f`, `f`).
+fn split_callee(callee: &str) -> (Option<&str>, &str) {
+    if let Some((q, n)) = callee.rsplit_once("::") {
+        (Some(q), n)
+    } else if let Some((q, n)) = callee.rsplit_once('.') {
+        (Some(q), n)
+    } else {
+        (None, callee)
+    }
+}
+
+/// `V` of a TS `Map<K, V>` / `WeakMap` / `ReadonlyMap` type text (nullable allowed).
+fn map_value(text: &str) -> Option<&str> {
+    let parts: Vec<&str> = split_top(text.trim(), '|')
+        .into_iter()
+        .map(str::trim)
+        .filter(|p| !matches!(*p, "" | "null" | "undefined"))
+        .collect();
+    let [t] = parts.as_slice() else {
+        return None;
+    };
+    let (head, _) = outer_generic(t, '<', '>');
+    if !matches!(head, "Map" | "WeakMap" | "ReadonlyMap") {
+        return None;
+    }
+    let inner = t[head.len()..].strip_prefix('<')?.strip_suffix('>')?;
+    match split_top(inner, ',').as_slice() {
+        [_, v] => Some(v.trim()),
+        _ => None,
+    }
+}
+
 /// Split `Name<A, B>` / `Name[A]` into (`Name`, first argument).
 fn outer_generic(s: &str, open: char, close: char) -> (&str, Option<&str>) {
     let Some(i) = s.find(open) else {
@@ -617,9 +745,14 @@ fn split_top(s: &str, sep: char) -> Vec<&str> {
     let mut out = Vec::new();
     let mut depth = 0i32;
     let mut start = 0;
+    let mut prev = ' ';
     for (i, c) in s.char_indices() {
+        let arrow = c == '>' && prev == '=';
+        prev = c;
         match c {
             '<' | '(' | '[' | '{' => depth += 1,
+            // `=>` of a function type closes nothing.
+            '>' if arrow => {}
             '>' | ')' | ']' | '}' => depth -= 1,
             c if c == sep && depth == 0 => {
                 out.push(&s[start..i]);
@@ -715,6 +848,13 @@ fn normalize(lang: Lang, text: &str, unwrap: bool, awaited: bool, depth: u8) -> 
                 .map(str::trim)
                 .filter(|p| !matches!(*p, "" | "null" | "undefined"))
                 .collect();
+            // `Annotation | boolean`: a method call needs the one object type.
+            let objs: Vec<&str> = parts.iter().copied().filter(|p| !ts_primitive(p)).collect();
+            let parts = if parts.len() > 1 && objs.len() == 1 {
+                objs
+            } else {
+                parts
+            };
             if parts.len() != 1 {
                 return Norm::Unknown;
             }
@@ -763,8 +903,10 @@ fn normalize(lang: Lang, text: &str, unwrap: bool, awaited: bool, depth: u8) -> 
 
 impl Ctx {
     /// Evaluate a receiver hint in file `fi` (reference inside symbol `from`).
-    pub(super) fn eval_hint(&self, fi: usize, from: Option<i64>, hint: &str) -> Ty {
-        let key = (fi, from, hint.to_string());
+    pub(super) fn eval_hint(&self, fi: usize, from: Option<i64>, line: u32, hint: &str) -> Ty {
+        // The line only matters in a file declaring one type name twice.
+        let line = if self.dup_types(fi) { line } else { 0 };
+        let key = (fi, from, line, hint.to_string());
         if let Some(&t) = self
             .memo
             .lock()
@@ -773,7 +915,7 @@ impl Ctx {
         {
             return t;
         }
-        let v = self.eval_val(fi, from, hint, 0);
+        let v = self.eval_val(fi, from, line, hint, 0);
         let t = self.bind_val(&v, 0);
         self.memo
             .lock()
@@ -782,17 +924,29 @@ impl Ctx {
         t
     }
 
-    fn eval_val(&self, fi: usize, from: Option<i64>, h: &str, depth: u8) -> Val {
+    fn eval_val(&self, fi: usize, from: Option<i64>, line: u32, h: &str, depth: u8) -> Val {
         if depth > MAX_DEPTH {
             return Val::Ty(Ty::Unknown);
         }
         let d = depth + 1;
         if h == "S" {
+            if let Some(t) = self.self_sym(from) {
+                return Val::Ty(Ty::Known(t));
+            }
             let (ty, _) = self.self_type(from);
             return Val::Ty(match ty {
-                Some(name) => self.find_type(fi, None, &name, from),
+                Some(name) => self.find_type(fi, None, &name, from, line),
                 None => Ty::Unknown,
             });
+        }
+        if h == "B" {
+            // The base type of the enclosing type: the first base that binds.
+            return Val::Ty(
+                self.base_types(fi, from, line)
+                    .into_iter()
+                    .next()
+                    .unwrap_or(Ty::Unknown),
+            );
         }
         if h == "L" {
             return Val::Ty(Ty::Unknown);
@@ -801,6 +955,7 @@ impl Ctx {
             return Val::Text {
                 fi,
                 from,
+                line,
                 text: t.to_string(),
                 unwrap: false,
                 awaited: false,
@@ -808,10 +963,11 @@ impl Ctx {
             };
         }
         if let Some(inner) = h.strip_prefix("E:") {
-            return match self.eval_val(fi, from, inner, d) {
+            return match self.eval_val(fi, from, line, inner, d) {
                 Val::Text {
                     fi,
                     from,
+                    line,
                     text,
                     unwrap,
                     awaited,
@@ -819,6 +975,7 @@ impl Ctx {
                 } => Val::Text {
                     fi,
                     from,
+                    line,
                     text,
                     unwrap,
                     awaited,
@@ -829,6 +986,7 @@ impl Ctx {
                 Val::Text {
                     fi,
                     from,
+                    line,
                     text,
                     unwrap,
                     awaited,
@@ -844,6 +1002,7 @@ impl Ctx {
                         Some(text) => Val::Text {
                             fi,
                             from,
+                            line,
                             text,
                             unwrap: false,
                             awaited,
@@ -870,10 +1029,11 @@ impl Ctx {
             let Ok(i) = i.parse::<usize>() else {
                 return Val::Ty(Ty::Unknown);
             };
-            return match self.eval_val(fi, from, inner, d) {
+            return match self.eval_val(fi, from, line, inner, d) {
                 Val::Text {
                     fi,
                     from,
+                    line,
                     text,
                     unwrap: false,
                     awaited: false,
@@ -889,6 +1049,7 @@ impl Ctx {
                         Some(text) => Val::Text {
                             fi,
                             from,
+                            line,
                             text,
                             unwrap: false,
                             awaited: false,
@@ -902,10 +1063,11 @@ impl Ctx {
         }
         // Python `d[k]`: a value of the collection (`dict[K, V]` -> V, `list[T]` -> T).
         if let Some(inner) = h.strip_prefix("V:") {
-            return match self.eval_val(fi, from, inner, d) {
+            return match self.eval_val(fi, from, line, inner, d) {
                 Val::Text {
                     fi,
                     from,
+                    line,
                     text,
                     unwrap: false,
                     awaited: false,
@@ -914,6 +1076,7 @@ impl Ctx {
                     Some(text) => Val::Text {
                         fi,
                         from,
+                        line,
                         text,
                         unwrap: false,
                         awaited: false,
@@ -926,10 +1089,11 @@ impl Ctx {
         }
         // Python `@deco def f`: `f` is what calling the decorator's value returns.
         if let Some(inner) = h.strip_prefix("D:") {
-            return match self.eval_val(fi, from, inner, d) {
+            return match self.eval_val(fi, from, line, inner, d) {
                 Val::Text {
                     fi,
                     from,
+                    line,
                     text,
                     unwrap: false,
                     awaited: false,
@@ -942,6 +1106,7 @@ impl Ctx {
                         let v = Val::Text {
                             fi,
                             from,
+                            line,
                             text,
                             unwrap: false,
                             awaited: false,
@@ -963,10 +1128,11 @@ impl Ctx {
         }
         if let Some(inner) = h.strip_prefix("Q:").or_else(|| h.strip_prefix("A:")) {
             let is_q = h.starts_with('Q');
-            return match self.eval_val(fi, from, inner, d) {
+            return match self.eval_val(fi, from, line, inner, d) {
                 Val::Text {
                     fi,
                     from,
+                    line,
                     text,
                     unwrap,
                     awaited,
@@ -974,6 +1140,7 @@ impl Ctx {
                 } => Val::Text {
                     fi,
                     from,
+                    line,
                     text,
                     unwrap: unwrap || is_q,
                     awaited: awaited || !is_q,
@@ -988,6 +1155,16 @@ impl Ctx {
         if let Some(g) = h.strip_prefix("G:") {
             return self.eval_global(fi, g, d);
         }
+        // JS/TS `N:<guard>@<hint>`: narrowed by a type guard, else `<hint>`.
+        if let Some(rest) = h.strip_prefix("N:") {
+            let Some((guard, base)) = rest.split_once('@') else {
+                return Val::Ty(Ty::Unknown);
+            };
+            return match self.guard_type(fi, from, guard) {
+                Some(v) => v,
+                None => self.eval_val(fi, from, line, base, d),
+            };
+        }
         let (tag, rest) = h.split_at(2.min(h.len()));
         let Some((name, base)) = rest.split_once('@') else {
             return Val::Ty(Ty::Unknown);
@@ -995,7 +1172,7 @@ impl Ctx {
         match tag {
             "M:" => {
                 let lang = self.files[fi].lang;
-                let bv = self.eval_val(fi, from, base, d);
+                let bv = self.eval_val(fi, from, line, base, d);
                 let bt = self.bind_val(&bv, d);
                 // The receiver's own method wins over the name-based shortcuts below
                 // (`Db::read`, `Bag.values` are not std's).
@@ -1012,7 +1189,7 @@ impl Ctx {
                         return match self.syms[m].ret.clone() {
                             Some(r) => {
                                 let mf = self.syms[m].file;
-                                self.eval_val(mf, Some(self.syms[m].id), &r, d)
+                                self.eval_val(mf, Some(self.syms[m].id), self.syms[m].line, &r, d)
                             }
                             None => Val::Ty(Ty::Unknown),
                         };
@@ -1031,6 +1208,7 @@ impl Ctx {
                                 return Val::Text {
                                     fi,
                                     from,
+                                    line,
                                     text: inner.to_string(),
                                     unwrap: false,
                                     awaited: false,
@@ -1052,7 +1230,7 @@ impl Ctx {
                         return match self.syms[m].ret.clone() {
                             Some(r) => {
                                 let mf = self.syms[m].file;
-                                self.eval_val(mf, Some(self.syms[m].id), &r, d)
+                                self.eval_val(mf, Some(self.syms[m].id), self.syms[m].line, &r, d)
                             }
                             None => Val::Ty(Ty::Unknown),
                         };
@@ -1063,6 +1241,7 @@ impl Ctx {
                     if let Val::Text {
                         fi,
                         from,
+                        line: vline,
                         text,
                         elem: false,
                         ..
@@ -1084,6 +1263,7 @@ impl Ctx {
                             return Val::Text {
                                 fi: *fi,
                                 from: *from,
+                                line: *vline,
                                 text: v,
                                 unwrap: false,
                                 awaited: false,
@@ -1094,6 +1274,31 @@ impl Ctx {
                 }
                 if lang == Lang::Rust && PASSTHROUGH.contains(&name) {
                     return bv;
+                }
+                // JS/TS `Map<K, V>.get(k)`: a `V`.
+                if lang.is_js_family() && name == "get" {
+                    if let Val::Text {
+                        fi,
+                        from,
+                        line,
+                        text,
+                        unwrap: false,
+                        awaited: false,
+                        elem: false,
+                    } = &bv
+                    {
+                        if let Some(v) = map_value(text) {
+                            return Val::Text {
+                                fi: *fi,
+                                from: *from,
+                                line: *line,
+                                text: v.to_string(),
+                                unwrap: false,
+                                awaited: false,
+                                elem: false,
+                            };
+                        }
+                    }
                 }
                 // Iterator adaptors keep the element type: track the collection itself.
                 let same_elems = match lang {
@@ -1110,6 +1315,7 @@ impl Ctx {
                     if let Val::Text {
                         fi,
                         from,
+                        line,
                         text,
                         awaited,
                         elem,
@@ -1119,6 +1325,7 @@ impl Ctx {
                         return Val::Text {
                             fi,
                             from,
+                            line,
                             text,
                             unwrap: true,
                             awaited,
@@ -1132,7 +1339,7 @@ impl Ctx {
                     Ty::Unknown => Val::Ty(Ty::Unknown),
                 }
             }
-            "F:" => match self.bind_val(&self.eval_val(fi, from, base, d), d) {
+            "F:" => match self.bind_val(&self.eval_val(fi, from, line, base, d), d) {
                 Ty::Known(t) => self.field_of(t, name, &mut HashSet::new(), d),
                 other => Val::Ty(other),
             },
@@ -1155,13 +1362,13 @@ impl Ctx {
                 .iter()
                 .find(|(k, _)| k.strip_prefix('~') == Some(name))
         }) {
-            return self.eval_val(s.file, Some(s.id), h, d + 1);
+            return self.eval_val(s.file, Some(s.id), s.line, h, d + 1);
         }
         // Go embedded fields promote their fields.
         for (k, h) in &s.fields {
             if k.starts_with('~') {
                 if let Ty::Known(b) =
-                    self.bind_val(&self.eval_val(s.file, Some(s.id), h, d + 1), d + 1)
+                    self.bind_val(&self.eval_val(s.file, Some(s.id), s.line, h, d + 1), d + 1)
                 {
                     let v = self.field_of(b, name, seen, d + 1);
                     if !matches!(v, Val::Ty(Ty::Unknown)) {
@@ -1236,7 +1443,13 @@ impl Ctx {
         match self.go_global(fi, qual, name) {
             Err(()) => Val::Ty(Ty::External(None)),
             Ok(Some(s)) => match self.syms[s].ret.clone() {
-                Some(r) => self.eval_val(self.syms[s].file, Some(self.syms[s].id), &r, d),
+                Some(r) => self.eval_val(
+                    self.syms[s].file,
+                    Some(self.syms[s].id),
+                    self.syms[s].line,
+                    &r,
+                    d,
+                ),
                 None => Val::Ty(Ty::Unknown),
             },
             Ok(None) => Val::Ty(Ty::Unknown),
@@ -1245,36 +1458,27 @@ impl Ctx {
 
     fn eval_call(&self, fi: usize, from: Option<i64>, callee: &str, d: u8) -> Val {
         let lang = self.files[fi].lang;
-        let (qual, name) = if let Some((q, n)) = callee.rsplit_once("::") {
-            (Some(q), n)
-        } else if let Some((q, n)) = callee.rsplit_once('.') {
-            (Some(q), n)
-        } else {
-            (None, callee)
+        let (callee, shape) = match callee.rsplit_once('#') {
+            Some((c, sh)) => (c, sh.chars().next()),
+            None => (callee, None),
         };
-        let fake = E {
-            id: 0,
-            file: fi,
-            from_symbol: from,
-            from_name: None,
-            name: name.to_string(),
-            qualifier: qual.map(str::to_string),
-            kind: EdgeKind::Call,
-            extra: None,
-            old_to: None,
-            old_conf: None,
-            old_to_file: None,
-            hint: None,
-            dot: false,
-            line: 0,
-        };
-        if let Some((s, _)) = self.resolve_edge(&fake, &self.scopes[fi]) {
+        if lang.is_js_family() {
+            if let Some(v) = self.value_call(fi, callee, shape, d) {
+                return v;
+            }
+            if callee.matches('.').count() > 1 {
+                // `ns.value.m()` and `ns` is no namespace of ours: no guessing by name.
+                return Val::Ty(Ty::Unknown);
+            }
+        }
+        let (qual, name) = split_callee(callee);
+        if let Some((s, _)) = self.resolve_callee(fi, from, callee) {
             let sym = &self.syms[s];
             if sym.kind.is_type_like() {
                 return Val::Ty(Ty::Known(s));
             }
             return match sym.ret.clone() {
-                Some(r) => self.eval_val(sym.file, Some(sym.id), &r, d),
+                Some(r) => self.eval_val(sym.file, Some(sym.id), sym.line, &r, d),
                 None => Val::Ty(Ty::Unknown),
             };
         }
@@ -1282,7 +1486,13 @@ impl Ctx {
         if lang == Lang::Go {
             if let Ok(Some(s)) = self.go_global(fi, qual, name) {
                 if let Some(r) = self.syms[s].ret.clone().filter(|r| r.starts_with("C:")) {
-                    return self.eval_val(self.syms[s].file, Some(self.syms[s].id), &r, d);
+                    return self.eval_val(
+                        self.syms[s].file,
+                        Some(self.syms[s].id),
+                        self.syms[s].line,
+                        &r,
+                        d,
+                    );
                 }
             }
         }
@@ -1294,7 +1504,7 @@ impl Ctx {
                     Some((a, b)) => (Some(a), b),
                     None => (None, q),
                 };
-                if let Ty::Known(t) = self.find_type(fi, tq, tn, from) {
+                if let Ty::Known(t) = self.find_type(fi, tq, tn, from, 0) {
                     return Val::Ty(Ty::Known(t));
                 }
             }
@@ -1329,6 +1539,231 @@ impl Ctx {
         })
     }
 
+    /// The symbol a call of `callee` (`f`, `pkg.f`, `T::f`) from file `fi` lands on.
+    fn resolve_callee(
+        &self,
+        fi: usize,
+        from: Option<i64>,
+        callee: &str,
+    ) -> Option<(usize, Confidence)> {
+        let (qual, name) = split_callee(callee);
+        let fake = E {
+            id: 0,
+            file: fi,
+            from_symbol: from,
+            from_name: None,
+            name: name.to_string(),
+            qualifier: qual.map(str::to_string),
+            kind: EdgeKind::Call,
+            extra: None,
+            old_to: None,
+            old_conf: None,
+            old_to_file: None,
+            hint: None,
+            dot: false,
+            line: 0,
+        };
+        self.resolve_edge(&fake, &self.scopes[fi])
+    }
+
+    /// (file, first line, last line) of the object literal a JS/TS hint stands for: `O:a-b`
+    /// itself, or `C:f` where `f`'s return hint is one.
+    fn object_at(&self, fi: usize, from: Option<i64>, hint: &str) -> Option<(usize, u32, u32)> {
+        let parse = |h: &str| -> Option<(u32, u32)> {
+            let (a, b) = h.strip_prefix("O:")?.split_once('-')?;
+            Some((a.parse().ok()?, b.parse().ok()?))
+        };
+        if let Some((a, b)) = parse(hint) {
+            return Some((fi, a, b));
+        }
+        let callee = hint.strip_prefix("C:")?;
+        if !self.files[fi].lang.is_js_family() {
+            return None;
+        }
+        let key = (fi, from, hint.to_string());
+        if let Some(&r) = self
+            .obj_memo
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+        {
+            return r;
+        }
+        let callee = callee.rsplit_once('#').map_or(callee, |(c, _)| c);
+        let r = self
+            .resolve_callee(fi, from, callee)
+            .filter(|&(_, c)| c != Confidence::NameOnly)
+            .and_then(|(s, _)| {
+                let sym = &self.syms[s];
+                let (a, b) = parse(sym.ret.as_deref()?)?;
+                Some((sym.file, a, b))
+            });
+        self.obj_memo
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, r);
+        r
+    }
+
+    /// JS/TS hint `G:<guard>@..`: the type a type guard asserts (`(x: any) => x is Foo`,
+    /// `function isFoo(x): x is Foo`), `guard` being a function or a function-typed value
+    /// of the repo. `None` when it is no type guard.
+    fn guard_type(&self, fi: usize, from: Option<i64>, guard: &str) -> Option<Val> {
+        let s = match self.value_sym(fi, guard) {
+            Some(v) => v,
+            None => match self.resolve_callee(fi, from, guard)? {
+                (s, c) if c != Confidence::NameOnly && self.syms[s].kind.is_callable() => s,
+                _ => return None,
+            },
+        };
+        let sym = &self.syms[s];
+        let text = sym.ret.as_deref()?.strip_prefix("T:")?;
+        let ret = fn_type_parts(text).map_or_else(|| text.to_string(), |(_, r)| r);
+        let (_, ty) = ret.split_once(" is ")?;
+        let ty = ty.trim();
+        if ty.is_empty() {
+            return None;
+        }
+        Some(Val::Text {
+            fi: sym.file,
+            from: Some(sym.id),
+            line: sym.line,
+            text: ty.to_string(),
+            unwrap: false,
+            awaited: false,
+            elem: false,
+        })
+    }
+
+    /// A module-level JS/TS value's type (`const computed: Factory = ..`).
+    fn value_val(&self, fi: usize, path: &str, d: u8) -> Option<Val> {
+        let v = self.value_sym(fi, path)?;
+        let s = &self.syms[v];
+        Some(match s.ret.clone() {
+            Some(r) => self.eval_val(s.file, Some(s.id), s.line, &r, d),
+            None => Val::Ty(Ty::Unknown),
+        })
+    }
+
+    /// `f(..)` / `ns.f(..)` where `f` is a module-level value (a factory object with call
+    /// signatures, a function-typed const), or `v.m(..)` / `ns.v.m(..)`: member `m` of such
+    /// a value (a method, or a function-typed / callable field). `None`: no value there.
+    fn value_call(&self, fi: usize, callee: &str, shape: Option<char>, d: u8) -> Option<Val> {
+        if let Some(v) = self.value_val(fi, callee, d) {
+            return Some(self.call_val(&v, shape, d));
+        }
+        let (q, m) = callee.rsplit_once('.')?;
+        let v = self.value_val(fi, q, d)?;
+        let Ty::Known(t) = self.bind_val(&v, d) else {
+            return Some(Val::Ty(Ty::Unknown));
+        };
+        if let Some((ms, _)) = self.method_on(t, m, &mut HashSet::new(), d) {
+            let sym = &self.syms[ms];
+            return Some(match sym.ret.clone() {
+                Some(r) => self.eval_val(sym.file, Some(sym.id), sym.line, &r, d),
+                None => Val::Ty(Ty::Unknown),
+            });
+        }
+        let f = self.field_of(t, m, &mut HashSet::new(), d);
+        Some(match f {
+            Val::Ty(Ty::Unknown) => f,
+            f => self.call_val(&f, shape, d),
+        })
+    }
+
+    /// The result of calling a value of type `v`: a function type's return type, or the
+    /// call signatures of an interface / type alias (see [`Self::call_sigs`]).
+    fn call_val(&self, v: &Val, shape: Option<char>, d: u8) -> Val {
+        if d > MAX_DEPTH {
+            return Val::Ty(Ty::Unknown);
+        }
+        if let Val::Text {
+            fi,
+            from,
+            line,
+            text,
+            unwrap: false,
+            awaited: false,
+            elem: false,
+        } = v
+        {
+            if let Some((sh, ret)) = fn_type_parts(text) {
+                if !shape_ok(shape, sh) {
+                    return Val::Ty(Ty::Unknown);
+                }
+                return Val::Text {
+                    fi: *fi,
+                    from: *from,
+                    line: *line,
+                    text: ret,
+                    unwrap: false,
+                    awaited: false,
+                    elem: false,
+                };
+            }
+        }
+        match self.bind_val(v, d) {
+            Ty::Known(t) => self
+                .call_sigs(t, shape, &mut HashSet::new(), d + 1)
+                .unwrap_or(Val::Ty(Ty::Unknown)),
+            _ => Val::Ty(Ty::Unknown),
+        }
+    }
+
+    /// Calling a value of type `t` through its call signatures (fields `()<shape>`, see
+    /// `infer::param_shape`): those whose first parameter fits the first argument's
+    /// shape; the type's own before its alias target's and its bases' (TypeScript tries
+    /// derived overloads first). A result only when every fitting signature agrees on
+    /// the type; `None` when `t` has no fitting signature.
+    fn call_sigs(
+        &self,
+        t: usize,
+        shape: Option<char>,
+        seen: &mut HashSet<usize>,
+        d: u8,
+    ) -> Option<Val> {
+        if !seen.insert(t) || d > MAX_DEPTH {
+            return None;
+        }
+        let s = &self.syms[t];
+        let fits: Vec<Val> = s
+            .fields
+            .iter()
+            .filter_map(|(k, h)| {
+                let sh = k.strip_prefix("()")?.chars().next()?;
+                shape_ok(shape, sh).then(|| self.eval_val(s.file, Some(s.id), s.line, h, d + 1))
+            })
+            .collect();
+        if !fits.is_empty() {
+            return Some(self.agree(fits, d));
+        }
+        if let Some(target) = self.alias_target(t) {
+            if let Some(v) = self.call_sigs(target, shape, seen, d + 1) {
+                return Some(v);
+            }
+        }
+        let mut found: Vec<Val> = Vec::new();
+        for base in self.bases.get(&s.name).into_iter().flatten() {
+            if let Ty::Known(b) = self.find_type(s.file, None, base, Some(s.id), s.line) {
+                found.extend(self.call_sigs(b, shape, seen, d + 1));
+            }
+        }
+        (!found.is_empty()).then(|| self.agree(found, d))
+    }
+
+    /// The first of `vals` when all bind to one type, else unknown.
+    fn agree(&self, vals: Vec<Val>, d: u8) -> Val {
+        let mut it = vals.into_iter();
+        let Some(first) = it.next() else {
+            return Val::Ty(Ty::Unknown);
+        };
+        let ty = self.bind_val(&first, d);
+        if ty == Ty::Unknown || it.any(|v| self.bind_val(&v, d) != ty) {
+            return Val::Ty(Ty::Unknown);
+        }
+        first
+    }
+
     fn any_type_named(&self, name: &str) -> bool {
         self.by_name
             .get(name)
@@ -1341,6 +1776,7 @@ impl Ctx {
             Val::Text {
                 fi,
                 from,
+                line,
                 text,
                 unwrap,
                 awaited,
@@ -1370,13 +1806,16 @@ impl Ctx {
                 match normalize(lang, text, *unwrap, *awaited, 0) {
                     Norm::External => Ty::External(None),
                     Norm::Unknown => Ty::Unknown,
-                    Norm::SelfType => match self.self_type(*from).0 {
-                        Some(n) => self.find_type(*fi, None, &n, *from),
-                        None => Ty::Unknown,
+                    Norm::SelfType => match self.self_sym(*from) {
+                        Some(t) => Ty::Known(t),
+                        None => match self.self_type(*from).0 {
+                            Some(n) => self.find_type(*fi, None, &n, *from, *line),
+                            None => Ty::Unknown,
+                        },
                     },
                     Norm::Name(q, n) => {
                         let _ = d;
-                        self.find_type(*fi, q.as_deref(), &n, *from)
+                        self.find_type(*fi, q.as_deref(), &n, *from, *line)
                     }
                 }
             }
@@ -1414,7 +1853,17 @@ impl Ctx {
     }
 
     /// Bind a type name as seen from file `fi`.
-    fn find_type(&self, fi: usize, qual: Option<&str>, name: &str, from: Option<i64>) -> Ty {
+    /// `line`: where the name is seen from (0 = unknown); in JS/TS several same-file types
+    /// of that name (sibling test callbacks each declaring `class Store`) resolve to the
+    /// closest one declared at or before it (classes are block-scoped, declared before use).
+    fn find_type(
+        &self,
+        fi: usize,
+        qual: Option<&str>,
+        name: &str,
+        from: Option<i64>,
+        line: u32,
+    ) -> Ty {
         let f = &self.files[fi];
         let lang = f.lang;
         let scope = &self.scopes[fi];
@@ -1456,6 +1905,15 @@ impl Ctx {
         }
         // Same file.
         let local = self.type_syms_in(&[fi], name);
+        if local.len() > 1 && line > 0 && lang.is_js_family() {
+            if let Some(&s) = local
+                .iter()
+                .filter(|&&s| self.syms[s].line <= line)
+                .max_by_key(|&&s| (self.syms[s].line, std::cmp::Reverse(s)))
+            {
+                return Ty::Known(s);
+            }
+        }
         if !local.is_empty() {
             return self.pick_type(fi, &local);
         }
@@ -1583,9 +2041,10 @@ impl Ctx {
         // Go: promoted through embedded fields.
         for (k, h) in &ts.fields {
             if k.starts_with('~') {
-                if let Ty::Known(b) =
-                    self.bind_val(&self.eval_val(ts.file, Some(ts.id), h, d + 1), d + 1)
-                {
+                if let Ty::Known(b) = self.bind_val(
+                    &self.eval_val(ts.file, Some(ts.id), ts.line, h, d + 1),
+                    d + 1,
+                ) {
                     if let Some((m, _)) = self.method_on(b, name, seen, d + 1) {
                         return Some((m, true));
                     }
@@ -1594,7 +2053,8 @@ impl Ctx {
         }
         // Traits / base classes / implemented interfaces.
         for (qual, base) in self.base_quals.get(&ts.name).into_iter().flatten() {
-            let Ty::Known(b) = self.find_type(ts.file, qual.as_deref(), base, Some(ts.id)) else {
+            let Ty::Known(b) = self.find_type(ts.file, qual.as_deref(), base, Some(ts.id), ts.line)
+            else {
                 continue;
             };
             if let Some((m, _)) = self.method_on(b, name, seen, d + 1) {
@@ -1702,7 +2162,7 @@ impl Ctx {
             if !k.starts_with('~') {
                 continue;
             }
-            match self.bind_val(&self.eval_val(s.file, Some(s.id), h, 0), 0) {
+            match self.bind_val(&self.eval_val(s.file, Some(s.id), s.line, h, 0), 0) {
                 Ty::Known(j) if self.syms[j].kind == SymKind::Interface => {
                     set.extend(self.iface_methods(j, methods, seen)?);
                 }
@@ -1734,7 +2194,9 @@ impl Ctx {
         }
         for (k, h) in &s.fields {
             if k.starts_with('~') {
-                if let Ty::Known(b) = self.bind_val(&self.eval_val(s.file, Some(s.id), h, 0), 0) {
+                if let Ty::Known(b) =
+                    self.bind_val(&self.eval_val(s.file, Some(s.id), s.line, h, 0), 0)
+                {
                     self.type_methods(b, methods, out, seen);
                 } else {
                     // Embedding a stdlib interface promotes its methods.
@@ -1762,6 +2224,7 @@ impl Ctx {
         let v = Val::Text {
             fi: s.file,
             from: Some(s.id),
+            line: s.line,
             text: rhs.to_string(),
             unwrap: false,
             awaited: false,
@@ -1855,7 +2318,8 @@ impl Ctx {
                 }
                 let c_sym = &self.syms[c];
                 for (qual, base) in self.base_quals.get(&c_sym.name).into_iter().flatten() {
-                    let Ty::Known(b) = self.find_type(c_sym.file, qual.as_deref(), base, None)
+                    let Ty::Known(b) =
+                        self.find_type(c_sym.file, qual.as_deref(), base, None, c_sym.line)
                     else {
                         continue;
                     };
@@ -1871,6 +2335,7 @@ impl Ctx {
                         return Some(Val::Text {
                             fi: self.syms[bm].file,
                             from: Some(self.syms[bm].id),
+                            line: self.syms[bm].line,
                             text,
                             unwrap: false,
                             awaited: false,
@@ -1888,7 +2353,7 @@ impl Ctx {
 
     /// `super().m()` (Python): `m` found through the bases of the class enclosing the
     /// call, never the class itself.
-    pub(super) fn resolve_super(&self, e: &E) -> Option<(usize, Confidence)> {
+    pub(super) fn resolve_py_super(&self, e: &E) -> Option<(usize, Confidence)> {
         let mut cur = e.from_symbol.and_then(|id| self.by_id.get(&id).copied());
         let class = loop {
             let i = cur?;
@@ -1901,7 +2366,9 @@ impl Ctx {
         let cs = &self.syms[class];
         let mut seen = HashSet::new();
         for (qual, base) in self.base_quals.get(&cs.name).into_iter().flatten() {
-            if let Ty::Known(b) = self.find_type(cs.file, qual.as_deref(), base, Some(cs.id)) {
+            if let Ty::Known(b) =
+                self.find_type(cs.file, qual.as_deref(), base, Some(cs.id), cs.line)
+            {
                 if let Some((m, _)) = self.method_on(b, &e.name, &mut seen, 0) {
                     return Some((m, Confidence::Exact));
                 }
@@ -1949,6 +2416,87 @@ impl Ctx {
         }
     }
 
+    /// Types of the bases of the type enclosing `from` (declaration order: superclass
+    /// before interfaces, Python MRO order), each bound where the type is declared.
+    fn base_types(&self, fi: usize, from: Option<i64>, line: u32) -> Vec<Ty> {
+        let t = match self.self_sym(from) {
+            Some(t) => t,
+            None => match self.self_type(from).0 {
+                Some(n) => match self.find_type(fi, None, &n, from, line) {
+                    Ty::Known(t) => t,
+                    _ => return Vec::new(),
+                },
+                None => return Vec::new(),
+            },
+        };
+        let ts = &self.syms[t];
+        let mut seen: HashSet<&str> = HashSet::new();
+        self.bases
+            .get(&ts.name)
+            .into_iter()
+            .flatten()
+            .filter(|b| seen.insert(b.as_str()) && *b != &ts.name)
+            .map(|b| self.find_type(ts.file, None, b, Some(ts.id), ts.line))
+            .collect()
+    }
+
+    /// `super.m()` (hint `B`): `m` looked up on the bases of the enclosing type, never on
+    /// the type itself. The first base (in declaration order) that has it wins; exact when
+    /// that base declares it, likely when inherited further up. Every base outside the
+    /// repo: the call does not land in the repo.
+    fn resolve_super(&self, e: &E) -> Typed {
+        let bases = self.base_types(e.file, e.from_symbol, e.line);
+        let mut all_external = !bases.is_empty();
+        for b in bases {
+            match b {
+                Ty::Known(t) => {
+                    all_external = false;
+                    if let Some((m, via)) = self.method_on(t, &e.name, &mut HashSet::new(), 0) {
+                        let c = if via {
+                            Confidence::Likely
+                        } else {
+                            Confidence::Exact
+                        };
+                        return Typed::Resolved(Some((m, c)));
+                    }
+                }
+                Ty::External(_) => {}
+                Ty::Unknown => all_external = false,
+            }
+        }
+        if all_external {
+            Typed::Resolved(None)
+        } else {
+            Typed::NoOpinion
+        }
+    }
+
+    /// JS/TS `v.m()` / `ns.v.m()` with no receiver hint, where `v` is a module-level value
+    /// of the repo (`computed.make_(..)`, `mobx.observable.box(..)`): `m` on its type.
+    pub(super) fn resolve_value_member(&self, e: &E, q: &str) -> Typed {
+        if !matches!(e.kind, EdgeKind::Call | EdgeKind::Value) {
+            return Typed::NoOpinion;
+        }
+        let Some(v) = self.value_val(e.file, q, 0) else {
+            return Typed::NoOpinion;
+        };
+        match self.bind_val(&v, 0) {
+            Ty::Known(t) => match self.method_on(t, &e.name, &mut HashSet::new(), 0) {
+                Some((m, via_base)) => Typed::Resolved(Some((
+                    m,
+                    if via_base {
+                        Confidence::Likely
+                    } else {
+                        Confidence::Exact
+                    },
+                ))),
+                None => Typed::NoOpinion,
+            },
+            Ty::External(_) => Typed::Resolved(None),
+            Ty::Unknown => Typed::NoOpinion,
+        }
+    }
+
     /// Resolve a receiver call through its type hint.
     pub(super) fn resolve_typed(&self, e: &E) -> Typed {
         let Some(hint) = e.hint.as_deref() else {
@@ -1957,7 +2505,21 @@ impl Ctx {
         if hint == "L" || !matches!(e.kind, EdgeKind::Call | EdgeKind::Value) {
             return Typed::NoOpinion;
         }
-        match self.eval_hint(e.file, e.from_symbol, hint) {
+        if hint == "B" {
+            return self.resolve_super(e);
+        }
+        if let Some((f, a, b)) = self.object_at(e.file, e.from_symbol, hint) {
+            let m = self.by_file[f]
+                .iter()
+                .copied()
+                .filter(|&s| {
+                    let sym = &self.syms[s];
+                    sym.kind == SymKind::Method && sym.name == e.name && (a..=b).contains(&sym.line)
+                })
+                .min_by_key(|&s| (self.syms[s].line, s));
+            return Typed::Resolved(m.map(|m| (m, Confidence::Exact)));
+        }
+        match self.eval_hint(e.file, e.from_symbol, e.line, hint) {
             Ty::Unknown => Typed::NoOpinion,
             Ty::External(Some(id)) => Typed::Resolved(
                 self.extension_method(e.file, id, &e.name)
@@ -2042,6 +2604,27 @@ mod tests {
             go_shape("func (x T) Get() interface{} { return nil }", "Get"),
             Some((0, 1))
         );
+    }
+
+    #[test]
+    fn ts_function_types() {
+        assert_eq!(
+            fn_type_parts("<T=any>(initialValues?:T[],options?:O)=>IObservableArray<T>"),
+            Some(('n', "IObservableArray<T>".to_string()))
+        );
+        assert_eq!(
+            fn_type_parts("<T>(fn:()=>T,o?:O)=>Box<T>"),
+            Some(('f', "Box<T>".to_string()))
+        );
+        assert_eq!(fn_type_parts("<T>(v:T)=>T"), Some(('g', "T".to_string())));
+        assert_eq!(fn_type_parts("()=>void"), Some(('0', "void".to_string())));
+        assert_eq!(fn_type_parts("Map<K,V>"), None);
+        assert!(shape_ok(Some('f'), 'g') && !shape_ok(Some('f'), 'n'));
+        assert!(shape_ok(Some('o'), 'n') && !shape_ok(Some('o'), 'f'));
+        assert_eq!(split_top("a:()=>T,b:X", ','), vec!["a:()=>T", "b:X"]);
+        assert_eq!(map_value("Map<string,Box<T>>|undefined"), Some("Box<T>"));
+        assert_eq!(map_value("WeakMap<object,()=>Foo>"), Some("()=>Foo"));
+        assert_eq!(map_value("Set<X>"), None);
     }
 
     #[test]

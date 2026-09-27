@@ -79,6 +79,88 @@ fn ts_workspace_packages_and_typed_receivers() {
 }
 
 #[test]
+fn ts_factories_generics_and_super() {
+    let ix = index_fixture("ts_infer");
+    let f = "packages/app/src/factory.ts";
+    // A call signature whose return type spans lines (`Map<` .. `>`) before the next
+    // signature: the rest of the file must still parse.
+    assert_edge(&ix, f, 20, "run", "factory.Later.run", "exact");
+    // Generic `implements Named<string>` / `extends Box<T>`.
+    assert_eq!(impls(&ix, "Named"), vec!["generic.StrBox".to_string()]);
+    assert_eq!(
+        edges_to(&ix, "inherit", "Box"),
+        vec!["generic.Named".to_string()]
+    );
+    // Sibling test callbacks each declaring `class Store`: the one declared before the
+    // call. `super.run()` is the base's method, `Parent.prototype.run()` Parent's.
+    let b = "packages/app/src/blocks.ts";
+    assert_eq!(target_line(&ix, b, 8, "add"), Some(5));
+    assert_eq!(target_line(&ix, b, 16, "add"), Some(13));
+    assert_edge(&ix, b, 25, "run", "blocks.Parent.run", "exact");
+    assert_edge(&ix, b, 30, "run", "blocks.Parent.run", "exact");
+    // Factory values: `computed(() => ..)` picks the call signature taking a function,
+    // `observable.box(1)` calls the `box` field's signature, `f.observable.list(..)` a
+    // function-typed field through a namespace, `computed.describe()` a method of the
+    // value's type.
+    let u = "packages/app/src/usefactories.ts";
+    assert_edge(
+        &ix,
+        u,
+        6,
+        "recompute",
+        "factories.Computed.recompute",
+        "exact",
+    );
+    assert_edge(&ix, u, 8, "get", "factories.Value.get", "exact");
+    assert_edge(&ix, u, 10, "get", "factories.Value.get", "exact");
+    assert_edge(
+        &ix,
+        u,
+        11,
+        "describe",
+        "factories.ComputedFactory.describe",
+        "exact",
+    );
+    // `Map<K, V>.get(k)` is a `V`.
+    let m = "packages/app/src/maps.ts";
+    assert_edge(&ix, m, 7, "get", "factories.Value.get", "exact");
+    // Narrowing: a type-guard function, a type-guard-typed value (also inside a
+    // callback), `instanceof`.
+    let g = "packages/app/src/guards.ts";
+    assert_edge(&ix, g, 12, "get", "factories.Value.get", "exact");
+    assert_edge(
+        &ix,
+        g,
+        15,
+        "recompute",
+        "factories.Computed.recompute",
+        "exact",
+    );
+    assert_edge(&ix, g, 18, "read", "maps.Holder.read", "exact");
+    // Methods of a returned object literal and of inline object parameter types; a
+    // union with a primitive.
+    let o = "packages/app/src/objects.ts";
+    assert_edge(&ix, o, 14, "update", "objects.makeHasher.update", "exact");
+    assert_edge(&ix, o, 14, "entries", "objects.useHasher.entries", "exact");
+    assert_edge(&ix, o, 16, "digest", "objects.makeHasher.digest", "exact");
+    assert_edge(&ix, o, 20, "get", "factories.Value.get", "exact");
+}
+
+/// Start line of the target of the edge `name` at `file:line`.
+fn target_line(ix: &common::Indexed, file: &str, line: u32, name: &str) -> Option<u32> {
+    ix.store
+        .conn()
+        .query_row(
+            "SELECT ts.start_line FROM edges e JOIN files f ON f.id = e.file_id
+             JOIN symbols ts ON ts.id = e.to_symbol
+             WHERE f.path = ?1 AND e.line = ?2 AND e.name = ?3 LIMIT 1",
+            rusqlite::params![file, line, name],
+            |r| r.get(0),
+        )
+        .ok()
+}
+
+#[test]
 fn rust_loop_vars_callbacks_reexports_and_test_modules() {
     let ix = index_fixture("rust_infer");
     let w = "src/walk.rs";
@@ -130,16 +212,21 @@ fn rust_path_attribute_modules() {
 }
 
 fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
+    edges_to(ix, "impl", name)
+}
+
+/// Qualified names of the symbols with a `kind` edge to a symbol named `name`.
+fn edges_to(ix: &common::Indexed, kind: &str, name: &str) -> Vec<String> {
     let mut st = ix
         .store
         .conn()
         .prepare(
             "SELECT f.qname FROM edges e JOIN symbols f ON f.id = e.from_symbol
              JOIN symbols t ON t.id = e.to_symbol
-             WHERE e.kind = 'impl' AND t.name = ?1 ORDER BY f.qname",
+             WHERE e.kind = ?1 AND t.name = ?2 ORDER BY f.qname",
         )
         .unwrap();
-    st.query_map([name], |r| r.get(0))
+    st.query_map([kind, name], |r| r.get(0))
         .unwrap()
         .map(Result::unwrap)
         .collect()

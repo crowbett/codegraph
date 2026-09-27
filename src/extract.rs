@@ -171,6 +171,8 @@ pub struct FileFacts {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Role {
     Def(SymKind),
+    /// JS/TS module-level `const`/`let`/`var` holding a non-literal, non-function value.
+    ValueDef,
     Ref(EdgeKind),
     Import,
     Export,
@@ -183,6 +185,9 @@ struct DefCand<'t> {
     name: Node<'t>,
     scope: Option<Node<'t>>,
     receiver: Option<Node<'t>>,
+    /// A [`Role::ValueDef`]: `node` is the name (nothing nests in it); kept only when
+    /// exported.
+    value: bool,
 }
 
 struct RefCand<'t> {
@@ -311,6 +316,7 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
                 "import" => role = Some((Role::Import, n)),
                 "export" => role = Some((Role::Export, n)),
                 "package" => role = Some((Role::Package, n)),
+                "definition.value" => role = Some((Role::ValueDef, n)),
                 c => {
                     if let Some(k) = c.strip_prefix("definition.") {
                         role = def_kind(k).map(|k| (Role::Def(k), n));
@@ -347,6 +353,52 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
                     name,
                     scope,
                     receiver,
+                    value: false,
+                });
+            }
+            Role::ValueDef => {
+                // `node` is the variable_declarator. Functions, classes and literals have
+                // their own patterns.
+                let Some(name) = name else { continue };
+                let v = node.child_by_field_name("value");
+                let skip = v.is_some_and(|v| {
+                    matches!(
+                        v.kind(),
+                        "arrow_function"
+                            | "function_expression"
+                            | "function"
+                            | "generator_function"
+                            | "class"
+                            | "string"
+                            | "number"
+                            | "template_string"
+                            | "object"
+                            | "array"
+                            | "true"
+                            | "false"
+                            | "null"
+                            | "undefined"
+                    )
+                });
+                if skip || def_seen.contains(&name.id()) {
+                    continue;
+                }
+                let is_const = nav
+                    .parent(node)
+                    .and_then(|d| d.child(0))
+                    .is_some_and(|k| k.kind() == "const");
+                def_seen.insert(name.id());
+                defs.push(DefCand {
+                    kind: if is_const {
+                        SymKind::Const
+                    } else {
+                        SymKind::Var
+                    },
+                    node: name,
+                    name,
+                    scope: None,
+                    receiver: None,
+                    value: true,
                 });
             }
             Role::Ref(kind) => {
@@ -372,6 +424,18 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
         }
     }
     let match_limited = cursor.did_exceed_match_limit() || cancelled.get();
+    if defs.iter().any(|d| d.value) {
+        let named = export_clause_names(src, &export_nodes);
+        defs.retain(|d| {
+            !d.value
+                || named.contains(text(d.name, src))
+                || nav
+                    .parent(d.node)
+                    .and_then(|decl| nav.parent(decl))
+                    .and_then(|l| nav.parent(l))
+                    .is_some_and(|x| x.kind() == "export_statement")
+        });
+    }
 
     let mut facts = FileFacts {
         package,
@@ -397,12 +461,22 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
         };
         if matches!(sym.kind, SymKind::Function | SymKind::Method) {
             sym.ret = infer.ret_of(node).or_else(|| infer.py_returned(node));
+        } else if lang.is_js_family() && matches!(sym.kind, SymKind::Const | SymKind::Var) {
+            // Module-level value: its declared type, else its initializer's.
+            let decl = if node.kind() == "variable_declarator" {
+                Some(node)
+            } else {
+                nav.parent(node)
+                    .filter(|p| p.kind() == "variable_declarator")
+            };
+            sym.ret = decl.and_then(|d| infer.value_type(d));
         } else if matches!(sym.kind, SymKind::Var | SymKind::Const) {
             sym.ret = infer.var_ret_of(node, &sym.name);
         } else if matches!(
             sym.kind,
             SymKind::Struct | SymKind::Class | SymKind::Interface
-        ) {
+        ) || (lang.is_js_family() && sym.kind == SymKind::Type)
+        {
             sym.fields = infer.fields_of(node);
         }
     }
@@ -1255,7 +1329,11 @@ fn build_symbols<'t>(
                 continue;
             }
         }
-        if lang.is_js_family() && kind == SymKind::Const && !name.chars().any(char::is_uppercase) {
+        if lang.is_js_family()
+            && kind == SymKind::Const
+            && !d.value
+            && !name.chars().any(char::is_uppercase)
+        {
             // Plain lowercase top-level values are too noisy; keep CONSTS and exported ones.
             let exported_decl = nav
                 .parent(d.node)
@@ -1298,6 +1376,38 @@ fn build_symbols<'t>(
         let _ = i;
         stack.push(facts.symbols.len() - 1);
     }
+}
+
+/// Names exported by `export { a, b as c }` / `export default a` (JS/TS).
+fn export_clause_names<'s>(
+    src: &'s [u8],
+    exports: &[Node<'_>],
+) -> std::collections::HashSet<&'s str> {
+    let mut out = std::collections::HashSet::new();
+    for &ex in exports {
+        if ex.child_by_field_name("source").is_some() {
+            continue;
+        }
+        if let Some(v) = ex
+            .child_by_field_name("value")
+            .filter(|v| v.kind() == "identifier")
+        {
+            out.insert(text(v, src));
+        }
+        let mut c = ex.walk();
+        for clause in ex.named_children(&mut c) {
+            if clause.kind() != "export_clause" {
+                continue;
+            }
+            let mut c2 = clause.walk();
+            for spec in clause.named_children(&mut c2) {
+                if let Some(n) = spec.child_by_field_name("name") {
+                    out.insert(text(n, src));
+                }
+            }
+        }
+    }
+    out
 }
 
 fn apply_exports(
