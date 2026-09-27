@@ -44,3 +44,5 @@ pub fn turbofish() {
     assert!(r.name().is_empty() && r.cast::<u8>() == 0);
 }
 pub mod ext;
+pub mod io_util;
+pub mod uses;

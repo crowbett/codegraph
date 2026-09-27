@@ -447,7 +447,11 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
         let name = text(r.name, src).to_string();
         if name.is_empty()
             || name == "_"
-            || (r.qualifier.is_none() && is_builtin(lang, r.kind, &name))
+            || (r.qualifier.is_none()
+                && is_builtin(lang, r.kind, &name)
+                && (lang != Lang::Rust
+                    || r.kind != EdgeKind::Call
+                    || rust_builtin_use(&nav, r.name, &name)))
         {
             continue;
         }
@@ -593,6 +597,16 @@ fn in_attribute_or_macro_def<'t>(
         memo.insert(id, found);
     }
     found
+}
+
+/// Whether a Rust reference named like a builtin really is one: the std prelude
+/// variants (`Ok`, `Some`, ..) always, the std macro names only when invoked as a macro
+/// (`write!(..)`). A plain call `write(&p, ..)` is a user function (`use common::write`).
+fn rust_builtin_use<'t>(nav: &Nav<'t>, name: Node<'t>, text: &str) -> bool {
+    matches!(text, "Ok" | "Err" | "Some" | "None")
+        || nav
+            .parent(name)
+            .is_some_and(|p| p.kind() == "macro_invocation")
 }
 
 /// Language builtins that can never resolve inside a repo; dropped at extraction to

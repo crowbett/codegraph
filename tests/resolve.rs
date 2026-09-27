@@ -129,6 +129,15 @@ fn rust_path_attribute_modules() {
     assert_eq!(edge(&ix.store, "tests/lex.rs", 14, "stub"), None);
 }
 
+#[test]
+fn rust_std_macro_names_as_functions() {
+    let ix = index_fixture("rust_infer");
+    // `write("p", ..)` with `use crate::io_util::write` is a call, not the std macro...
+    assert_edge(&ix, "src/uses.rs", 7, "write", "io_util::write", "exact");
+    // ...while `write!(..)` stays the macro.
+    assert_eq!(edge(&ix.store, "src/uses.rs", 6, "write"), None);
+}
+
 fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
     let mut st = ix
         .store
