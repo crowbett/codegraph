@@ -828,7 +828,13 @@ impl Ctx {
             return self.field_of(target, name, seen, d + 1);
         }
         let s = &self.syms[t];
-        if let Some((_, h)) = s.fields.iter().find(|(k, _)| k == name) {
+        // A named field, else a Go embedded field accessed by its type name
+        // (`be.HTTPError` for an embedded `*HTTPError`, stored as `~HTTPError`).
+        if let Some((_, h)) = s.fields.iter().find(|(k, _)| k == name).or_else(|| {
+            s.fields
+                .iter()
+                .find(|(k, _)| k.strip_prefix('~') == Some(name))
+        }) {
             return self.eval_val(s.file, Some(s.id), h, d + 1);
         }
         // Go embedded fields promote their fields.

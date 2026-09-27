@@ -577,7 +577,13 @@ impl<'a> Infer<'a> {
                         }
                     }
                 }
-                if let Some(ps) = f.child_by_field_name("parameters") {
+                // Parameters, then named results (`func f() (g *Group, err error)`).
+                let lists = [
+                    f.child_by_field_name("parameters"),
+                    f.child_by_field_name("result")
+                        .filter(|r| r.kind() == "parameter_list"),
+                ];
+                for ps in lists.into_iter().flatten() {
                     let mut c = ps.walk();
                     for p in ps.named_children(&mut c) {
                         let ty = p

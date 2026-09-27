@@ -148,10 +148,16 @@ fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
 #[test]
 fn go_implicit_interfaces_and_typed_receivers() {
     let ix = index_fixture("go_infer");
-    // Store has Get with the right shape; Cache gets it by embedding; Wrong's Get differs.
-    assert_eq!(impls(&ix, "Getter"), ["store.Cache", "store.Store"]);
+    // Store has Get with the right shape; Cache and api.wrapped get it by embedding; Wrong's Get differs.
+    assert_eq!(
+        impls(&ix, "Getter"),
+        ["api.wrapped", "store.Cache", "store.Store"]
+    );
     // ReadGetter = io.Reader (stdlib, known) + Getter.
-    assert_eq!(impls(&ix, "ReadGetter"), ["store.Cache", "store.Store"]);
+    assert_eq!(
+        impls(&ix, "ReadGetter"),
+        ["api.wrapped", "store.Cache", "store.Store"]
+    );
     // flag.Getter, fmt.GoStringer, encoding.Text(Un)Marshaler have known method sets.
     assert_eq!(impls(&ix, "Value"), ["store.boolValue"]);
     let a = "api/api.go";
@@ -177,6 +183,16 @@ fn go_explicit_generic_instantiation() {
     assert_edge(&ix, g, 12, "Get", "store.Store.Get", "exact");
     // Indexing a local map of functions is not a call to a repo symbol.
     assert_eq!(edge(&ix.store, g, 14, "fns"), None);
+}
+
+#[test]
+fn go_embedded_field_access_and_named_results() {
+    let ix = index_fixture("go_infer");
+    let f = "api/embed.go";
+    // `w.Store` names the embedded `*store.Store` field.
+    assert_edge(&ix, f, 11, "Get", "store.Store.Get", "exact");
+    // A named result is a typed local.
+    assert_edge(&ix, f, 16, "Get", "store.Store.Get", "exact");
 }
 
 #[test]
