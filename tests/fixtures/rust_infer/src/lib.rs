@@ -44,3 +44,22 @@ pub fn turbofish() {
     assert!(r.name().is_empty() && r.cast::<u8>() == 0);
 }
 pub mod ext;
+pub mod io_util;
+pub mod uses;
+pub mod value;
+pub mod buf;
+pub mod sysx;
+pub mod walker;
+pub mod scan_use;
+pub mod overload;
+pub mod slices;
+pub mod gen;
+pub mod conv;
+pub mod pat;
+pub mod turbo;
+pub mod assoc2;
+pub mod prim;
+pub mod arr;
+pub mod tmacro;
+pub mod sup;
+pub mod selfdef;

@@ -91,6 +91,22 @@
     type: (type_identifier) @name)
   type: (_) @impl_for) @reference.impl
 
+; supertraits (`trait Float: Number + ops::Add`): methods of `Number` are callable on a
+; `T: Float`
+(trait_item
+  bounds: (trait_bounds
+    (type_identifier) @name)) @reference.inherit
+
+(trait_item
+  bounds: (trait_bounds
+    (generic_type
+      type: (type_identifier) @name))) @reference.inherit
+
+(trait_item
+  bounds: (trait_bounds
+    (scoped_type_identifier
+      name: (type_identifier) @name))) @reference.inherit
+
 ; calls inside macro arguments: token trees are not parsed as expressions, so
 ; `assert_eq!(f(x), y)`, `vec![t(1)]`, `format!("{}", id.short())` are matched on tokens.
 (token_tree
@@ -116,20 +132,25 @@
   .
   (token_tree . "(")) @reference.call
 
-; turbofish calls in macro arguments with a one-token type: `from_str::<Value>(..)`,
-; `x.into_float::<f64>()` (longer generic arguments are not matched).
+; `Type::default()` in macro arguments (`default` is a keyword token there)
+(token_tree
+  (identifier) @qualifier
+  .
+  "::"
+  .
+  "default" @name
+  .
+  (token_tree . "(")) @reference.call
+
+; turbofish calls in macro arguments: `from_str::<Value>(..)`, `x.into_float::<f64>()`,
+; `from_str::<BTreeMap<u128, ()>>(j)`, `serde_json::from_str::<T>(..)`. The query only
+; anchors on `name :: <`; extract.rs checks the `<..>` closes and a `(..)` follows.
 (token_tree
   (identifier) @name
   .
   "::"
   .
-  "<"
-  .
-  (_)
-  .
-  ">"
-  .
-  (token_tree . "(")) @reference.call
+  "<") @reference.call
 
 (token_tree
   [(identifier) (self) (token_tree)] @qualifier
@@ -140,13 +161,18 @@
   .
   "::"
   .
-  "<"
+  "<") @reference.call
+
+(token_tree
+  (identifier) @qualifier
   .
-  (_)
+  "::"
   .
-  ">"
+  (identifier) @name
   .
-  (token_tree . "(")) @reference.call
+  "::"
+  .
+  "<") @reference.call
 
 ; functions passed as values (`.map(Self::parse)`, `spawn(worker)`)
 (arguments

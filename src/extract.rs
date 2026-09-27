@@ -101,6 +101,9 @@ pub struct RawRef {
     pub hint: Option<String>,
     /// Method-call syntax (`x.f()`), as opposed to a path (`x::f()`); Rust only.
     pub dot: bool,
+    /// Type hint of the first argument of a Rust call named like a std trait method
+    /// implemented several times (`Bytes::from(x)`), for picking the impl.
+    pub arg: Option<String>,
 }
 
 /// How an import binds a local name.
@@ -406,6 +409,27 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
                 if lang == Lang::Rust && in_attribute_or_macro_def(&nav, name, &mut macro_memo) {
                     continue;
                 }
+                if lang == Lang::Rust && !token_turbofish_ok(&nav, name) {
+                    continue;
+                }
+                // `Kp` in a macro's `Kp::default()` is a path segment, not a call.
+                let kind = if lang == Lang::Rust
+                    && kind == EdgeKind::Call
+                    && !token_call_adjacent(&nav, name)
+                {
+                    // ...and `Id` in `from_str::<Id>(x)` a type argument.
+                    let type_like = text(name, src).starts_with(|c: char| c.is_ascii_uppercase())
+                        && nav
+                            .next_sibling(name)
+                            .is_some_and(|n| matches!(n.kind(), ">" | ">>" | ","));
+                    if type_like || nav.next_sibling(name).is_some_and(|n| n.kind() == "::") {
+                        EdgeKind::Ref
+                    } else {
+                        continue;
+                    }
+                } else {
+                    kind
+                };
                 let cand = RefCand {
                     kind,
                     name,
@@ -461,6 +485,7 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
         };
         if matches!(sym.kind, SymKind::Function | SymKind::Method) {
             sym.ret = infer.ret_of(node).or_else(|| infer.py_returned(node));
+            sym.fields = infer.generic_fields(node);
         } else if lang.is_js_family() && matches!(sym.kind, SymKind::Const | SymKind::Var) {
             // Module-level value: its declared type, else its initializer's.
             let decl = if node.kind() == "variable_declarator" {
@@ -476,6 +501,7 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
             sym.kind,
             SymKind::Struct | SymKind::Class | SymKind::Interface
         ) || (lang.is_js_family() && sym.kind == SymKind::Type)
+            || (lang == Lang::Rust && sym.kind == SymKind::Enum)
         {
             sym.fields = infer.fields_of(node);
         }
@@ -531,7 +557,10 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
             || name == "_"
             || (r.qualifier.is_none()
                 && is_builtin(lang, r.kind, &name)
-                && !shadowed.contains(&name))
+                && !shadowed.contains(&name)
+                && (lang != Lang::Rust
+                    || r.kind != EdgeKind::Call
+                    || rust_builtin_use(&nav, r.name, &name)))
         {
             continue;
         }
@@ -565,6 +594,14 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
         } else {
             (None, false)
         };
+        let arg = if lang == Lang::Rust
+            && r.kind == EdgeKind::Call
+            && crate::resolve::TRAIT_OVERLOADS.contains(&name.as_str())
+        {
+            infer.arg_hint(r.name)
+        } else {
+            None
+        };
         facts.refs.push(RawRef {
             name,
             qualifier: r.qualifier.map(|q| normalize_qualifier(text(q, src))),
@@ -575,6 +612,7 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
             from_name,
             hint,
             dot,
+            arg,
         });
     }
     facts.limited = match_limited || !infer.hints_enabled();
@@ -632,6 +670,60 @@ fn path_attribute(item: Node<'_>, src: &[u8]) -> Option<String> {
     Some(unquote(text(value, src)))
 }
 
+/// For a macro-token name followed by `::<` (the turbofish tags.scm patterns): whether
+/// the generic arguments close and a `(..)` token tree follows, i.e. it is a call
+/// (`from_str::<BTreeMap<u128, ()>>(j)`), not a type path (`Vec::<u8>::new`). Any other
+/// name passes.
+fn token_turbofish_ok<'t>(nav: &Nav<'t>, name: Node<'t>) -> bool {
+    if nav.parent(name).is_none_or(|p| p.kind() != "token_tree") {
+        return true;
+    }
+    let Some(sep) = nav.next_sibling(name).filter(|n| n.kind() == "::") else {
+        return true;
+    };
+    let Some(mut cur) = nav.next_sibling(sep).filter(|n| n.kind() == "<") else {
+        return true;
+    };
+    let mut depth = 1i32;
+    for _ in 0..256 {
+        let Some(next) = nav.next_sibling(cur) else {
+            return false;
+        };
+        cur = next;
+        depth += match cur.kind() {
+            "<" => 1,
+            "<<" => 2,
+            ">" => -1,
+            ">>" => -2,
+            _ => 0,
+        };
+        if depth <= 0 {
+            return depth == 0
+                && nav.next_sibling(cur).is_some_and(|n| {
+                    n.kind() == "token_tree" && n.start_byte() < n.end_byte() && {
+                        n.child(0).is_some_and(|c| c.kind() == "(")
+                    }
+                });
+        }
+    }
+    false
+}
+
+/// A call matched on macro tokens must have its `(..)` (or turbofish `::`) right after
+/// the name: query anchors skip anonymous tokens, so `Kp::default()` (`default` is a
+/// keyword token) would otherwise read as a call of `Kp`.
+fn token_call_adjacent<'t>(nav: &Nav<'t>, name: Node<'t>) -> bool {
+    if nav.parent(name).is_none_or(|p| p.kind() != "token_tree") {
+        return true;
+    }
+    match nav.next_sibling(name) {
+        // `f(..)`, or a nested macro `m!(..)`.
+        Some(n) if matches!(n.kind(), "token_tree" | "!") => true,
+        Some(n) if n.kind() == "::" => nav.next_sibling(n).is_some_and(|x| x.kind() == "<"),
+        _ => false,
+    }
+}
+
 /// `x` in `x.f()` (a field expression or a `.` token in a macro token tree).
 fn is_dot_receiver<'t>(nav: &Nav<'t>, q: Node<'t>) -> bool {
     match nav.parent(q) {
@@ -677,6 +769,18 @@ fn in_attribute_or_macro_def<'t>(
         memo.insert(id, found);
     }
     found
+}
+
+/// Whether a Rust reference named like a builtin really is one: the std prelude
+/// variants (`Ok`, `Some`, ..) always, the std macro names only when invoked as a macro
+/// (`write!(..)`). A plain call `write(&p, ..)` is a user function (`use common::write`).
+fn rust_builtin_use<'t>(nav: &Nav<'t>, name: Node<'t>, text: &str) -> bool {
+    matches!(text, "Ok" | "Err" | "Some" | "None")
+        || nav
+            .parent(name)
+            .is_some_and(|p| p.kind() == "macro_invocation")
+        // `format!(..)` nested in another macro's tokens.
+        || nav.next_sibling(name).is_some_and(|n| n.kind() == "!")
 }
 
 /// Language builtins that can never resolve inside a repo; dropped at extraction to
@@ -1011,13 +1115,51 @@ fn declarator_name(mut node: Node<'_>) -> Option<(Node<'_>, Option<Node<'_>>)> {
 }
 
 /// `*Store[T]` / `&mut Vec<T>` / `Foo<'a>` -> `Store` / `Vec` / `Foo`.
+/// `[u8]` / `[MaybeUninit<u8>]` (whitespace removed) for a type text starting with a
+/// Rust slice or array; `None` when the brackets do not close.
+pub(crate) fn rust_slice_name(s: &str) -> Option<String> {
+    let mut depth = 0i32;
+    for (i, c) in s.char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    let inner: String = s[..=i].chars().filter(|c| !c.is_whitespace()).collect();
+                    return Some(inner);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Rust references keep their lifetime out (`&'a mut Serializer` -> `Serializer`), and a
+/// Rust slice is its own normalized name (`&mut [u8]` -> `[u8]`, the container of the
+/// methods of `impl BufMut for &mut [u8]`).
 pub(crate) fn base_type_name(s: &str) -> String {
-    let s = s.trim();
+    let mut s = s.trim();
+    loop {
+        let before = s;
+        s = s.trim_start_matches(['*', '&', ' ']);
+        if let Some(rest) = s.strip_prefix('\'') {
+            s = rest.trim_start_matches(|c: char| c.is_alphanumeric() || c == '_');
+        }
+        for kw in ["mut ", "dyn ", "const "] {
+            s = s.strip_prefix(kw).unwrap_or(s);
+        }
+        if s == before {
+            break;
+        }
+    }
+    if s.starts_with('[') && !s.starts_with("[]") {
+        if let Some(slice) = rust_slice_name(s) {
+            return slice;
+        }
+    }
     let cut = s.find(['<', '[', '(']).unwrap_or(s.len());
     let s = &s[..cut];
-    let s = s.trim_start_matches(['*', '&', ' ']);
-    let s = s.strip_prefix("mut ").unwrap_or(s);
-    let s = s.strip_prefix("dyn ").unwrap_or(s);
     let last = s.rsplit("::").next().unwrap_or(s);
     let last = last.rsplit('.').next().unwrap_or(last);
     last.trim().to_string()
@@ -1281,6 +1423,13 @@ fn build_symbols<'t>(
                 kind = SymKind::Method;
                 exported |= is_trait;
                 explicit_scope = Some(ty.clone());
+                container = Some(ty);
+            }
+        }
+        if lang == Lang::Rust && matches!(kind, SymKind::Type | SymKind::Const) {
+            // An associated type/const (`type Item = u8;` in an impl) belongs to the impl's
+            // type: `Self::Item` names it, a bare `Item` does not.
+            if let Some((ty, _)) = rust_impl_of(nav, d.node, src) {
                 container = Some(ty);
             }
         }
@@ -2050,6 +2199,14 @@ fn helper() {}
         assert_eq!(clip("abcdef", 3), "abc…");
         assert_eq!(base_type_name("*Store[T]"), "Store");
         assert_eq!(base_type_name("&mut Vec<u8>"), "Vec");
+        assert_eq!(base_type_name("&'a mut Serializer<W, F>"), "Serializer");
+        assert_eq!(base_type_name("&mut [u8]"), "[u8]");
+        assert_eq!(
+            base_type_name("&mut [MaybeUninit< u8 >]"),
+            "[MaybeUninit<u8>]"
+        );
+        assert_eq!(base_type_name("*const T"), "T");
+        assert_eq!(base_type_name("[]byte"), "");
         assert_eq!(normalize_qualifier("Vec::<u8>"), "Vec");
         assert_eq!(
             go_receiver("(s *Store)"),

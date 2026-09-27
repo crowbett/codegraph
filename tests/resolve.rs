@@ -211,6 +211,254 @@ fn rust_path_attribute_modules() {
     assert_eq!(edge(&ix.store, "tests/lex.rs", 14, "stub"), None);
 }
 
+#[test]
+fn rust_std_macro_names_as_functions() {
+    let ix = index_fixture("rust_infer");
+    // `write("p", ..)` with `use crate::io_util::write` is a call, not the std macro...
+    assert_edge(&ix, "src/uses.rs", 7, "write", "io_util::write", "exact");
+    // ...while `write!(..)` stays the macro.
+    assert_eq!(edge(&ix.store, "src/uses.rs", 6, "write"), None);
+}
+
+#[test]
+fn rust_items_nested_in_functions_stay_local() {
+    let ix = index_fixture("rust_infer");
+    // `type Value = u8;` of an impl inside a test fn does not shadow the imported Value.
+    assert_edge(
+        &ix,
+        "tests/assoc.rs",
+        17,
+        "pointer",
+        "value::Value::pointer",
+        "exact",
+    );
+}
+
+#[test]
+fn rust_paths_through_reexports_and_inline_modules() {
+    let ix = index_fixture("rust_infer");
+    // Field typed `super::Buf` where buf/mod.rs has `pub use self::buf_impl::Buf`.
+    assert_edge(
+        &ix,
+        "src/buf/chain.rs",
+        7,
+        "remaining",
+        "buf::buf_impl::Buf::remaining",
+        "exact",
+    );
+    // `&infer::buf::Buf` from an integration test, through the same re-export.
+    assert_edge(
+        &ix,
+        "tests/reexp.rs",
+        2,
+        "remaining",
+        "buf::buf_impl::Buf::remaining",
+        "exact",
+    );
+    // `super::from_ns` inside an inline `mod imp` is the file's own function.
+    assert_edge(&ix, "src/sysx.rs", 7, "from_ns", "sysx::from_ns", "exact");
+    // `walker::scan()` is the module function, not the method `State::scan`.
+    assert_edge(&ix, "src/scan_use.rs", 4, "scan", "walker::scan", "exact");
+}
+
+#[test]
+fn rust_trait_overloads_on_typed_receivers() {
+    let ix = index_fixture("rust_infer");
+    // `Extend<u8>` and `Extend<u16>` for Acc: the argument type decides, not the first impl.
+    assert_eq!(edge(&ix.store, "src/overload.rs", 18, "extend"), None);
+}
+
+#[test]
+fn rust_impls_for_references_and_slices() {
+    let ix = index_fixture("rust_infer");
+    // `impl<'a> Show for &'a Point`: the methods belong to Point.
+    assert_edge(
+        &ix,
+        "src/slices.rs",
+        27,
+        "show",
+        "slices::Point::show",
+        "exact",
+    );
+    // `impl PutBytes for &mut [u8]` on a `&mut [u8]` receiver.
+    assert_edge(
+        &ix,
+        "src/slices.rs",
+        26,
+        "put_bytes",
+        "slices::[u8]::put_bytes",
+        "exact",
+    );
+}
+
+#[test]
+fn rust_generic_parameters_bind_to_their_bound() {
+    let ix = index_fixture("rust_infer");
+    // Field `formatter: F` read inside `impl<W, F: Formatter>`.
+    assert_edge(
+        &ix,
+        "src/gen.rs",
+        14,
+        "write_null",
+        "gen::Formatter::write_null",
+        "exact",
+    );
+    // `R::discard(r)` with `R: Reader`.
+    assert_edge(
+        &ix,
+        "src/gen.rs",
+        23,
+        "discard",
+        "gen::Reader::discard",
+        "exact",
+    );
+}
+
+#[test]
+fn rust_trait_overloads_picked_by_argument_type() {
+    let ix = index_fixture("rust_infer");
+    let f = "src/conv.rs";
+    // `&b"abc"[..]` -> `From<&'static [u8]>` (line 6), `vec![..]` -> `From<Vec<u8>>`
+    // (12), a `const LONG: &[u8]` -> the slice impl, and `Vec::from(c)` -> the in-repo
+    // `From<Buf3> for Vec<u8>` (18).
+    for (line, def) in [(26, 6), (27, 12), (28, 6), (30, 18)] {
+        let got: Option<(u32, String)> = ix
+            .store
+            .conn()
+            .query_row(
+                "SELECT t.start_line, e.confidence FROM edges e JOIN files f ON f.id = e.file_id
+                 JOIN symbols t ON t.id = e.to_symbol
+                 WHERE f.path = ?1 AND e.line = ?2 AND e.name = 'from'",
+                rusqlite::params![f, line],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        assert_eq!(got, Some((def, "exact".to_string())), "{f}:{line}");
+    }
+}
+
+#[test]
+fn rust_pattern_bindings_are_typed() {
+    let ix = index_fixture("rust_infer");
+    let f = "src/pat.rs";
+    // `let (f, _ok) = pair()` with `-> (Num, bool)`.
+    assert_edge(&ix, f, 22, "as_f64", "pat::Num::as_f64", "exact");
+    // `Val::Number(n)`: payload 0 of the variant; `Val::Map { inner }`: its field.
+    assert_edge(&ix, f, 24, "as_f64", "pat::Num::as_f64", "exact");
+    assert_edge(&ix, f, 25, "as_f64", "pat::Num::as_f64", "exact");
+}
+
+#[test]
+fn rust_turbofish_calls_in_macro_tokens() {
+    let ix = index_fixture("rust_infer");
+    // `load::<BTreeMap<u128, ()>>(..)`, `load::<Vec<Vec<u8>>>(..)` and a qualified
+    // `crate::turbo::load::<Option<u8>>(..)` inside macro arguments.
+    for line in [8, 9, 10] {
+        assert_edge(&ix, "src/turbo.rs", line, "load", "turbo::load", "exact");
+    }
+    // `Vec::<u8>::new()`: a type path, not a call of `Vec`.
+    assert_eq!(edge(&ix.store, "src/turbo.rs", 11, "Vec"), None);
+}
+
+#[test]
+fn rust_associated_types_are_not_module_items() {
+    let ix = index_fixture("rust_infer");
+    // `type Num = u8;` inside `impl Mk for Cnt` does not shadow the imported `Num`.
+    assert_edge(&ix, "src/assoc2.rs", 13, "Num", "pat::Num", "exact");
+    assert_edge(
+        &ix,
+        "src/assoc2.rs",
+        14,
+        "as_f64",
+        "pat::Num::as_f64",
+        "exact",
+    );
+}
+
+#[test]
+fn rust_std_wrappers_primitives_and_provided_methods() {
+    let ix = index_fixture("rust_infer");
+    let f = "src/prim.rs";
+    // `ManuallyDrop::new(Unit).go()`, a unit struct value, `(*p).go()` with `*mut Unit`.
+    assert_edge(&ix, f, 36, "go", "prim::Unit::go", "exact");
+    assert_edge(&ix, f, 37, "go", "prim::Unit::go", "exact");
+    assert_edge(&ix, f, 40, "go", "prim::Unit::go", "exact");
+    // `Big::hi(..)`: provided by `Math`, which Big implements without overriding it.
+    assert_edge(&ix, f, 38, "hi", "prim::Math::hi", "likely");
+    // `f64::exponent_limit()`: the in-repo `impl Float for f64`.
+    assert_edge(
+        &ix,
+        f,
+        41,
+        "exponent_limit",
+        "prim::f64::exponent_limit",
+        "exact",
+    );
+}
+
+#[test]
+fn rust_arrays_unsize_and_mut_references_keep_types() {
+    let ix = index_fixture("rust_infer");
+    // `[0u8; 4]` gets the methods of `impl Put for &mut [u8]`.
+    assert_edge(&ix, "src/arr.rs", 19, "put1", "arr::[u8]::put1", "exact");
+    // `let r = &mut Wide;` (the `mut` is not the referenced value).
+    assert_edge(&ix, "src/arr.rs", 21, "go", "arr::Wide::go", "exact");
+}
+
+#[test]
+fn rust_macro_tokens_default_calls() {
+    let ix = index_fixture("rust_infer");
+    // `assert!(Kp::default().is_empty())`: `default` is a keyword token; the chain still
+    // types the receiver, and `Kp` is a path segment, not a call of `Kp`.
+    assert_edge(
+        &ix,
+        "src/tmacro.rs",
+        17,
+        "is_empty",
+        "tmacro::Kp::is_empty",
+        "exact",
+    );
+    let kind: String = ix
+        .store
+        .conn()
+        .query_row(
+            "SELECT e.kind FROM edges e JOIN files f ON f.id = e.file_id
+             WHERE f.path = 'src/tmacro.rs' AND e.line = 17 AND e.name = 'Kp'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kind, "ref");
+}
+
+#[test]
+fn rust_supertrait_methods_on_generic_bounds() {
+    let ix = index_fixture("rust_infer");
+    // `F: Float` with `trait Float: AsCast`: `F::as_cast` is AsCast's.
+    assert_edge(
+        &ix,
+        "src/sup.rs",
+        10,
+        "as_cast",
+        "sup::AsCast::as_cast",
+        "likely",
+    );
+}
+
+#[test]
+fn rust_self_default_is_the_impl_type() {
+    let ix = index_fixture("rust_infer");
+    // `let mut v = Self::default();` with a derived Default.
+    assert_edge(
+        &ix,
+        "src/selfdef.rs",
+        13,
+        "bump",
+        "selfdef::Acc2::bump",
+        "exact",
+    );
+}
+
 fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
     edges_to(ix, "impl", name)
 }

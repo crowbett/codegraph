@@ -32,7 +32,7 @@ mod types;
 
 /// Rust std-trait methods a type commonly implements several times (once per type
 /// parameter of the trait), so a name alone cannot pick the impl.
-const TRAIT_OVERLOADS: &[&str] = &[
+pub(crate) const TRAIT_OVERLOADS: &[&str] = &[
     "from",
     "try_from",
     "into",
@@ -52,6 +52,12 @@ const TRAIT_OVERLOADS: &[&str] = &[
     "as_ref",
     "as_mut",
     "borrow",
+];
+
+/// Rust primitive types (a path qualifier naming one is never a module).
+const RUST_PRIMITIVES: &[&str] = &[
+    "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f32",
+    "f64", "bool", "char", "str",
 ];
 
 /// Resolution counters for one repo.
@@ -124,6 +130,8 @@ struct E {
     hint: Option<String>,
     /// Rust method-call syntax.
     dot: bool,
+    /// First-argument type hint (`at` in `extra`) of a Rust trait-overload call.
+    arg: Option<String>,
     /// 1-based line of the reference.
     line: u32,
 }
@@ -1087,6 +1095,7 @@ pub fn resolve_and_insert(
                 old_to_file: None,
                 hint: r.hint,
                 dot: r.dot,
+                arg: r.arg,
                 line: r.line,
             });
         }
@@ -1106,6 +1115,7 @@ pub fn resolve_and_insert(
                 old_to_file: None,
                 hint: None,
                 dot: false,
+                arg: None,
                 line: imp.line,
             });
         }
@@ -1122,7 +1132,7 @@ pub fn resolve_and_insert(
             if e.kind == EdgeKind::Import {
                 e.extra.clone()
             } else {
-                crate::store::ref_extra(e.hint.as_deref(), e.dot)
+                crate::store::ref_extra(e.hint.as_deref(), e.dot, e.arg.as_deref())
             }
         })
         .collect();
@@ -1344,6 +1354,7 @@ fn resolve_edges(
                     old_to_file: None,
                     hint: None,
                     dot: false,
+                    arg: None,
                     line: e.line,
                 };
                 ctx.resolve_edge(&fake, &ctx.scopes[e.file])
@@ -1443,14 +1454,16 @@ fn parse_extra(extra: Option<&str>) -> ImportExtra {
         .unwrap_or_default()
 }
 
-/// (receiver type hint, method-call syntax) from a reference edge's `extra`.
-fn ref_hint(extra: Option<&str>) -> (Option<String>, bool) {
+/// (receiver type hint, method-call syntax, argument type hint) from a reference edge's
+/// `extra`.
+fn ref_hint(extra: Option<&str>) -> (Option<String>, bool, Option<String>) {
     let Some(v) = extra.and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()) else {
-        return (None, false);
+        return (None, false, None);
     };
     (
         v["rt"].as_str().map(str::to_string),
         v["dot"].as_bool().unwrap_or(false),
+        v["at"].as_str().map(str::to_string),
     )
 }
 
@@ -1590,8 +1603,8 @@ fn edge_row(
     if extra.as_deref() == Some(IMPLICIT) {
         return Ok(Some(Err(r.get(0)?)));
     }
-    let (hint, dot) = if kind == EdgeKind::Import {
-        (None, false)
+    let (hint, dot, arg) = if kind == EdgeKind::Import {
+        (None, false, None)
     } else {
         ref_hint(extra.as_deref())
     };
@@ -1609,6 +1622,7 @@ fn edge_row(
         old_to_file: r.get(10)?,
         hint,
         dot,
+        arg,
         line: r.get(11)?,
     })))
 }
@@ -2524,9 +2538,9 @@ impl Ctx {
     fn lookup_in(&self, files: &[usize], name: &str, edge: EdgeKind, depth: u8) -> Vec<usize> {
         let ok = |k: SymKind, l: Lang| {
             kind_ok(edge, k, l)
-                // Go `pkg.F` never names a method.
+                // Go `pkg.F` / Rust `m::f` never names a method.
                 && (k != SymKind::Method
-                    || l != Lang::Go
+                    || !matches!(l, Lang::Go | Lang::Rust)
                     || !matches!(edge, EdgeKind::Call | EdgeKind::Value))
         };
         self.lookup_in_by(files, name, &ok, depth)
@@ -2778,6 +2792,13 @@ impl Ctx {
                     self.files[self.syms[s].file].lang,
                 )
             })
+            // A Rust impl's associated type (`type Item = u8;`) implements the trait's
+            // declaration, which is what `Self::Item` names.
+            .filter(|&s| {
+                lang != Lang::Rust
+                    || self.syms[s].kind != SymKind::Type
+                    || self.syms[s].container.is_none()
+            })
             .collect();
         match e.qualifier.as_deref() {
             Some(q) if !q.is_empty() => self.resolve_qualified(e, q, &cands, scope, lang),
@@ -2823,7 +2844,7 @@ impl Ctx {
                     for t in &frontier {
                         for b in self.bases.get(t).into_iter().flatten() {
                             if seen.insert(b.clone()) {
-                                if let Some(r) = self.by_container(fi, cands, b, Confidence::Likely)
+                                if let Some(r) = self.by_container(e, cands, b, Confidence::Likely)
                                 {
                                     return Some(r);
                                 }
@@ -2848,6 +2869,39 @@ impl Ctx {
             match self.resolve_value_member(e, q) {
                 types::Typed::NoOpinion => {}
                 types::Typed::Resolved(r) => return r,
+            }
+        }
+        if lang == Lang::Rust && !e.dot {
+            // `R::discard(..)` with `R: Read`: the bound trait's method.
+            if let types::Typed::Resolved(r) = self.rust_generic_path(e, q) {
+                return r;
+            }
+            // `f64::exponent_limit()`: a method of an in-repo trait impl for a primitive,
+            // or nothing (std's own).
+            if RUST_PRIMITIVES.contains(&q) {
+                // `f32::from_bits(u)` inside `impl Float for f32 { fn from_bits(..) }` is std's
+                // inherent method (the trait's would recurse forever).
+                let in_same = e
+                    .from_symbol
+                    .and_then(|id| self.by_id.get(&id))
+                    .is_some_and(|&i| {
+                        let s = &self.syms[i];
+                        s.name == e.name && s.container.as_deref() == Some(q)
+                    });
+                if in_same {
+                    return None;
+                }
+                if TRAIT_OVERLOADS.contains(&e.name.as_str()) {
+                    // `u64::from(x)`: std has its own impls; only a fitting argument picks
+                    // an in-repo one.
+                    let m: Vec<usize> = cands
+                        .iter()
+                        .copied()
+                        .filter(|&s| self.syms[s].container.as_deref() == Some(q))
+                        .collect();
+                    return self.overload_pick(e, &m).map(|s| (s, Confidence::Exact));
+                }
+                return self.by_container(e, cands, q, Confidence::Exact);
             }
         }
         if lang == Lang::Rust && e.dot {
@@ -2878,7 +2932,7 @@ impl Ctx {
                 match self.rust_path(targets[0], &full) {
                     Some((f, None)) => f,
                     Some((_, Some(item))) => {
-                        return self.by_container(fi, cands, &item, Confidence::Likely);
+                        return self.by_container(e, cands, &item, Confidence::Likely);
                     }
                     None => return None,
                 }
@@ -2910,18 +2964,24 @@ impl Ctx {
         }
         // 3. Rust paths (`crate::a::f`, `super::f`, `a::b::Type::new`).
         if lang == Lang::Rust && (q.contains("::") || matches!(q, "crate" | "super")) {
-            let full = q.to_string();
+            let mut full = q.to_string();
+            if q.starts_with("super") {
+                match self.rust_inline_super(e, q, cands) {
+                    Ok(r) => return r,
+                    Err(rest) => full = rest,
+                }
+            }
             match self.rust_path(fi, &full) {
                 Some((files, None)) => {
                     let m = self.lookup_in(&files, &e.name, e.kind, 2);
                     return self.pick(fi, &m, Confidence::Exact, Confidence::Likely);
                 }
                 Some((_, Some(item))) => {
-                    return self.by_container(fi, cands, &item, Confidence::Exact);
+                    return self.by_container(e, cands, &item, Confidence::Exact);
                 }
                 None => {
                     let last = q.rsplit("::").next().unwrap_or(q);
-                    return self.by_container(fi, cands, last, Confidence::Likely);
+                    return self.by_container(e, cands, last, Confidence::Likely);
                 }
             }
         }
@@ -2946,7 +3006,7 @@ impl Ctx {
             if targets.is_empty() && lang != Lang::Rust {
                 return None;
             }
-            return self.by_container(fi, cands, orig, Confidence::Exact);
+            return self.by_container(e, cands, orig, Confidence::Exact);
         }
         // 5. Type qualifier (`Type::new`, `Class.create`).
         let simple = !q.contains(['.', '(', '[', ':', '-', '>', '…', '"', '\'']);
@@ -2956,7 +3016,7 @@ impl Ctx {
                 .get(q)
                 .is_some_and(|v| v.iter().any(|&s| self.syms[s].kind.is_type_like()));
             if is_type {
-                return self.by_container(fi, cands, q, Confidence::Likely);
+                return self.by_container(e, cands, q, Confidence::Likely);
             }
             let looks_type = q.chars().next().is_some_and(char::is_uppercase)
                 && lang != Lang::Go
@@ -2964,6 +3024,19 @@ impl Ctx {
                     .chars()
                     .all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit());
             if looks_type {
+                // `Vec::from(bytes)` with an in-repo `impl From<Bytes> for Vec<u8>`: std has
+                // its own impls too, so only an argument that fits one of ours picks it.
+                if lang == Lang::Rust
+                    && self.ext_ids.contains_key(q)
+                    && TRAIT_OVERLOADS.contains(&e.name.as_str())
+                {
+                    let m: Vec<usize> = cands
+                        .iter()
+                        .copied()
+                        .filter(|&s| self.syms[s].container.as_deref() == Some(q))
+                        .collect();
+                    return self.overload_pick(e, &m).map(|s| (s, Confidence::Exact));
+                }
                 // A type we don't know (std / external): don't guess.
                 return None;
             }
@@ -2997,9 +3070,106 @@ impl Ctx {
         self.pick(fi, &m, Confidence::Exact, Confidence::Likely)
     }
 
+    /// The method among `cands` that a trait implemented by type `ty` provides (breadth-first over
+    /// the traits, then their supertraits' impls as recorded), when exactly one does.
+    fn rust_provided_method(&self, cands: &[usize], ty: &str) -> Option<(usize, Confidence)> {
+        let mut frontier = vec![ty.to_string()];
+        let mut seen: HashSet<String> = HashSet::new();
+        for _ in 0..3 {
+            let mut next = Vec::new();
+            let mut found: Vec<usize> = Vec::new();
+            for t in &frontier {
+                for b in self.bases.get(t).into_iter().flatten() {
+                    if !seen.insert(b.clone()) {
+                        continue;
+                    }
+                    found.extend(cands.iter().copied().filter(|&s| {
+                        let sym = &self.syms[s];
+                        sym.container.as_deref() == Some(b.as_str())
+                            && self.files[sym.file].lang == Lang::Rust
+                            && self
+                                .by_id
+                                .get(&sym.parent.unwrap_or(-1))
+                                .is_some_and(|&p| self.syms[p].kind == SymKind::Trait)
+                    }));
+                    next.push(b.clone());
+                }
+            }
+            found.sort_unstable();
+            found.dedup();
+            match found.as_slice() {
+                [] => {}
+                [m] => return Some((*m, Confidence::Likely)),
+                _ => return None,
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+        None
+    }
+
+    /// `super::f` inside an inline `mod m { .. }`: each `super` first leaves an enclosing
+    /// inline module of the same file. `Ok(r)`: resolved within the file; `Err(q)`: the
+    /// qualifier left once the inline modules are used up, relative to the file's module.
+    fn rust_inline_super(
+        &self,
+        e: &E,
+        q: &str,
+        cands: &[usize],
+    ) -> Result<Option<(usize, Confidence)>, String> {
+        let mut mods: Vec<i64> = Vec::new();
+        let mut cur = e.from_symbol;
+        while let Some(i) = cur.and_then(|id| self.by_id.get(&id).copied()) {
+            let s = &self.syms[i];
+            if s.file != e.file {
+                break;
+            }
+            if s.kind == SymKind::Module {
+                mods.push(s.id);
+            }
+            cur = s.parent;
+        }
+        if mods.is_empty() {
+            return Err(q.to_string());
+        }
+        let segs: Vec<&str> = q.split("::").collect();
+        let k = segs.iter().take_while(|s| **s == "super").count();
+        if k > mods.len() {
+            return Err(segs[mods.len()..].join("::"));
+        }
+        // The module `k` levels up (the file itself when all inline modules are used up).
+        let target = mods.get(k).copied();
+        if k < segs.len() {
+            // `super::sub::f`: relative to the file's module, or (from a nested inline
+            // module) into a sibling inline module, which is not followed.
+            return match target {
+                None => Err(format!("self::{}", segs[k..].join("::"))),
+                Some(_) => Ok(None),
+            };
+        }
+        let m: Vec<usize> = cands
+            .iter()
+            .copied()
+            .filter(|&s| {
+                let sym = &self.syms[s];
+                sym.file == e.file
+                    && sym.parent == target
+                    && (sym.kind != SymKind::Method
+                        || !matches!(e.kind, EdgeKind::Call | EdgeKind::Value))
+            })
+            .collect();
+        if m.is_empty() && target.is_none() {
+            // Not defined in the file: imported into its module (`use x::f;`).
+            return Err("self".to_string());
+        }
+        Ok(self.pick(e.file, &m, Confidence::Exact, Confidence::Likely))
+    }
+
     fn by_container(
         &self,
-        fi: usize,
+        e: &E,
         cands: &[usize],
         ty: &str,
         conf: Confidence,
@@ -3010,22 +3180,28 @@ impl Ctx {
             .filter(|&s| self.syms[s].container.as_deref() == Some(ty))
             .collect();
         if m.is_empty() {
+            // `Bigint::from_u64(..)` with `impl Math for Bigint` not overriding it: the
+            // trait's provided method.
+            if self.files[e.file].lang == Lang::Rust {
+                return self.rust_provided_method(cands, ty);
+            }
             return None;
         }
         // `BytesMut::from(x)`: one method per trait impl (`From<&[u8]>`, `From<Bytes>`...);
-        // which one depends on the argument type, which we don't know.
+        // which one depends on the argument type.
         if m.len() > 1
             && self.files[self.syms[m[0]].file].lang == Lang::Rust
             && TRAIT_OVERLOADS.contains(&self.syms[m[0]].name.as_str())
         {
-            return None;
+            // ...unless the first argument's type picks exactly one.
+            return self.overload_pick(e, &m).map(|s| (s, Confidence::Exact));
         }
         let worse = if conf == Confidence::Exact {
             Confidence::Likely
         } else {
             Confidence::NameOnly
         };
-        self.pick(fi, &m, conf, worse)
+        self.pick(e.file, &m, conf, worse)
     }
 
     fn receiver_guess(
@@ -3108,6 +3284,22 @@ impl Ctx {
             // A local variable or parameter, not a repo symbol.
             return None;
         }
+        // Rust associated types/consts (`type Item = u8;` in an impl) are named through
+        // their type (`Self::Item`), never bare.
+        let assoc_free: Vec<usize>;
+        let cands = if lang == Lang::Rust {
+            assoc_free = cands
+                .iter()
+                .copied()
+                .filter(|&s| {
+                    let sym = &self.syms[s];
+                    !(matches!(sym.kind, SymKind::Type | SymKind::Const) && sym.container.is_some())
+                })
+                .collect();
+            &assoc_free[..]
+        } else {
+            cands
+        };
         let fi = e.file;
         let f = &self.files[fi];
         let (self_ty, _) = self.self_type(e.from_symbol);

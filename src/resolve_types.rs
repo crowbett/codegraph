@@ -440,6 +440,8 @@ fn element_of(lang: Lang, text: &str) -> Option<String> {
                     t = t.find(' ').map_or("", |i| &t[i + 1..]);
                 }
                 t = t.strip_prefix("mut ").unwrap_or(t);
+                // Squashed `&mut[T]`.
+                t = t.strip_prefix("mut[").map_or(t, |_| &t[3..]);
                 if t == before {
                     break;
                 }
@@ -763,6 +765,248 @@ fn split_top(s: &str, sep: char) -> Vec<&str> {
     }
     out.push(&s[start..]);
     out
+}
+
+/// Result type of std methods whose name gives the shape away (receiver not a repo type
+/// with that method): `b"x".to_vec()`, `s.into_bytes()`, `v.as_slice()`.
+const RUST_STD_SHAPES: &[(&str, &str)] = &[
+    ("to_vec", "Vec<_>"),
+    ("into_vec", "Vec<_>"),
+    ("into_bytes", "Vec<u8>"),
+    ("as_bytes", "&[u8]"),
+    ("as_slice", "&[_]"),
+    ("as_mut_slice", "&mut [_]"),
+    ("into_boxed_slice", "Box<[_]>"),
+    ("to_string", "String"),
+];
+
+/// Structural shape of a Rust type for matching an argument against a parameter:
+/// references, lifetimes and paths dropped, `_` = unknown.
+#[derive(Debug, PartialEq)]
+enum Shape {
+    Wild,
+    Slice(Box<Shape>),
+    Array(Box<Shape>),
+    Named(String, Vec<Shape>),
+    Other,
+}
+
+impl Shape {
+    fn parse(text: &str) -> Shape {
+        let mut t = text.trim();
+        loop {
+            let before = t;
+            t = t.trim_start_matches(['&', '*', ' ']);
+            if let Some(rest) = t.strip_prefix('\'') {
+                t = rest.trim_start_matches(|c: char| c.is_alphanumeric() || c == '_');
+            }
+            for kw in ["mut", "const", "dyn"] {
+                if let Some(rest) = t.strip_prefix(kw) {
+                    if rest.starts_with([' ', '[', '(']) {
+                        t = rest;
+                    }
+                }
+            }
+            if t == before {
+                break;
+            }
+        }
+        if t == "_" {
+            return Shape::Wild;
+        }
+        if let Some(inner) = t.strip_prefix('[').and_then(|x| x.strip_suffix(']')) {
+            let parts = split_top(inner, ';');
+            let el = Box::new(Shape::parse(parts[0]));
+            return if parts.len() > 1 {
+                Shape::Array(el)
+            } else {
+                Shape::Slice(el)
+            };
+        }
+        if t.is_empty() || t.starts_with(['(', '[']) || t.starts_with("fn") || t.starts_with("impl")
+        {
+            return Shape::Other;
+        }
+        let (head, args) = match t.find('<') {
+            Some(i) if t.ends_with('>') => (&t[..i], &t[i + 1..t.len() - 1]),
+            _ => (t, ""),
+        };
+        let head = head.rsplit("::").next().unwrap_or(head).trim();
+        let args = if args.is_empty() {
+            Vec::new()
+        } else {
+            split_top(args, ',')
+                .into_iter()
+                .filter(|a| !a.trim_start().starts_with('\''))
+                .map(Shape::parse)
+                .collect()
+        };
+        Shape::Named(head.to_string(), args)
+    }
+
+    /// A parameter type we cannot compare (generic, `impl Trait`, tuple).
+    fn opaque(&self) -> bool {
+        match self {
+            Shape::Named(h, _) => looks_generic(h) || h == "Self",
+            Shape::Slice(e) | Shape::Array(e) => e.opaque(),
+            Shape::Wild | Shape::Other => true,
+        }
+    }
+
+    /// Whether an argument of shape `self` fits a parameter of shape `p`.
+    fn fits(&self, p: &Shape) -> bool {
+        match (self, p) {
+            (Shape::Wild, _) | (_, Shape::Wild) => true,
+            (Shape::Slice(a), Shape::Slice(b)) | (Shape::Array(a), Shape::Array(b)) => a.fits(b),
+            (Shape::Named(a, aa), Shape::Named(b, bb)) => {
+                a == b
+                    && (aa.is_empty()
+                        || bb.is_empty()
+                        || (aa.len() == bb.len() && aa.iter().zip(bb).all(|(x, y)| x.fits(y))))
+            }
+            _ => false,
+        }
+    }
+}
+
+/// First non-`self` parameter type of Rust function `name` in its one-line signature
+/// (`fn from(slice: &'static [u8]) -> Bytes {`), or `None` when not on the line.
+fn first_param_type<'s>(sig: &'s str, name: &str) -> Option<&'s str> {
+    let at = sig.find(&format!("fn {name}"))? + 3 + name.len();
+    let rest = &sig[at..];
+    // Skip the generic parameter list.
+    let mut depth = 0i32;
+    let mut open = None;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            '(' if depth == 0 => {
+                open = Some(i);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let rest = &rest[open? + 1..];
+    let mut depth = 0i32;
+    let mut close = None;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '(' | '<' | '[' => depth += 1,
+            ')' if depth == 0 => {
+                close = Some(i);
+                break;
+            }
+            ')' | '>' | ']' => depth -= 1,
+            _ => {}
+        }
+    }
+    let params = &rest[..close?];
+    split_top(params, ',')
+        .into_iter()
+        .map(str::trim)
+        .find(|p| !p.is_empty() && !is_self_param(p))
+        .and_then(|p| p.split_once(':').map(|(_, t)| t.trim()))
+}
+
+/// `self`, `&self`, `&'a mut self`, `mut self`, `self: Box<Self>`.
+fn is_self_param(p: &str) -> bool {
+    let mut t = p.trim_start_matches(['&', ' ']);
+    if let Some(rest) = t.strip_prefix('\'') {
+        t = rest
+            .trim_start_matches(|c: char| c.is_alphanumeric() || c == '_')
+            .trim_start();
+    }
+    let t = t.strip_prefix("mut ").unwrap_or(t).trim_start();
+    t == "self" || t.starts_with("self:") || t.starts_with("self ")
+}
+
+/// Element `idx` of a Rust tuple type value (`(ExtendedFloat, bool)`, behind references,
+/// after `?`/unwrap), or `None` when `v` is not a tuple text.
+fn tuple_elem(v: &Val, idx: &str) -> Option<Val> {
+    let Val::Text {
+        fi,
+        from,
+        line,
+        text,
+        unwrap,
+        elem,
+        ..
+    } = v
+    else {
+        return None;
+    };
+    let t = if *unwrap {
+        unwrap_text(Lang::Rust, text)
+    } else {
+        text.clone()
+    };
+    let t = if *elem {
+        element_of(Lang::Rust, &t)?
+    } else {
+        t
+    };
+    let t = t.trim().trim_start_matches('&');
+    let inner = t.strip_prefix('(')?.strip_suffix(')')?;
+    let part = split_top(inner, ',')
+        .get(idx.parse::<usize>().ok()?)?
+        .trim();
+    (!part.is_empty()).then(|| Val::Text {
+        fi: *fi,
+        from: *from,
+        line: *line,
+        text: part.to_string(),
+        unwrap: false,
+        awaited: false,
+        elem: false,
+    })
+}
+
+/// `F` for a Rust type text `F`, `&F`, `&'a mut F` (a candidate bare generic), else "".
+fn generic_core(text: &str) -> &str {
+    let mut t = text.trim();
+    loop {
+        let before = t;
+        t = t.trim_start_matches(['&', ' ']);
+        if let Some(rest) = t.strip_prefix('\'') {
+            t = rest.trim_start_matches(|c: char| c.is_alphanumeric() || c == '_');
+        }
+        t = t.strip_prefix("mut ").unwrap_or(t);
+        if t == before {
+            break;
+        }
+    }
+    if t.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        t
+    } else {
+        ""
+    }
+}
+
+/// The normalized slice/array name (`[u8]`) of a Rust type text behind references
+/// (`&'a mut [u8]`), or `None` for anything else.
+fn rust_slice_type(text: &str) -> Option<String> {
+    let mut t = text.trim();
+    loop {
+        let before = t;
+        t = t.trim_start_matches(['&', ' ']);
+        if let Some(rest) = t.strip_prefix('\'') {
+            t = rest.trim_start_matches(|c: char| c.is_alphanumeric() || c == '_');
+        }
+        // Squashed hints drop the space: `&mut[u8]`.
+        if let Some(rest) = t.strip_prefix("mut") {
+            if rest.starts_with([' ', '[']) {
+                t = rest;
+            }
+        }
+        if t == before {
+            break;
+        }
+    }
+    t.starts_with('[')
+        .then(|| crate::extract::rust_slice_name(t))
+        .flatten()
 }
 
 /// Normalized type reference: optional qualifier (module path) + simple name.
@@ -1272,6 +1516,19 @@ impl Ctx {
                         }
                     }
                 }
+                if lang == Lang::Rust && bt != Ty::Unknown {
+                    if let Some((_, shape)) = RUST_STD_SHAPES.iter().find(|(m, _)| *m == name) {
+                        return Val::Text {
+                            fi,
+                            from,
+                            line,
+                            text: (*shape).to_string(),
+                            unwrap: false,
+                            awaited: false,
+                            elem: false,
+                        };
+                    }
+                }
                 if lang == Lang::Rust && PASSTHROUGH.contains(&name) {
                     return bv;
                 }
@@ -1339,12 +1596,85 @@ impl Ctx {
                     Ty::Unknown => Val::Ty(Ty::Unknown),
                 }
             }
+            "F:" if name.bytes().all(|b| b.is_ascii_digit())
+                && self.files[fi].lang == Lang::Rust =>
+            {
+                // `t.0` / `let (a, b) = f()`: element of a tuple type, else a tuple struct's
+                // positional field.
+                let bv = self.eval_val(fi, from, line, base, d);
+                if let Some(v) = tuple_elem(&bv, name) {
+                    return v;
+                }
+                match self.bind_val(&bv, d) {
+                    Ty::Known(t) => self.field_of(t, name, &mut HashSet::new(), d),
+                    other => Val::Ty(other),
+                }
+            }
             "F:" => match self.bind_val(&self.eval_val(fi, from, line, base, d), d) {
-                Ty::Known(t) => self.field_of(t, name, &mut HashSet::new(), d),
+                Ty::Known(t) => {
+                    let v = self.field_of(t, name, &mut HashSet::new(), d);
+                    self.rust_generic_field(fi, from, v)
+                }
                 other => Val::Ty(other),
             },
             _ => Val::Ty(Ty::Unknown),
         }
+    }
+
+    /// A Rust field typed with a bare generic (`formatter: F`, `read: R`) is bound by the
+    /// generics in scope at the access (`impl<W, F: Formatter> Serializer<W, F>`): its
+    /// type text is re-read in the caller's context.
+    fn rust_generic_field(&self, fi: usize, from: Option<i64>, v: Val) -> Val {
+        let Val::Text {
+            fi: tfi,
+            text,
+            unwrap,
+            awaited,
+            elem,
+            ..
+        } = &v
+        else {
+            return v;
+        };
+        if self.files[*tfi].lang != Lang::Rust {
+            return v;
+        }
+        let core = generic_core(text);
+        if self.generic_bound(from, core).is_none() {
+            return v;
+        }
+        Val::Text {
+            fi,
+            from,
+            line: 0,
+            text: text.clone(),
+            unwrap: *unwrap,
+            awaited: *awaited,
+            elem: *elem,
+        }
+    }
+
+    /// The bound hint of Rust generic parameter `name` in scope of symbol `from` (its
+    /// innermost enclosing function, whose `fields` hold `<T>` -> `T:<bound>`), with the
+    /// function's (file, id).
+    fn generic_bound(&self, from: Option<i64>, name: &str) -> Option<(usize, i64, &str)> {
+        if name.is_empty() || !name.chars().next().is_some_and(char::is_uppercase) {
+            return None;
+        }
+        let mut cur = from.and_then(|id| self.by_id.get(&id).copied());
+        for _ in 0..64 {
+            let s = &self.syms[cur?];
+            if matches!(s.kind, SymKind::Function | SymKind::Method) {
+                let key = format!("<{name}>");
+                return s
+                    .fields
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, h)| (s.file, s.id, h.as_str()));
+            }
+            cur = s.parent.and_then(|p| self.by_id.get(&p).copied());
+        }
+        None
     }
 
     fn field_of(&self, t: usize, name: &str, seen: &mut HashSet<usize>, d: u8) -> Val {
@@ -1504,7 +1834,16 @@ impl Ctx {
                     Some((a, b)) => (Some(a), b),
                     None => (None, q),
                 };
-                if let Ty::Known(t) = self.find_type(fi, tq, tn, from, 0) {
+                // `Self::default()`: the enclosing impl's type.
+                let found = if tq.is_none() && tn == "Self" {
+                    match self.self_type(from).0 {
+                        Some(n) => self.find_type(fi, None, &n, from, 0),
+                        None => Ty::Unknown,
+                    }
+                } else {
+                    self.find_type(fi, tq, tn, from, 0)
+                };
+                if let Ty::Known(t) = found {
                     return Val::Ty(Ty::Known(t));
                 }
             }
@@ -1561,6 +1900,7 @@ impl Ctx {
             old_to_file: None,
             hint: None,
             dot: false,
+            arg: None,
             line: 0,
         };
         self.resolve_edge(&fake, &self.scopes[fi])
@@ -1803,6 +2143,21 @@ impl Ctx {
                 } else {
                     text
                 };
+                if lang == Lang::Rust && !*unwrap {
+                    // `&mut [u8]`: std, or an in-repo trait's extension (`impl BufMut for
+                    // &mut [u8]`).
+                    if let Some(slice) = rust_slice_type(text) {
+                        // An array receiver also gets its slice's methods (`[u8; 10]` ->
+                        // `impl BufMut for &mut [u8]`).
+                        let unsized_ = split_top(&slice[1..slice.len() - 1], ';')
+                            .first()
+                            .map(|el| format!("[{el}]"));
+                        let id = self
+                            .ext_id(lang, &slice)
+                            .or_else(|| unsized_.and_then(|u| self.ext_id(lang, &u)));
+                        return Ty::External(id);
+                    }
+                }
                 match normalize(lang, text, *unwrap, *awaited, 0) {
                     Norm::External => Ty::External(None),
                     Norm::Unknown => Ty::Unknown,
@@ -1842,6 +2197,20 @@ impl Ctx {
             .collect()
     }
 
+    /// Rust type symbols named `name` defined in module `files`, or re-exported there by a
+    /// `pub use` (not the directory-wide barrel guess of [`Ctx::reexported`]: a `#[cfg]`
+    /// twin module's items must stay unbound).
+    fn rust_type_syms_via(&self, files: &[usize], name: &str) -> Vec<usize> {
+        let direct = self.type_syms_in(files, name);
+        if !direct.is_empty() {
+            return direct;
+        }
+        self.lookup_in(files, name, EdgeKind::Ref, 2)
+            .into_iter()
+            .filter(|&s| self.syms[s].kind.is_type_like())
+            .collect()
+    }
+
     fn type_syms_in(&self, files: &[usize], name: &str) -> Vec<usize> {
         self.by_name
             .get(name)
@@ -1849,6 +2218,11 @@ impl Ctx {
             .flatten()
             .copied()
             .filter(|&s| self.syms[s].kind.is_type_like() && files.contains(&self.syms[s].file))
+            // A Rust associated type (`type Item = u8;` in an impl) is no module item.
+            .filter(|&s| {
+                self.syms[s].container.is_none()
+                    || self.files[self.syms[s].file].lang != Lang::Rust
+            })
             .collect()
     }
 
@@ -1867,14 +2241,23 @@ impl Ctx {
         let f = &self.files[fi];
         let lang = f.lang;
         let scope = &self.scopes[fi];
-        let _ = from;
+        if lang == Lang::Rust && qual.is_none() {
+            // A generic parameter with a single trait bound: that trait.
+            if let Some((gfi, gid, h)) = self.generic_bound(from, name) {
+                let bound = h.to_string();
+                return self.bind_val(&self.eval_val(gfi, Some(gid), 0, &bound, 0), 0);
+            }
+        }
         if let Some(q) = qual {
             if lang == Lang::Rust {
                 return match self.rust_path(fi, &format!("{q}::{name}")) {
+                    // `stash::Repository`, `super::Buf`: also through `pub use` re-exports.
                     Some((files, Some(item))) => {
-                        self.pick_type(fi, &self.type_syms_in(&files, &item))
+                        self.pick_type(fi, &self.rust_type_syms_via(&files, &item))
                     }
-                    Some((files, None)) => self.pick_type(fi, &self.type_syms_in(&files, name)),
+                    Some((files, None)) => {
+                        self.pick_type(fi, &self.rust_type_syms_via(&files, name))
+                    }
                     None => {
                         let head = q.split("::").next().unwrap_or(q);
                         let bound = scope
@@ -1904,7 +2287,12 @@ impl Ctx {
             };
         }
         // Same file.
-        let local = self.type_syms_in(&[fi], name);
+        let mut local = self.type_syms_in(&[fi], name);
+        if lang == Lang::Rust {
+            // An item nested in a function (`type Value = MyVec<T>;` of an impl inside a
+            // test fn) is visible only inside that function.
+            local.retain(|&s| self.rust_item_visible(s, from));
+        }
         if local.len() > 1 && line > 0 && lang.is_js_family() {
             if let Some(&s) = local
                 .iter()
@@ -1951,6 +2339,8 @@ impl Ctx {
                     o == lang || (lang.is_js_family() && o.is_js_family())
                 }
             })
+            // Rust associated types are not named bare.
+            .filter(|&s| lang != Lang::Rust || self.syms[s].container.is_none())
             .collect();
         let same_unit: Vec<usize> = all
             .iter()
@@ -1973,6 +2363,34 @@ impl Ctx {
             }
             _ => Ty::Unknown,
         }
+    }
+
+    /// Whether Rust item `s` can be named from inside symbol `from`: a module-level item,
+    /// or one nested in a function/type that encloses `from`.
+    fn rust_item_visible(&self, s: usize, from: Option<i64>) -> bool {
+        if self.syms[s].container.is_some() {
+            // An associated type (`type Value = Value;` in an impl): only `Self::Value`.
+            return false;
+        }
+        let Some(p) = self.syms[s].parent else {
+            return true;
+        };
+        if self
+            .by_id
+            .get(&p)
+            .is_some_and(|&pi| self.syms[pi].kind == SymKind::Module)
+        {
+            return true;
+        }
+        let mut cur = from;
+        for _ in 0..64 {
+            let Some(id) = cur else { break };
+            if id == p {
+                return true;
+            }
+            cur = self.by_id.get(&id).and_then(|&i| self.syms[i].parent);
+        }
+        false
     }
 
     fn pick_type(&self, fi: usize, cands: &[usize]) -> Ty {
@@ -2030,6 +2448,11 @@ impl Ctx {
         } else {
             own
         };
+        // `impl Extend<u8> for BytesMut` and `impl Extend<Bytes> for BytesMut`: which impl
+        // a call picks depends on the argument type.
+        if own.len() > 1 && tf.lang == Lang::Rust && super::TRAIT_OVERLOADS.contains(&name) {
+            return None;
+        }
         if let Some(b) = self.best(ts.file, &own) {
             return Some((b, false));
         }
@@ -2497,6 +2920,95 @@ impl Ctx {
         }
     }
 
+    /// Among several impls of a std-trait method (`From<&[u8]>`, `From<Vec<u8>>`,
+    /// `From<Bytes>`), the one whose first parameter fits the call's first argument
+    /// (`E::arg`). `None` unless exactly one fits and every candidate's parameter is
+    /// readable from its one-line signature and concrete (no generic, no `impl Trait`).
+    pub(super) fn overload_pick(&self, e: &E, cands: &[usize]) -> Option<usize> {
+        let arg = self.arg_shape(e)?;
+        let mut hit = None;
+        for &c in cands {
+            let s = &self.syms[c];
+            let p = Shape::parse(first_param_type(&s.sig, &s.name)?);
+            if p.opaque() {
+                return None;
+            }
+            if arg.fits(&p) {
+                if hit.is_some() {
+                    return None;
+                }
+                hit = Some(c);
+            }
+        }
+        hit
+    }
+
+    /// Shape of a call's first argument from its `arg` hint.
+    fn arg_shape(&self, e: &E) -> Option<Shape> {
+        let h = e.arg.as_deref()?;
+        let shape = match self.eval_val(e.file, e.from_symbol, e.line, h, 0) {
+            Val::Ty(Ty::Known(s)) => Shape::Named(self.syms[s].name.clone(), Vec::new()),
+            Val::Ty(Ty::External(Some(id))) => {
+                Shape::parse(self.ext_names.get(id as usize)?.as_str())
+            }
+            Val::Ty(_) => return None,
+            Val::Text {
+                from,
+                text,
+                unwrap,
+                elem,
+                ..
+            } => {
+                let text = if unwrap {
+                    unwrap_text(Lang::Rust, &text)
+                } else {
+                    text
+                };
+                let text = if elem {
+                    element_of(Lang::Rust, &text)?
+                } else {
+                    text
+                };
+                match Shape::parse(&text) {
+                    Shape::Named(h, _) if h == "Self" => {
+                        Shape::Named(self.self_type(from).0?, Vec::new())
+                    }
+                    s => s,
+                }
+            }
+        };
+        match &shape {
+            Shape::Named(h, _) if looks_generic(h) => None,
+            Shape::Other | Shape::Wild => None,
+            _ => Some(shape),
+        }
+    }
+
+    /// `R::discard(..)` / `F::as_cast(..)` where `R` is a generic parameter of the
+    /// enclosing function or impl with a single trait bound: the method on that trait
+    /// (`NoOpinion` = the qualifier is no such generic).
+    pub(super) fn rust_generic_path(&self, e: &E, q: &str) -> Typed {
+        let Some((gfi, gid, h)) = self.generic_bound(e.from_symbol, q) else {
+            return Typed::NoOpinion;
+        };
+        let h = h.to_string();
+        match self.bind_val(&self.eval_val(gfi, Some(gid), 0, &h, 0), 0) {
+            Ty::Known(t) => Typed::Resolved(
+                self.method_on(t, &e.name, &mut HashSet::new(), 0)
+                    .map(|(m, via_base)| {
+                        let c = if via_base {
+                            Confidence::Likely
+                        } else {
+                            Confidence::Exact
+                        };
+                        (m, c)
+                    }),
+            ),
+            Ty::External(_) => Typed::Resolved(None),
+            Ty::Unknown => Typed::NoOpinion,
+        }
+    }
+
     /// Resolve a receiver call through its type hint.
     pub(super) fn resolve_typed(&self, e: &E) -> Typed {
         let Some(hint) = e.hint.as_deref() else {
@@ -2526,6 +3038,38 @@ impl Ctx {
                     .map(|m| (m, Confidence::Exact)),
             ),
             Ty::External(None) => Typed::Resolved(None),
+            Ty::Known(t) if e.arg.is_some() => {
+                // `a.partial_cmp(b)` with several `PartialOrd<X> for A`: pick by argument.
+                let ts = &self.syms[t];
+                let pkg = &self.files[ts.file].package;
+                let own: Vec<usize> = self
+                    .by_member
+                    .get(&(ts.name.clone(), e.name.clone()))
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|&m| {
+                        let mf = &self.files[self.syms[m].file];
+                        mf.lang == Lang::Rust && mf.package == *pkg
+                    })
+                    .collect();
+                match own.len() {
+                    0 | 1 => Typed::Resolved(
+                        self.method_on(t, &e.name, &mut HashSet::new(), 0)
+                            .map(|(m, via_base)| {
+                                let c = if via_base {
+                                    Confidence::Likely
+                                } else {
+                                    Confidence::Exact
+                                };
+                                (m, c)
+                            }),
+                    ),
+                    _ => {
+                        Typed::Resolved(self.overload_pick(e, &own).map(|m| (m, Confidence::Exact)))
+                    }
+                }
+            }
             Ty::Known(t) => {
                 let found =
                     self.method_on(t, &e.name, &mut HashSet::new(), 0)
