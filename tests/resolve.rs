@@ -152,6 +152,8 @@ fn go_implicit_interfaces_and_typed_receivers() {
     assert_eq!(impls(&ix, "Getter"), ["store.Cache", "store.Store"]);
     // ReadGetter = io.Reader (stdlib, known) + Getter.
     assert_eq!(impls(&ix, "ReadGetter"), ["store.Cache", "store.Store"]);
+    // flag.Getter, fmt.GoStringer, encoding.Text(Un)Marshaler have known method sets.
+    assert_eq!(impls(&ix, "Value"), ["store.boolValue"]);
     let a = "api/api.go";
     assert_edge(&ix, a, 16, "Get", "store.Store.Get", "exact");
     assert_edge(&ix, a, 17, "Get", "store.Store.Get", "exact");

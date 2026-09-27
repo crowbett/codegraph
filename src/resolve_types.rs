@@ -103,6 +103,11 @@ fn std_iface(qualified: &str) -> Option<&'static [(&'static str, (usize, usize))
         "io.ReadWriteCloser" => &[("Read", (1, 2)), ("Write", (1, 2)), ("Close", (0, 1))],
         "io.StringWriter" => &[("WriteString", (1, 2))],
         "fmt.Stringer" => &[("String", (0, 1))],
+        "fmt.GoStringer" => &[("GoString", (0, 1))],
+        "flag.Value" => &[("String", (0, 1)), ("Set", (1, 1))],
+        "flag.Getter" => &[("String", (0, 1)), ("Set", (1, 1)), ("Get", (0, 1))],
+        "encoding.TextMarshaler" => &[("MarshalText", (0, 2))],
+        "encoding.TextUnmarshaler" => &[("UnmarshalText", (1, 1))],
         "error" => &[("Error", (0, 1))],
         "sort.Interface" => &[("Len", (0, 1)), ("Less", (2, 1)), ("Swap", (2, 0))],
         "context.Context" => &[
