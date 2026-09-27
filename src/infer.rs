@@ -274,6 +274,9 @@ struct Decl<'a> {
     elem: bool,
     /// The binding holds a function (closure, arrow function, nested def).
     func: bool,
+    /// Python: a decorated `def`; `value` is its topmost decorator's expression, and
+    /// used as a value the name is that decorator's result (`@click.group() def cli`).
+    deco: bool,
 }
 
 /// Per-file inference state (function environments are built lazily).
@@ -506,6 +509,7 @@ impl<'a> Infer<'a> {
             value,
             elem: false,
             func,
+            deco: false,
         });
     }
 
@@ -521,6 +525,7 @@ impl<'a> Infer<'a> {
             value: Some(coll),
             elem: true,
             func: false,
+            deco: false,
         });
     }
 
@@ -735,6 +740,18 @@ impl<'a> Infer<'a> {
                 } else if self.is_function(n) {
                     if let Some(name) = n.child_by_field_name("name") {
                         Self::decl(out, self.t(name), n.start_byte(), None, true);
+                        // `@click.group() def cli`: as a value, `cli` is the decorator's
+                        // result. The topmost decorator is applied last.
+                        let deco = n
+                            .parent()
+                            .filter(|p| p.kind() == "decorated_definition")
+                            .and_then(|p| p.named_child(0))
+                            .filter(|d| d.kind() == "decorator")
+                            .and_then(|d| d.named_child(0));
+                        if let (Some(v), Some(last)) = (deco, out.last_mut()) {
+                            last.value = Some(v);
+                            last.deco = true;
+                        }
                     }
                     descend = false;
                 } else if top && Self::is_block(n) {
@@ -1195,6 +1212,11 @@ impl<'a> Infer<'a> {
                     }
                 }
                 match self.lookup(&name, e) {
+                    Some(dcl) if dcl.deco => {
+                        let v = dcl.value?;
+                        let h = self.eval(v, d)?;
+                        mk("D:", &h)
+                    }
                     Some(dcl) if dcl.func => None,
                     Some(dcl) => Some(self.decl_hint(&dcl, depth).unwrap_or_else(|| "L".into())),
                     None => None,
@@ -1310,6 +1332,17 @@ impl<'a> Infer<'a> {
                 {
                     // `pkg.F()`, `mod.f()`, `Class.create()`: a package-level callee.
                     return mk("C:", &format!("{}.{fname}", self.t(obj)));
+                }
+                // Python `pkg.mod.f()`: a dotted module path whose root is not a local.
+                if self.lang == Lang::Python && obj.kind() == "attribute" {
+                    let path = self.t(obj);
+                    let root = path.split('.').next().unwrap_or(path);
+                    let plain = path
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '.');
+                    if plain && self.lookup(root, obj).is_none() {
+                        return mk("C:", &format!("{path}.{fname}"));
+                    }
                 }
                 let base = self.eval(obj, d)?;
                 if base == "L" {

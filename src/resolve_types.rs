@@ -73,6 +73,52 @@ const SELF_CTORS: &[&str] = &[
     "with_capacity",
 ];
 /// `T`, `K2`, `Fut`-less short all-caps names: likely a generic type parameter.
+/// Types a Python decorator's result may give the decorated name, from the decorator's
+/// type text: union members, with `Callable[[..], R]` replaced by `R` (recursively), so
+/// `Group | Callable[[F], Group | GrpType]` (usable with or without arguments) gives
+/// `Group` and `GrpType`. The caller keeps the one that binds to a repo type.
+fn decorated_results(text: &str, out: &mut Vec<String>, depth: u8) {
+    fn bare(t: &str) -> &str {
+        let t = t.trim();
+        t.strip_prefix("typing.")
+            .or_else(|| t.strip_prefix("t."))
+            .or_else(|| t.strip_prefix("collections.abc."))
+            .unwrap_or(t)
+    }
+    if depth > 4 {
+        return;
+    }
+    let t = bare(text);
+    let members: Vec<&str> = match t.strip_prefix("Union[").and_then(|u| u.strip_suffix(']')) {
+        Some(inner) => split_top(inner, ','),
+        None => split_top(t, '|'),
+    };
+    if members.len() > 1 {
+        for m in members {
+            decorated_results(m, out, depth + 1);
+        }
+        return;
+    }
+    if t == "None" || t.is_empty() {
+        return;
+    }
+    match t
+        .strip_prefix("Callable[")
+        .and_then(|c| c.strip_suffix(']'))
+    {
+        Some(inner) => {
+            if let Some(r) = split_top(inner, ',').last() {
+                decorated_results(r, out, depth + 1);
+            }
+        }
+        None => {
+            if !out.iter().any(|o| o == t) {
+                out.push(t.to_string());
+            }
+        }
+    }
+}
+
 fn looks_generic(name: &str) -> bool {
     name.len() <= 2
         && name
@@ -705,6 +751,43 @@ impl Ctx {
                     awaited,
                     elem: true,
                 },
+                _ => Val::Ty(Ty::Unknown),
+            };
+        }
+        // Python `@deco def f`: `f` is what calling the decorator's value returns.
+        if let Some(inner) = h.strip_prefix("D:") {
+            return match self.eval_val(fi, from, inner, d) {
+                Val::Text {
+                    fi,
+                    from,
+                    text,
+                    unwrap: false,
+                    awaited: false,
+                    elem: false,
+                } => {
+                    let mut cands = Vec::new();
+                    decorated_results(&text, &mut cands, 0);
+                    let mut known: Vec<usize> = Vec::new();
+                    for text in cands {
+                        let v = Val::Text {
+                            fi,
+                            from,
+                            text,
+                            unwrap: false,
+                            awaited: false,
+                            elem: false,
+                        };
+                        if let Ty::Known(t) = self.bind_val(&v, d) {
+                            if !known.contains(&t) {
+                                known.push(t);
+                            }
+                        }
+                    }
+                    match known.as_slice() {
+                        [t] => Val::Ty(Ty::Known(*t)),
+                        _ => Val::Ty(Ty::Unknown),
+                    }
+                }
                 _ => Val::Ty(Ty::Unknown),
             };
         }
@@ -1417,6 +1500,30 @@ impl Ctx {
             [m] => Some(*m),
             _ => None,
         }
+    }
+
+    /// `super().m()` (Python): `m` found through the bases of the class enclosing the
+    /// call, never the class itself.
+    pub(super) fn resolve_super(&self, e: &E) -> Option<(usize, Confidence)> {
+        let mut cur = e.from_symbol.and_then(|id| self.by_id.get(&id).copied());
+        let class = loop {
+            let i = cur?;
+            let s = &self.syms[i];
+            if s.kind.is_type_like() {
+                break i;
+            }
+            cur = s.parent.and_then(|p| self.by_id.get(&p).copied());
+        };
+        let cs = &self.syms[class];
+        let mut seen = HashSet::new();
+        for (qual, base) in self.base_quals.get(&cs.name).into_iter().flatten() {
+            if let Ty::Known(b) = self.find_type(cs.file, qual.as_deref(), base, Some(cs.id)) {
+                if let Some((m, _)) = self.method_on(b, &e.name, &mut seen, 0) {
+                    return Some((m, Confidence::Exact));
+                }
+            }
+        }
+        None
     }
 
     /// Resolve a receiver call through its type hint.

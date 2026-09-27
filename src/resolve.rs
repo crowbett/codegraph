@@ -2672,6 +2672,10 @@ impl Ctx {
         lang: Lang,
     ) -> Option<(usize, Confidence)> {
         let fi = e.file;
+        // Python `super().m()`: only the bases of the enclosing class; never a guess.
+        if lang == Lang::Python && q.starts_with("super(") {
+            return self.resolve_super(e);
+        }
         let (self_ty, recv) = self.self_type(e.from_symbol);
         // 1. self-like (unless TS declared `this` explicitly: `function f(this: T)`, whose
         // hint is typed and goes through 1b).

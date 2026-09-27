@@ -286,4 +286,22 @@ fn python_packages_and_qualified_bases() {
         "pkg.core.Group.command",
         "likely",
     );
+    // `@pkg.deco.group() def cli`: `cli` is what the decorator returns (`Group`).
+    assert_edge(
+        &ix,
+        "app.py",
+        19,
+        "command",
+        "pkg.core.Group.command",
+        "exact",
+    );
+    // `super().greet()` goes to the base class, not the class's own `greet`.
+    assert_edge(
+        &ix,
+        "pkg/core.py",
+        13,
+        "greet",
+        "pkg.core.Base.greet",
+        "exact",
+    );
 }
