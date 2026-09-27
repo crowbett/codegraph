@@ -559,6 +559,17 @@ fn builtin_type(lang: Lang, name: &str) -> bool {
     list.contains(&name)
 }
 
+/// A TS primitive type or literal type (`boolean`, `"a"`, `42`, `false`).
+fn ts_primitive(t: &str) -> bool {
+    matches!(
+        t,
+        "boolean" | "string" | "number" | "bigint" | "symbol" | "void" | "true" | "false"
+    ) || t.starts_with(['"', '\'', '`'])
+        || t.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit() || c == '-')
+}
+
 /// (qualifier, name) of a callee path (`a::b::f`, `pkg.f`, `f`).
 fn split_callee(callee: &str) -> (Option<&str>, &str) {
     if let Some((q, n)) = callee.rsplit_once("::") {
@@ -718,6 +729,13 @@ fn normalize(lang: Lang, text: &str, unwrap: bool, awaited: bool, depth: u8) -> 
                 .map(str::trim)
                 .filter(|p| !matches!(*p, "" | "null" | "undefined"))
                 .collect();
+            // `Annotation | boolean`: a method call needs the one object type.
+            let objs: Vec<&str> = parts.iter().copied().filter(|p| !ts_primitive(p)).collect();
+            let parts = if parts.len() > 1 && objs.len() == 1 {
+                objs
+            } else {
+                parts
+            };
             if parts.len() != 1 {
                 return Norm::Unknown;
             }
@@ -1113,6 +1131,45 @@ impl Ctx {
             line: 0,
         };
         self.resolve_edge(&fake, &self.scopes[fi])
+    }
+
+    /// (file, first line, last line) of the object literal a JS/TS hint stands for: `O:a-b`
+    /// itself, or `C:f` where `f`'s return hint is one.
+    fn object_at(&self, fi: usize, from: Option<i64>, hint: &str) -> Option<(usize, u32, u32)> {
+        let parse = |h: &str| -> Option<(u32, u32)> {
+            let (a, b) = h.strip_prefix("O:")?.split_once('-')?;
+            Some((a.parse().ok()?, b.parse().ok()?))
+        };
+        if let Some((a, b)) = parse(hint) {
+            return Some((fi, a, b));
+        }
+        let callee = hint.strip_prefix("C:")?;
+        if !self.files[fi].lang.is_js_family() {
+            return None;
+        }
+        let key = (fi, from, hint.to_string());
+        if let Some(&r) = self
+            .obj_memo
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+        {
+            return r;
+        }
+        let callee = callee.rsplit_once('#').map_or(callee, |(c, _)| c);
+        let r = self
+            .resolve_callee(fi, from, callee)
+            .filter(|&(_, c)| c != Confidence::NameOnly)
+            .and_then(|(s, _)| {
+                let sym = &self.syms[s];
+                let (a, b) = parse(sym.ret.as_deref()?)?;
+                Some((sym.file, a, b))
+            });
+        self.obj_memo
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, r);
+        r
     }
 
     /// JS/TS hint `G:<guard>@..`: the type a type guard asserts (`(x: any) => x is Foo`,
@@ -1870,6 +1927,17 @@ impl Ctx {
         }
         if hint == "B" {
             return self.resolve_super(e);
+        }
+        if let Some((f, a, b)) = self.object_at(e.file, e.from_symbol, hint) {
+            let m = self.by_file[f]
+                .iter()
+                .copied()
+                .filter(|&s| {
+                    let sym = &self.syms[s];
+                    sym.kind == SymKind::Method && sym.name == e.name && (a..=b).contains(&sym.line)
+                })
+                .min_by_key(|&s| (self.syms[s].line, s));
+            return Typed::Resolved(m.map(|m| (m, Confidence::Exact)));
         }
         match self.eval_hint(e.file, e.from_symbol, e.line, hint) {
             Ty::Unknown => Typed::NoOpinion,

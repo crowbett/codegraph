@@ -184,11 +184,16 @@ struct Ctx {
     memo: Memo,
     /// Files declaring some type name more than once (see `types::find_type`).
     dup_types: Mutex<HashMap<usize, bool>>,
+    /// JS/TS `C:` hints -> the object literal the callee returns (see `types::object_at`).
+    obj_memo: ObjMemo,
 }
 
 /// Evaluated receiver hints keyed by (file, enclosing symbol, line, hint); the line is 0
 /// unless the file declares a type name twice.
 type Memo = Mutex<HashMap<(usize, Option<i64>, u32, String), types::Ty>>;
+
+/// (file, enclosing symbol, hint) -> (file, first line, last line) of an object literal.
+type ObjMemo = Mutex<HashMap<(usize, Option<i64>, String), Option<(usize, u32, u32)>>>;
 
 fn dir_of(p: &str) -> &str {
     p.rfind('/').map_or("", |i| &p[..i])
@@ -1731,6 +1736,7 @@ fn load_ctx(store: &Store, repo_id: i64, root: &Path) -> Result<Ctx> {
         scopes: Vec::new(),
         memo: Mutex::new(HashMap::new()),
         dup_types: Mutex::new(HashMap::new()),
+        obj_memo: Mutex::new(HashMap::new()),
     };
     for (i, f) in ctx.files.iter().enumerate() {
         ctx.paths.insert(f.path.clone(), i);
@@ -1886,6 +1892,7 @@ impl Ctx {
         self.ext_ids.clear();
         self.memo = Mutex::new(HashMap::new());
         self.dup_types = Mutex::new(HashMap::new());
+        self.obj_memo = Mutex::new(HashMap::new());
     }
 
     /// `package.json` files of JS/TS packages inside the repo (monorepo workspaces), so a

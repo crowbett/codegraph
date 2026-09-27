@@ -137,6 +137,13 @@ fn ts_factories_generics_and_super() {
         "exact",
     );
     assert_edge(&ix, g, 18, "read", "maps.Holder.read", "exact");
+    // Methods of a returned object literal and of inline object parameter types; a
+    // union with a primitive.
+    let o = "packages/app/src/objects.ts";
+    assert_edge(&ix, o, 14, "update", "objects.makeHasher.update", "exact");
+    assert_edge(&ix, o, 14, "entries", "objects.useHasher.entries", "exact");
+    assert_edge(&ix, o, 16, "digest", "objects.makeHasher.digest", "exact");
+    assert_edge(&ix, o, 20, "get", "factories.Value.get", "exact");
 }
 
 /// Start line of the target of the edge `name` at `file:line`.

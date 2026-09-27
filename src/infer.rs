@@ -15,6 +15,7 @@
 //! | `Q:<hint>` | `<hint>` unwrapped (Rust `?`, `.unwrap()`); `A:<hint>` awaited |
 //! | `E:<hint>` | an element of the collection `<hint>` (loop variables, callback params) |
 //! | `G:<guard>@<hint>` | a variable narrowed by type guard `<guard>` (see JS/TS narrowing), else `<hint>` |
+//! | `O:<a>-<b>` | JS/TS: the object literal / inline object type on lines `a..=b` of the file the hint belongs to (a parameter typed `{ m(): X }`, or the return of an unannotated function returning `{ m() {..} }`): its methods are the method symbols written there (the first on the line when two such types share one) |
 //! | `L` | a local variable or parameter with no known type (never a repo symbol) |
 //!
 //! Evidence comes from parameters, `let`/`:=`/`const`/assignments, struct and class
@@ -666,11 +667,14 @@ impl<'a> Infer<'a> {
                 if let Some(ps) = f.child_by_field_name("parameters") {
                     let mut c = ps.walk();
                     for p in ps.named_children(&mut c) {
-                        let ty = p
-                            .child_by_field_name("type")
-                            .and_then(|t| t.named_child(0))
-                            .and_then(|t| subst(&squash(self.t(t)), &gens))
-                            .and_then(|t| mk("T:", &t));
+                        let tn = p.child_by_field_name("type").and_then(|t| t.named_child(0));
+                        let ty = match tn {
+                            // `(v: { entries(): X })`: the members written there.
+                            Some(t) if t.kind() == "object_type" => object_hint(t),
+                            _ => tn
+                                .and_then(|t| subst(&squash(self.t(t)), &gens))
+                                .and_then(|t| mk("T:", &t)),
+                        };
                         let pat = p.child_by_field_name("pattern").unwrap_or(p);
                         if let (Some(s), None, "identifier") = (src, &ty, pat.kind()) {
                             if first_param(ps, p) {
@@ -1573,13 +1577,60 @@ impl<'a> Infer<'a> {
                 return subst(&squash(self.t(r)), &b).and_then(|t| mk("T:", &t));
             }
             Lang::TypeScript | Lang::Tsx | Lang::JavaScript => {
-                let r = def.child_by_field_name("return_type")?;
-                r.named_child(0).unwrap_or(r)
+                if let Some(r) = def.child_by_field_name("return_type") {
+                    r.named_child(0).unwrap_or(r)
+                } else {
+                    // Unannotated, returning an object literal: its methods.
+                    let f = if def.kind() == "variable_declarator" {
+                        def.child_by_field_name("value")?
+                    } else {
+                        def
+                    };
+                    return self.returned_object(f).and_then(object_hint);
+                }
             }
             Lang::Python => def.child_by_field_name("return_type")?,
             Lang::C | Lang::Cpp => return None,
         };
         mk("T:", &squash(self.t(r)))
+    }
+
+    /// The object literal a JS/TS function returns, when that is its only `return`
+    /// (or an arrow's expression body).
+    fn returned_object(&self, f: Node<'a>) -> Option<Node<'a>> {
+        if !self.is_function(f) {
+            return None;
+        }
+        let body = f.child_by_field_name("body")?;
+        let unparen = |n: Node<'a>| {
+            let mut n = n;
+            while n.kind() == "parenthesized_expression" {
+                n = n.named_child(0)?;
+            }
+            Some(n)
+        };
+        if body.kind() != "statement_block" {
+            return unparen(body).filter(|o| o.kind() == "object");
+        }
+        let mut rets = Vec::new();
+        let mut stack = vec![body];
+        while let Some(n) = stack.pop() {
+            if n.kind() == "return_statement" {
+                rets.push(n);
+                if rets.len() > 1 {
+                    return None;
+                }
+                continue;
+            }
+            if n.id() != body.id() && self.is_function(n) {
+                continue;
+            }
+            stack.extend(named(n));
+        }
+        let [r] = rets.as_slice() else {
+            return None;
+        };
+        unparen(r.named_child(0)?).filter(|o| o.kind() == "object")
     }
 
     /// Field hints of a struct/class definition node: (name, hint). Go embedded fields
@@ -1841,6 +1892,18 @@ const ITER_CALLBACKS: &[&str] = &[
     "findLast",
     "flatMap",
 ];
+
+/// `O:<first line>-<last line>` of an object literal / inline object type.
+fn object_hint(o: Node<'_>) -> Option<String> {
+    mk(
+        "O:",
+        &format!(
+            "{}-{}",
+            o.start_position().row + 1,
+            o.end_position().row + 1
+        ),
+    )
+}
 
 /// What a condition proves about a variable (see `Infer::narrowed`).
 enum Narrow {
