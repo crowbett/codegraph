@@ -974,6 +974,26 @@ impl Ctx {
         }
     }
 
+    /// Type symbols named `name` defined in `files`, or re-exported by them.
+    fn type_syms_via(&self, files: &[usize], name: &str) -> Vec<usize> {
+        let direct = self.type_syms_in(files, name);
+        if !direct.is_empty() {
+            return direct;
+        }
+        let via: Vec<usize> = self
+            .lookup_in(files, name, EdgeKind::Ref, 2)
+            .into_iter()
+            .filter(|&s| self.syms[s].kind.is_type_like())
+            .collect();
+        if !via.is_empty() {
+            return via;
+        }
+        self.reexported(files, name, EdgeKind::Ref)
+            .into_iter()
+            .filter(|&s| self.syms[s].kind.is_type_like())
+            .collect()
+    }
+
     fn type_syms_in(&self, files: &[usize], name: &str) -> Vec<usize> {
         self.by_name
             .get(name)
@@ -1013,7 +1033,8 @@ impl Ctx {
             }
             return match scope.modules.get(q) {
                 Some(t) if t.is_empty() => Ty::External(None),
-                Some(t) => self.pick_type(fi, &self.type_syms_in(t, name)),
+                // `click.Group` where `click/__init__.py` re-exports `Group`.
+                Some(t) => self.pick_type(fi, &self.type_syms_via(t, name)),
                 None => {
                     if lang == Lang::Python {
                         if let Some(files) = self.py_module(fi, q) {
@@ -1163,8 +1184,8 @@ impl Ctx {
             }
         }
         // Traits / base classes / implemented interfaces.
-        for base in self.bases.get(&ts.name).into_iter().flatten() {
-            let Ty::Known(b) = self.find_type(ts.file, None, base, Some(ts.id)) else {
+        for (qual, base) in self.base_quals.get(&ts.name).into_iter().flatten() {
+            let Ty::Known(b) = self.find_type(ts.file, qual.as_deref(), base, Some(ts.id)) else {
                 continue;
             };
             if let Some((m, _)) = self.method_on(b, name, seen, d + 1) {

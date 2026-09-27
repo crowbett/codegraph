@@ -173,6 +173,9 @@ struct Ctx {
     by_stem: HashMap<String, Vec<usize>>,
     mentioned: Vec<HashSet<String>>,
     bases: HashMap<String, Vec<String>>,
+    /// The same bases with the qualifier they were written with (`click.Group`), for
+    /// binding them as types from the subclass's file.
+    base_quals: HashMap<String, Vec<(Option<String>, String)>>,
     /// Types implementing an in-repo trait that are not repo types themselves (`Vec` in
     /// `impl BufMut for Vec<u8>`), by id; see `types::Ty::External`.
     ext_names: Vec<String>,
@@ -1704,6 +1707,7 @@ fn load_ctx(store: &Store, repo_id: i64, root: &Path) -> Result<Ctx> {
         by_file,
         mentioned: vec![HashSet::new(); files.len()],
         bases: HashMap::new(),
+        base_quals: HashMap::new(),
         ext_names: Vec::new(),
         ext_ids: HashMap::new(),
         files,
@@ -1876,6 +1880,7 @@ impl Ctx {
         self.scopes = Vec::new();
         self.mentioned = vec![HashSet::new(); self.files.len()];
         self.bases.clear();
+        self.base_quals.clear();
         self.path_mods.clear();
         self.path_parent.clear();
         self.ext_names.clear();
@@ -2061,6 +2066,10 @@ impl Ctx {
                         .map(|&i| self.syms[i].name.clone())
                 });
                 if let Some(from) = from {
+                    self.base_quals
+                        .entry(from.clone())
+                        .or_default()
+                        .push((e.qualifier.clone(), e.name.clone()));
                     self.bases.entry(from).or_default().push(e.name.clone());
                 }
             }
@@ -2754,6 +2763,17 @@ impl Ctx {
                 let files = self.py_module(fi, &sub).unwrap_or_else(|| targets.clone());
                 let m = self.lookup_in(&files, &e.name, e.kind, 2);
                 return self.pick(fi, &m, Confidence::Exact, Confidence::Likely);
+            }
+            // `import click` ... `click.utils.f()`: a submodule of a bound package.
+            let pkg = q.split('.').next().unwrap_or(q);
+            if let Some(targets) = scope.modules.get(pkg) {
+                if targets.is_empty() {
+                    return None;
+                }
+                if let Some(files) = self.py_module(fi, q) {
+                    let m = self.lookup_in(&files, &e.name, e.kind, 2);
+                    return self.pick(fi, &m, Confidence::Exact, Confidence::Likely);
+                }
             }
         }
         // 3. Rust paths (`crate::a::f`, `super::f`, `a::b::Type::new`).

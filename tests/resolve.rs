@@ -271,3 +271,19 @@ fn python_dotted_import_and_subscripted_bases() {
     // `class Child(Base[int])` inherits `fail`.
     assert_edge(&ix, "main.py", 7, "fail", "pkg.utils.Base.fail", "likely");
 }
+
+#[test]
+fn python_packages_and_qualified_bases() {
+    let ix = index_fixture("python_infer");
+    // `import pkg` ... `pkg.utils.helper()`: a submodule of a bound package.
+    assert_edge(&ix, "app.py", 9, "helper", "pkg.utils.helper", "exact");
+    // `class Custom(pkg.Group)` with `Group` re-exported by `pkg/__init__.py`.
+    assert_edge(
+        &ix,
+        "app.py",
+        11,
+        "command",
+        "pkg.core.Group.command",
+        "likely",
+    );
+}
