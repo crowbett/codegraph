@@ -54,11 +54,15 @@ fn code(line: &str) -> &str {
 }
 
 /// Ends like a type (`): T`, `): Promise<X>`, `x: number`, `]`) and not like a statement
-/// that already ends or continues.
+/// that already ends or continues. A line of closing brackets only (`>`, `]>`) ends a
+/// member whose type was broken over several lines (`): Map<` / `K, V` / `>`).
 fn needs_separator(line: &str) -> bool {
     let c = code(line);
     if c.is_empty() {
         return false;
+    }
+    if c.starts_with('>') && c.chars().all(|ch| matches!(ch, '>' | ']')) {
+        return true;
     }
     let last = c.chars().last().unwrap_or(' ');
     let ends_type = last.is_alphanumeric() || matches!(last, '_' | '$' | '>' | ']' | ')');
@@ -98,6 +102,16 @@ mod tests {
         // Same line count, same prefix of every line.
         assert_eq!(out.lines().count(), src.lines().count());
         assert!(separate_signatures(b"let a: number = 1\nfoo()\n").is_none());
+    }
+
+    #[test]
+    fn multi_line_return_type() {
+        let src = "interface F {\n    <K>(a?: A): Map<\n        K\n    >\n    <K>(b: B): X\n}\n";
+        let out = String::from_utf8(separate_signatures(src.as_bytes()).unwrap()).unwrap();
+        assert_eq!(
+            out,
+            "interface F {\n    <K>(a?: A): Map<\n        K\n    >;\n    <K>(b: B): X\n}\n"
+        );
     }
 
     #[test]

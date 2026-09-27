@@ -79,6 +79,15 @@ fn ts_workspace_packages_and_typed_receivers() {
 }
 
 #[test]
+fn ts_factories_generics_and_super() {
+    let ix = index_fixture("ts_infer");
+    let f = "packages/app/src/factory.ts";
+    // A call signature whose return type spans lines (`Map<` .. `>`) before the next
+    // signature: the rest of the file must still parse.
+    assert_edge(&ix, f, 20, "run", "factory.Later.run", "exact");
+}
+
+#[test]
 fn rust_loop_vars_callbacks_reexports_and_test_modules() {
     let ix = index_fixture("rust_infer");
     let w = "src/walk.rs";
