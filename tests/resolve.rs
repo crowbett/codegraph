@@ -363,6 +363,20 @@ fn rust_supertrait_methods_on_generic_bounds() {
     );
 }
 
+#[test]
+fn rust_self_default_is_the_impl_type() {
+    let ix = index_fixture("rust_infer");
+    // `let mut v = Self::default();` with a derived Default.
+    assert_edge(
+        &ix,
+        "src/selfdef.rs",
+        13,
+        "bump",
+        "selfdef::Acc2::bump",
+        "exact",
+    );
+}
+
 fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
     let mut st = ix
         .store

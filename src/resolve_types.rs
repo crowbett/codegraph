@@ -1212,7 +1212,16 @@ impl Ctx {
                     Some((a, b)) => (Some(a), b),
                     None => (None, q),
                 };
-                if let Ty::Known(t) = self.find_type(fi, tq, tn, from) {
+                // `Self::default()`: the enclosing impl's type.
+                let found = if tq.is_none() && tn == "Self" {
+                    match self.self_type(from).0 {
+                        Some(n) => self.find_type(fi, None, &n, from),
+                        None => Ty::Unknown,
+                    }
+                } else {
+                    self.find_type(fi, tq, tn, from)
+                };
+                if let Ty::Known(t) = found {
                     return Val::Ty(Ty::Known(t));
                 }
             }

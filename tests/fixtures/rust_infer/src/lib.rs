@@ -62,3 +62,4 @@ pub mod prim;
 pub mod arr;
 pub mod tmacro;
 pub mod sup;
+pub mod selfdef;
