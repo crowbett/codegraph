@@ -1282,6 +1282,11 @@ impl<'a> Infer<'a> {
             }
             "field_expression" | "selector_expression" | "member_expression" | "attribute" => {
                 let (obj, field) = Self::member_parts(e)?;
+                if self.lang == Lang::Go {
+                    if let Some(h) = self.anon_struct_field(obj, self.t(field)) {
+                        return Some(h);
+                    }
+                }
                 let base = self.eval(obj, d)?;
                 if base == "L" {
                     return None;
@@ -1330,6 +1335,66 @@ impl<'a> Infer<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Go: the written type of field `field` of a variable whose value is an anonymous
+    /// struct literal, or an element of one (table tests: `tests := []struct{ f Flag
+    /// }{..}; for _, tt := range tests { tt.f.Names() }`). Struct type text is not a
+    /// symbol, so the field is read from the literal's syntax here.
+    fn anon_struct_field(&mut self, obj: Node<'a>, field: &str) -> Option<String> {
+        if obj.kind() != "identifier" {
+            return None;
+        }
+        let d = self.lookup(self.t(obj), obj)?;
+        if d.hint.is_some() || d.func {
+            return None;
+        }
+        let mut v = d.value?;
+        if v.kind() == "identifier" {
+            // `range tests`: the collection's own declaration.
+            let d2 = self.lookup(self.t(v), v)?;
+            if d2.hint.is_some() || d2.elem || d2.func {
+                return None;
+            }
+            v = d2.value?;
+        }
+        if v.kind() != "composite_literal" {
+            return None;
+        }
+        let mut ty = v.child_by_field_name("type")?;
+        if d.elem {
+            ty = match ty.kind() {
+                "slice_type" | "array_type" | "implicit_length_array_type" => {
+                    ty.child_by_field_name("element")?
+                }
+                "map_type" => ty.child_by_field_name("value")?,
+                _ => return None,
+            };
+        }
+        if ty.kind() == "pointer_type" {
+            ty = ty.named_child(0)?;
+        }
+        if ty.kind() != "struct_type" {
+            return None;
+        }
+        let list = ty.named_child(0)?;
+        for fd in named(list) {
+            if fd.kind() != "field_declaration" {
+                continue;
+            }
+            let mut c = fd.walk();
+            let hit = fd
+                .children_by_field_name("name", &mut c)
+                .any(|n| self.t(n) == field);
+            if hit {
+                let t = fd.child_by_field_name("type")?;
+                if t.kind() == "struct_type" {
+                    return None;
+                }
+                return mk("T:", &squash(self.t(t)));
+            }
+        }
+        None
     }
 
     /// (object, field) of a member access.

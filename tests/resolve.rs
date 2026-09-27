@@ -216,6 +216,16 @@ fn go_generic_bounds_on_vars_and_receivers() {
 }
 
 #[test]
+fn go_anonymous_struct_fields() {
+    let ix = index_fixture("go_infer");
+    let f = "api/table.go";
+    // Table-test element, a plain anonymous struct value, a map-of-struct element.
+    assert_edge(&ix, f, 13, "Get", "store.Store.Get", "exact");
+    assert_edge(&ix, f, 16, "Get", "store.Store.Get", "exact");
+    assert_edge(&ix, f, 19, "Get", "store.Getter.Get", "exact");
+}
+
+#[test]
 fn rust_receivers_inside_macros_and_smart_pointers() {
     let ix = index_fixture("rust_infer");
     let f = "src/shared.rs";
