@@ -16,7 +16,7 @@ use crate::layout::FileUnit;
 
 /// Bump when the schema or extraction output changes incompatibly; a mismatch
 /// wipes the graph so the next `index` rebuilds it.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);

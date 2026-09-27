@@ -32,3 +32,6 @@ type Cache struct {
 type Wrong struct{}
 
 func (Wrong) Get() string { return "" }
+
+// Parse is a generic function called with explicit type arguments.
+func Parse[T any](s string) *Store { return New() }

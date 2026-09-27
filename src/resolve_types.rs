@@ -217,6 +217,11 @@ fn std_iface(qualified: &str) -> Option<&'static [(&'static str, (usize, usize))
         "io.ReadWriteCloser" => &[("Read", (1, 2)), ("Write", (1, 2)), ("Close", (0, 1))],
         "io.StringWriter" => &[("WriteString", (1, 2))],
         "fmt.Stringer" => &[("String", (0, 1))],
+        "fmt.GoStringer" => &[("GoString", (0, 1))],
+        "flag.Value" => &[("String", (0, 1)), ("Set", (1, 1))],
+        "flag.Getter" => &[("String", (0, 1)), ("Set", (1, 1)), ("Get", (0, 1))],
+        "encoding.TextMarshaler" => &[("MarshalText", (0, 2))],
+        "encoding.TextUnmarshaler" => &[("UnmarshalText", (1, 1))],
         "error" => &[("Error", (0, 1))],
         "sort.Interface" => &[("Len", (0, 1)), ("Less", (2, 1)), ("Swap", (2, 0))],
         "context.Context" => &[
@@ -819,6 +824,34 @@ impl Ctx {
                     awaited,
                     elem: true,
                 },
+                // An element of an element (`grid[i][j]`, `for _, x := range xss[i]`):
+                // take the inner element type now.
+                Val::Text {
+                    fi,
+                    from,
+                    text,
+                    unwrap,
+                    awaited,
+                    elem: true,
+                } => {
+                    let lang = self.files[fi].lang;
+                    let outer = if unwrap {
+                        unwrap_text(lang, &text)
+                    } else {
+                        text
+                    };
+                    match element_of(lang, &outer) {
+                        Some(text) => Val::Text {
+                            fi,
+                            from,
+                            text,
+                            unwrap: false,
+                            awaited,
+                            elem: true,
+                        },
+                        None => Val::Ty(Ty::Unknown),
+                    }
+                }
                 _ => Val::Ty(Ty::Unknown),
             };
         }
@@ -951,6 +984,9 @@ impl Ctx {
         }
         if let Some(callee) = h.strip_prefix("C:") {
             return self.eval_call(fi, from, callee, d);
+        }
+        if let Some(g) = h.strip_prefix("G:") {
+            return self.eval_global(fi, g, d);
         }
         let (tag, rest) = h.split_at(2.min(h.len()));
         let Some((name, base)) = rest.split_once('@') else {
@@ -1112,7 +1148,13 @@ impl Ctx {
             return self.field_of(target, name, seen, d + 1);
         }
         let s = &self.syms[t];
-        if let Some((_, h)) = s.fields.iter().find(|(k, _)| k == name) {
+        // A named field, else a Go embedded field accessed by its type name
+        // (`be.HTTPError` for an embedded `*HTTPError`, stored as `~HTTPError`).
+        if let Some((_, h)) = s.fields.iter().find(|(k, _)| k == name).or_else(|| {
+            s.fields
+                .iter()
+                .find(|(k, _)| k.strip_prefix('~') == Some(name))
+        }) {
             return self.eval_val(s.file, Some(s.id), h, d + 1);
         }
         // Go embedded fields promote their fields.
@@ -1129,6 +1171,76 @@ impl Ctx {
             }
         }
         Val::Ty(Ty::Unknown)
+    }
+
+    /// Go package-level var/const `name` as seen from file `fi`: same package when
+    /// unqualified, else in the package `qual` is imported as. `Err(())`: `qual` is a
+    /// package outside the repo. `Ok(None)`: no such var (or several).
+    fn go_global(&self, fi: usize, qual: Option<&str>, name: &str) -> Result<Option<usize>, ()> {
+        let scope = &self.scopes[fi];
+        let is_var = |s: usize| matches!(self.syms[s].kind, SymKind::Var | SymKind::Const);
+        let cands: Vec<usize> = if let Some(q) = qual {
+            match scope.modules.get(q) {
+                Some(t) if t.is_empty() => return Err(()),
+                Some(t) => self
+                    .by_name
+                    .get(name)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|&s| is_var(s) && t.contains(&self.syms[s].file))
+                    .collect(),
+                None => return Ok(None),
+            }
+        } else {
+            // A package name bound in this file is not a var.
+            if scope.modules.contains_key(name) {
+                return Ok(None);
+            }
+            let f = &self.files[fi];
+            self.by_name
+                .get(name)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|&s| {
+                    let sf = &self.files[self.syms[s].file];
+                    is_var(s) && sf.lang == Lang::Go && sf.package == f.package
+                })
+                .collect()
+        };
+        Ok(match cands.as_slice() {
+            [s] => Some(*s),
+            _ => None,
+        })
+    }
+
+    /// `G:` hint: a Go package-level var (`Name`, `pkg.Name`), or a field of one
+    /// (`cfg.Field` where `cfg` is a var of this package declared in another file).
+    fn eval_global(&self, fi: usize, g: &str, d: u8) -> Val {
+        if self.files[fi].lang != Lang::Go {
+            return Val::Ty(Ty::Unknown);
+        }
+        let (qual, name) = match g.split_once('.') {
+            Some((q, n)) => (Some(q), n),
+            None => (None, g),
+        };
+        if let Some(q) = qual {
+            if !self.scopes[fi].modules.contains_key(q) {
+                return match self.bind_val(&self.eval_global(fi, q, d + 1), d + 1) {
+                    Ty::Known(t) => self.field_of(t, name, &mut HashSet::new(), d + 1),
+                    other => Val::Ty(other),
+                };
+            }
+        }
+        match self.go_global(fi, qual, name) {
+            Err(()) => Val::Ty(Ty::External(None)),
+            Ok(Some(s)) => match self.syms[s].ret.clone() {
+                Some(r) => self.eval_val(self.syms[s].file, Some(self.syms[s].id), &r, d),
+                None => Val::Ty(Ty::Unknown),
+            },
+            Ok(None) => Val::Ty(Ty::Unknown),
+        }
     }
 
     fn eval_call(&self, fi: usize, from: Option<i64>, callee: &str, d: u8) -> Val {
@@ -1165,6 +1277,14 @@ impl Ctx {
                 Some(r) => self.eval_val(sym.file, Some(sym.id), &r, d),
                 None => Val::Ty(Ty::Unknown),
             };
+        }
+        // Go: calling a package-level var bound to a function (`var NewX = NewBase[T]`).
+        if lang == Lang::Go {
+            if let Ok(Some(s)) = self.go_global(fi, qual, name) {
+                if let Some(r) = self.syms[s].ret.clone().filter(|r| r.starts_with("C:")) {
+                    return self.eval_val(self.syms[s].file, Some(self.syms[s].id), &r, d);
+                }
+            }
         }
         // `Type::default()` / `Type::from(..)` from a derive or a std trait impl: no symbol,
         // but it returns the type itself.

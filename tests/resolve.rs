@@ -148,10 +148,18 @@ fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
 #[test]
 fn go_implicit_interfaces_and_typed_receivers() {
     let ix = index_fixture("go_infer");
-    // Store has Get with the right shape; Cache gets it by embedding; Wrong's Get differs.
-    assert_eq!(impls(&ix, "Getter"), ["store.Cache", "store.Store"]);
+    // Store has Get with the right shape; Cache and api.wrapped get it by embedding; Wrong's Get differs.
+    assert_eq!(
+        impls(&ix, "Getter"),
+        ["api.wrapped", "store.Cache", "store.Store"]
+    );
     // ReadGetter = io.Reader (stdlib, known) + Getter.
-    assert_eq!(impls(&ix, "ReadGetter"), ["store.Cache", "store.Store"]);
+    assert_eq!(
+        impls(&ix, "ReadGetter"),
+        ["api.wrapped", "store.Cache", "store.Store"]
+    );
+    // flag.Getter, fmt.GoStringer, encoding.Text(Un)Marshaler have known method sets.
+    assert_eq!(impls(&ix, "Value"), ["store.boolValue"]);
     let a = "api/api.go";
     assert_edge(&ix, a, 16, "Get", "store.Store.Get", "exact");
     assert_edge(&ix, a, 17, "Get", "store.Store.Get", "exact");
@@ -161,6 +169,90 @@ fn go_implicit_interfaces_and_typed_receivers() {
     assert_eq!(edge(&ix.store, a, 19, "Set"), None);
     // Promoted through the embedded *Store, from a range element.
     assert_edge(&ix, a, 21, "Get", "store.Store.Get", "likely");
+}
+
+#[test]
+fn go_explicit_generic_instantiation() {
+    let ix = index_fixture("go_infer");
+    let g = "api/generic.go";
+    // `pkg.F[T](x)` / `F[T](x)` parse as conversions to a generic type.
+    assert_edge(&ix, g, 8, "Parse", "store.Parse", "exact");
+    assert_edge(&ix, g, 9, "local", "api.local", "exact");
+    // ... and their results type the receiver.
+    assert_edge(&ix, g, 10, "Get", "store.Store.Get", "exact");
+    assert_edge(&ix, g, 12, "Get", "store.Store.Get", "exact");
+    // Indexing a local map of functions is not a call to a repo symbol.
+    assert_eq!(edge(&ix.store, g, 14, "fns"), None);
+}
+
+#[test]
+fn go_embedded_field_access_and_named_results() {
+    let ix = index_fixture("go_infer");
+    let f = "api/embed.go";
+    // `w.Store` names the embedded `*store.Store` field.
+    assert_edge(&ix, f, 11, "Get", "store.Store.Get", "exact");
+    // A named result is a typed local.
+    assert_edge(&ix, f, 16, "Get", "store.Store.Get", "exact");
+}
+
+#[test]
+fn go_index_expressions() {
+    let ix = index_fixture("go_infer");
+    let f = "api/index.go";
+    // Slice and map elements (comma-ok too), elements of elements.
+    for line in [11, 14, 17, 19] {
+        assert_edge(&ix, f, line, "Get", "store.Store.Get", "exact");
+    }
+}
+
+#[test]
+fn go_generic_bounds_on_vars_and_receivers() {
+    let ix = index_fixture("go_infer");
+    let f = "api/bound.go";
+    // `var vc VC` with VC bound by the receiver type's declaration (renamed params).
+    assert_edge(&ix, f, 17, "Create", "api.Creator.Create", "exact");
+    // `var c C` with C bound by the function's own type parameters.
+    assert_edge(&ix, f, 22, "Create", "api.Creator.Create", "exact");
+}
+
+#[test]
+fn go_anonymous_struct_fields() {
+    let ix = index_fixture("go_infer");
+    let f = "api/table.go";
+    // Table-test element, a plain anonymous struct value, a map-of-struct element.
+    assert_edge(&ix, f, 13, "Get", "store.Store.Get", "exact");
+    assert_edge(&ix, f, 16, "Get", "store.Store.Get", "exact");
+    assert_edge(&ix, f, 19, "Get", "store.Getter.Get", "exact");
+}
+
+#[test]
+fn go_package_level_vars() {
+    let ix = index_fixture("go_infer");
+    let u = "store/use.go";
+    // Same package, declared in another file: initializer type, written type.
+    assert_edge(&ix, u, 4, "Get", "store.Store.Get", "exact");
+    assert_edge(&ix, u, 5, "Get", "store.Getter.Get", "exact");
+    // Vars bound to instantiated generic functions, called.
+    assert_edge(&ix, u, 6, "Get", "store.Store.Get", "exact");
+    assert_edge(&ix, u, 7, "Get", "store.Store.Get", "likely");
+    // A field of such a var.
+    assert_edge(&ix, u, 8, "Get", "store.Store.Get", "exact");
+    // Qualified by an imported package.
+    let a = "api/vars.go";
+    assert_edge(&ix, a, 10, "Get", "store.Store.Get", "exact");
+    assert_edge(&ix, a, 11, "Get", "store.Getter.Get", "exact");
+    // A var of a package outside the repo: nothing, not a guess.
+    assert_eq!(edge(&ix.store, a, 12, "Get"), None);
+}
+
+#[test]
+fn go_local_closures_and_make() {
+    let ix = index_fixture("go_infer");
+    let f = "api/closure.go";
+    // Calling a local closure: its written result type.
+    assert_edge(&ix, f, 11, "Get", "store.Store.Get", "exact");
+    // `make(url.Values)` is a stdlib type: nothing, not a guess.
+    assert_eq!(edge(&ix.store, f, 13, "Get"), None);
 }
 
 #[test]

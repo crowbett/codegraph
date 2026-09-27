@@ -397,6 +397,8 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
         };
         if matches!(sym.kind, SymKind::Function | SymKind::Method) {
             sym.ret = infer.ret_of(node);
+        } else if matches!(sym.kind, SymKind::Var | SymKind::Const) {
+            sym.ret = infer.var_ret_of(node, &sym.name);
         } else if matches!(
             sym.kind,
             SymKind::Struct | SymKind::Class | SymKind::Interface
