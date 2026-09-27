@@ -232,6 +232,29 @@ fn rust_generic_parameters_bind_to_their_bound() {
     );
 }
 
+#[test]
+fn rust_trait_overloads_picked_by_argument_type() {
+    let ix = index_fixture("rust_infer");
+    let f = "src/conv.rs";
+    // `&b"abc"[..]` -> `From<&'static [u8]>` (line 6), `vec![..]` -> `From<Vec<u8>>`
+    // (12), a `const LONG: &[u8]` -> the slice impl, and `Vec::from(c)` -> the in-repo
+    // `From<Buf3> for Vec<u8>` (18).
+    for (line, def) in [(26, 6), (27, 12), (28, 6), (30, 18)] {
+        let got: Option<(u32, String)> = ix
+            .store
+            .conn()
+            .query_row(
+                "SELECT t.start_line, e.confidence FROM edges e JOIN files f ON f.id = e.file_id
+                 JOIN symbols t ON t.id = e.to_symbol
+                 WHERE f.path = ?1 AND e.line = ?2 AND e.name = 'from'",
+                rusqlite::params![f, line],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        assert_eq!(got, Some((def, "exact".to_string())), "{f}:{line}");
+    }
+}
+
 fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
     let mut st = ix
         .store

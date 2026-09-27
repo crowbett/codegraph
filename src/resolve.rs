@@ -32,7 +32,7 @@ mod types;
 
 /// Rust std-trait methods a type commonly implements several times (once per type
 /// parameter of the trait), so a name alone cannot pick the impl.
-const TRAIT_OVERLOADS: &[&str] = &[
+pub(crate) const TRAIT_OVERLOADS: &[&str] = &[
     "from",
     "try_from",
     "into",
@@ -124,6 +124,8 @@ struct E {
     hint: Option<String>,
     /// Rust method-call syntax.
     dot: bool,
+    /// First-argument type hint (`at` in `extra`) of a Rust trait-overload call.
+    arg: Option<String>,
     /// 1-based line of the reference.
     line: u32,
 }
@@ -1072,6 +1074,7 @@ pub fn resolve_and_insert(
                 old_to_file: None,
                 hint: r.hint,
                 dot: r.dot,
+                arg: r.arg,
                 line: r.line,
             });
         }
@@ -1091,6 +1094,7 @@ pub fn resolve_and_insert(
                 old_to_file: None,
                 hint: None,
                 dot: false,
+                arg: None,
                 line: imp.line,
             });
         }
@@ -1107,7 +1111,7 @@ pub fn resolve_and_insert(
             if e.kind == EdgeKind::Import {
                 e.extra.clone()
             } else {
-                crate::store::ref_extra(e.hint.as_deref(), e.dot)
+                crate::store::ref_extra(e.hint.as_deref(), e.dot, e.arg.as_deref())
             }
         })
         .collect();
@@ -1324,6 +1328,7 @@ fn resolve_edges(
                     old_to_file: None,
                     hint: None,
                     dot: false,
+                    arg: None,
                     line: e.line,
                 };
                 ctx.resolve_edge(&fake, &ctx.scopes[e.file])
@@ -1423,14 +1428,16 @@ fn parse_extra(extra: Option<&str>) -> ImportExtra {
         .unwrap_or_default()
 }
 
-/// (receiver type hint, method-call syntax) from a reference edge's `extra`.
-fn ref_hint(extra: Option<&str>) -> (Option<String>, bool) {
+/// (receiver type hint, method-call syntax, argument type hint) from a reference edge's
+/// `extra`.
+fn ref_hint(extra: Option<&str>) -> (Option<String>, bool, Option<String>) {
     let Some(v) = extra.and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()) else {
-        return (None, false);
+        return (None, false, None);
     };
     (
         v["rt"].as_str().map(str::to_string),
         v["dot"].as_bool().unwrap_or(false),
+        v["at"].as_str().map(str::to_string),
     )
 }
 
@@ -1570,8 +1577,8 @@ fn edge_row(
     if extra.as_deref() == Some(IMPLICIT) {
         return Ok(Some(Err(r.get(0)?)));
     }
-    let (hint, dot) = if kind == EdgeKind::Import {
-        (None, false)
+    let (hint, dot, arg) = if kind == EdgeKind::Import {
+        (None, false, None)
     } else {
         ref_hint(extra.as_deref())
     };
@@ -1589,6 +1596,7 @@ fn edge_row(
         old_to_file: r.get(10)?,
         hint,
         dot,
+        arg,
         line: r.get(11)?,
     })))
 }
@@ -2688,7 +2696,7 @@ impl Ctx {
                     for t in &frontier {
                         for b in self.bases.get(t).into_iter().flatten() {
                             if seen.insert(b.clone()) {
-                                if let Some(r) = self.by_container(fi, cands, b, Confidence::Likely)
+                                if let Some(r) = self.by_container(e, cands, b, Confidence::Likely)
                                 {
                                     return Some(r);
                                 }
@@ -2743,7 +2751,7 @@ impl Ctx {
                 match self.rust_path(targets[0], &full) {
                     Some((f, None)) => f,
                     Some((_, Some(item))) => {
-                        return self.by_container(fi, cands, &item, Confidence::Likely);
+                        return self.by_container(e, cands, &item, Confidence::Likely);
                     }
                     None => return None,
                 }
@@ -2777,11 +2785,11 @@ impl Ctx {
                     return self.pick(fi, &m, Confidence::Exact, Confidence::Likely);
                 }
                 Some((_, Some(item))) => {
-                    return self.by_container(fi, cands, &item, Confidence::Exact);
+                    return self.by_container(e, cands, &item, Confidence::Exact);
                 }
                 None => {
                     let last = q.rsplit("::").next().unwrap_or(q);
-                    return self.by_container(fi, cands, last, Confidence::Likely);
+                    return self.by_container(e, cands, last, Confidence::Likely);
                 }
             }
         }
@@ -2806,7 +2814,7 @@ impl Ctx {
             if targets.is_empty() && lang != Lang::Rust {
                 return None;
             }
-            return self.by_container(fi, cands, orig, Confidence::Exact);
+            return self.by_container(e, cands, orig, Confidence::Exact);
         }
         // 5. Type qualifier (`Type::new`, `Class.create`).
         let simple = !q.contains(['.', '(', '[', ':', '-', '>', '…', '"', '\'']);
@@ -2816,7 +2824,7 @@ impl Ctx {
                 .get(q)
                 .is_some_and(|v| v.iter().any(|&s| self.syms[s].kind.is_type_like()));
             if is_type {
-                return self.by_container(fi, cands, q, Confidence::Likely);
+                return self.by_container(e, cands, q, Confidence::Likely);
             }
             let looks_type = q.chars().next().is_some_and(char::is_uppercase)
                 && lang != Lang::Go
@@ -2824,6 +2832,19 @@ impl Ctx {
                     .chars()
                     .all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit());
             if looks_type {
+                // `Vec::from(bytes)` with an in-repo `impl From<Bytes> for Vec<u8>`: std has
+                // its own impls too, so only an argument that fits one of ours picks it.
+                if lang == Lang::Rust
+                    && self.ext_ids.contains_key(q)
+                    && TRAIT_OVERLOADS.contains(&e.name.as_str())
+                {
+                    let m: Vec<usize> = cands
+                        .iter()
+                        .copied()
+                        .filter(|&s| self.syms[s].container.as_deref() == Some(q))
+                        .collect();
+                    return self.overload_pick(e, &m).map(|s| (s, Confidence::Exact));
+                }
                 // A type we don't know (std / external): don't guess.
                 return None;
             }
@@ -2916,7 +2937,7 @@ impl Ctx {
 
     fn by_container(
         &self,
-        fi: usize,
+        e: &E,
         cands: &[usize],
         ty: &str,
         conf: Confidence,
@@ -2930,19 +2951,20 @@ impl Ctx {
             return None;
         }
         // `BytesMut::from(x)`: one method per trait impl (`From<&[u8]>`, `From<Bytes>`...);
-        // which one depends on the argument type, which we don't know.
+        // which one depends on the argument type.
         if m.len() > 1
             && self.files[self.syms[m[0]].file].lang == Lang::Rust
             && TRAIT_OVERLOADS.contains(&self.syms[m[0]].name.as_str())
         {
-            return None;
+            // ...unless the first argument's type picks exactly one.
+            return self.overload_pick(e, &m).map(|s| (s, Confidence::Exact));
         }
         let worse = if conf == Confidence::Exact {
             Confidence::Likely
         } else {
             Confidence::NameOnly
         };
-        self.pick(fi, &m, conf, worse)
+        self.pick(e.file, &m, conf, worse)
     }
 
     fn receiver_guess(

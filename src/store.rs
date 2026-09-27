@@ -420,8 +420,8 @@ pub fn delete_file(tx: &Connection, id: i64) -> Result<()> {
 
 /// `edges.extra` of a reference: its receiver type hint and call syntax.
 /// `edges.extra` of a reference: its receiver type hint and method-call syntax.
-pub(crate) fn ref_extra(hint: Option<&str>, dot: bool) -> Option<String> {
-    if hint.is_none() && !dot {
+pub(crate) fn ref_extra(hint: Option<&str>, dot: bool, arg: Option<&str>) -> Option<String> {
+    if hint.is_none() && !dot && arg.is_none() {
         return None;
     }
     let mut m = serde_json::Map::new();
@@ -430,6 +430,9 @@ pub(crate) fn ref_extra(hint: Option<&str>, dot: bool) -> Option<String> {
     }
     if dot {
         m.insert("dot".into(), true.into());
+    }
+    if let Some(a) = arg {
+        m.insert("at".into(), a.into());
     }
     Some(serde_json::Value::Object(m).to_string())
 }
@@ -534,7 +537,7 @@ pub fn replace_file(
             r.kind.as_str(),
             r.line,
             r.col,
-            ref_extra(r.hint.as_deref(), r.dot),
+            ref_extra(r.hint.as_deref(), r.dot, r.arg.as_deref()),
         ])?;
     }
     for imp in &f.facts.imports {

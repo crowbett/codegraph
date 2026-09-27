@@ -101,6 +101,9 @@ pub struct RawRef {
     pub hint: Option<String>,
     /// Method-call syntax (`x.f()`), as opposed to a path (`x::f()`); Rust only.
     pub dot: bool,
+    /// Type hint of the first argument of a Rust call named like a std trait method
+    /// implemented several times (`Bytes::from(x)`), for picking the impl.
+    pub arg: Option<String>,
 }
 
 /// How an import binds a local name.
@@ -486,6 +489,14 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
         } else {
             (None, false)
         };
+        let arg = if lang == Lang::Rust
+            && r.kind == EdgeKind::Call
+            && crate::resolve::TRAIT_OVERLOADS.contains(&name.as_str())
+        {
+            infer.arg_hint(r.name)
+        } else {
+            None
+        };
         facts.refs.push(RawRef {
             name,
             qualifier: r.qualifier.map(|q| normalize_qualifier(text(q, src))),
@@ -496,6 +507,7 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
             from_name,
             hint,
             dot,
+            arg,
         });
     }
     facts.limited = match_limited || !infer.hints_enabled();

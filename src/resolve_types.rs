@@ -515,6 +515,161 @@ fn split_top(s: &str, sep: char) -> Vec<&str> {
     out
 }
 
+/// Result type of std methods whose name gives the shape away (receiver not a repo type
+/// with that method): `b"x".to_vec()`, `s.into_bytes()`, `v.as_slice()`.
+const RUST_STD_SHAPES: &[(&str, &str)] = &[
+    ("to_vec", "Vec<_>"),
+    ("into_vec", "Vec<_>"),
+    ("into_bytes", "Vec<u8>"),
+    ("as_bytes", "&[u8]"),
+    ("as_slice", "&[_]"),
+    ("as_mut_slice", "&mut [_]"),
+    ("into_boxed_slice", "Box<[_]>"),
+    ("to_string", "String"),
+];
+
+/// Structural shape of a Rust type for matching an argument against a parameter:
+/// references, lifetimes and paths dropped, `_` = unknown.
+#[derive(Debug, PartialEq)]
+enum Shape {
+    Wild,
+    Slice(Box<Shape>),
+    Array(Box<Shape>),
+    Named(String, Vec<Shape>),
+    Other,
+}
+
+impl Shape {
+    fn parse(text: &str) -> Shape {
+        let mut t = text.trim();
+        loop {
+            let before = t;
+            t = t.trim_start_matches(['&', '*', ' ']);
+            if let Some(rest) = t.strip_prefix('\'') {
+                t = rest.trim_start_matches(|c: char| c.is_alphanumeric() || c == '_');
+            }
+            for kw in ["mut", "const", "dyn"] {
+                if let Some(rest) = t.strip_prefix(kw) {
+                    if rest.starts_with([' ', '[', '(']) {
+                        t = rest;
+                    }
+                }
+            }
+            if t == before {
+                break;
+            }
+        }
+        if t == "_" {
+            return Shape::Wild;
+        }
+        if let Some(inner) = t.strip_prefix('[').and_then(|x| x.strip_suffix(']')) {
+            let parts = split_top(inner, ';');
+            let el = Box::new(Shape::parse(parts[0]));
+            return if parts.len() > 1 {
+                Shape::Array(el)
+            } else {
+                Shape::Slice(el)
+            };
+        }
+        if t.is_empty() || t.starts_with(['(', '[']) || t.starts_with("fn") || t.starts_with("impl")
+        {
+            return Shape::Other;
+        }
+        let (head, args) = match t.find('<') {
+            Some(i) if t.ends_with('>') => (&t[..i], &t[i + 1..t.len() - 1]),
+            _ => (t, ""),
+        };
+        let head = head.rsplit("::").next().unwrap_or(head).trim();
+        let args = if args.is_empty() {
+            Vec::new()
+        } else {
+            split_top(args, ',')
+                .into_iter()
+                .filter(|a| !a.trim_start().starts_with('\''))
+                .map(Shape::parse)
+                .collect()
+        };
+        Shape::Named(head.to_string(), args)
+    }
+
+    /// A parameter type we cannot compare (generic, `impl Trait`, tuple).
+    fn opaque(&self) -> bool {
+        match self {
+            Shape::Named(h, _) => looks_generic(h) || h == "Self",
+            Shape::Slice(e) | Shape::Array(e) => e.opaque(),
+            Shape::Wild | Shape::Other => true,
+        }
+    }
+
+    /// Whether an argument of shape `self` fits a parameter of shape `p`.
+    fn fits(&self, p: &Shape) -> bool {
+        match (self, p) {
+            (Shape::Wild, _) | (_, Shape::Wild) => true,
+            (Shape::Slice(a), Shape::Slice(b)) | (Shape::Array(a), Shape::Array(b)) => a.fits(b),
+            (Shape::Named(a, aa), Shape::Named(b, bb)) => {
+                a == b
+                    && (aa.is_empty()
+                        || bb.is_empty()
+                        || (aa.len() == bb.len() && aa.iter().zip(bb).all(|(x, y)| x.fits(y))))
+            }
+            _ => false,
+        }
+    }
+}
+
+/// First non-`self` parameter type of Rust function `name` in its one-line signature
+/// (`fn from(slice: &'static [u8]) -> Bytes {`), or `None` when not on the line.
+fn first_param_type<'s>(sig: &'s str, name: &str) -> Option<&'s str> {
+    let at = sig.find(&format!("fn {name}"))? + 3 + name.len();
+    let rest = &sig[at..];
+    // Skip the generic parameter list.
+    let mut depth = 0i32;
+    let mut open = None;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            '(' if depth == 0 => {
+                open = Some(i);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let rest = &rest[open? + 1..];
+    let mut depth = 0i32;
+    let mut close = None;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '(' | '<' | '[' => depth += 1,
+            ')' if depth == 0 => {
+                close = Some(i);
+                break;
+            }
+            ')' | '>' | ']' => depth -= 1,
+            _ => {}
+        }
+    }
+    let params = &rest[..close?];
+    split_top(params, ',')
+        .into_iter()
+        .map(str::trim)
+        .find(|p| !p.is_empty() && !is_self_param(p))
+        .and_then(|p| p.split_once(':').map(|(_, t)| t.trim()))
+}
+
+/// `self`, `&self`, `&'a mut self`, `mut self`, `self: Box<Self>`.
+fn is_self_param(p: &str) -> bool {
+    let mut t = p.trim_start_matches(['&', ' ']);
+    if let Some(rest) = t.strip_prefix('\'') {
+        t = rest
+            .trim_start_matches(|c: char| c.is_alphanumeric() || c == '_')
+            .trim_start();
+    }
+    let t = t.strip_prefix("mut ").unwrap_or(t).trim_start();
+    t == "self" || t.starts_with("self:") || t.starts_with("self ")
+}
+
 /// `F` for a Rust type text `F`, `&F`, `&'a mut F` (a candidate bare generic), else "".
 fn generic_core(text: &str) -> &str {
     let mut t = text.trim();
@@ -815,6 +970,18 @@ impl Ctx {
                         };
                     }
                 }
+                if lang == Lang::Rust && bt != Ty::Unknown {
+                    if let Some((_, shape)) = RUST_STD_SHAPES.iter().find(|(m, _)| *m == name) {
+                        return Val::Text {
+                            fi,
+                            from,
+                            text: (*shape).to_string(),
+                            unwrap: false,
+                            awaited: false,
+                            elem: false,
+                        };
+                    }
+                }
                 if lang == Lang::Rust && PASSTHROUGH.contains(&name) {
                     return bv;
                 }
@@ -971,6 +1138,7 @@ impl Ctx {
             old_to_file: None,
             hint: None,
             dot: false,
+            arg: None,
             line: 0,
         };
         if let Some((s, _)) = self.resolve_edge(&fake, &self.scopes[fi]) {
@@ -1568,6 +1736,70 @@ impl Ctx {
         }
     }
 
+    /// Among several impls of a std-trait method (`From<&[u8]>`, `From<Vec<u8>>`,
+    /// `From<Bytes>`), the one whose first parameter fits the call's first argument
+    /// (`E::arg`). `None` unless exactly one fits and every candidate's parameter is
+    /// readable from its one-line signature and concrete (no generic, no `impl Trait`).
+    pub(super) fn overload_pick(&self, e: &E, cands: &[usize]) -> Option<usize> {
+        let arg = self.arg_shape(e)?;
+        let mut hit = None;
+        for &c in cands {
+            let s = &self.syms[c];
+            let p = Shape::parse(first_param_type(&s.sig, &s.name)?);
+            if p.opaque() {
+                return None;
+            }
+            if arg.fits(&p) {
+                if hit.is_some() {
+                    return None;
+                }
+                hit = Some(c);
+            }
+        }
+        hit
+    }
+
+    /// Shape of a call's first argument from its `arg` hint.
+    fn arg_shape(&self, e: &E) -> Option<Shape> {
+        let h = e.arg.as_deref()?;
+        let shape = match self.eval_val(e.file, e.from_symbol, h, 0) {
+            Val::Ty(Ty::Known(s)) => Shape::Named(self.syms[s].name.clone(), Vec::new()),
+            Val::Ty(Ty::External(Some(id))) => {
+                Shape::parse(self.ext_names.get(id as usize)?.as_str())
+            }
+            Val::Ty(_) => return None,
+            Val::Text {
+                from,
+                text,
+                unwrap,
+                elem,
+                ..
+            } => {
+                let text = if unwrap {
+                    unwrap_text(Lang::Rust, &text)
+                } else {
+                    text
+                };
+                let text = if elem {
+                    element_of(Lang::Rust, &text)?
+                } else {
+                    text
+                };
+                match Shape::parse(&text) {
+                    Shape::Named(h, _) if h == "Self" => {
+                        Shape::Named(self.self_type(from).0?, Vec::new())
+                    }
+                    s => s,
+                }
+            }
+        };
+        match &shape {
+            Shape::Named(h, _) if looks_generic(h) => None,
+            Shape::Other | Shape::Wild => None,
+            _ => Some(shape),
+        }
+    }
+
     /// `R::discard(..)` / `F::as_cast(..)` where `R` is a generic parameter of the
     /// enclosing function or impl with a single trait bound: the method on that trait
     /// (`NoOpinion` = the qualifier is no such generic).
@@ -1608,6 +1840,38 @@ impl Ctx {
                     .map(|m| (m, Confidence::Exact)),
             ),
             Ty::External(None) => Typed::Resolved(None),
+            Ty::Known(t) if e.arg.is_some() => {
+                // `a.partial_cmp(b)` with several `PartialOrd<X> for A`: pick by argument.
+                let ts = &self.syms[t];
+                let pkg = &self.files[ts.file].package;
+                let own: Vec<usize> = self
+                    .by_member
+                    .get(&(ts.name.clone(), e.name.clone()))
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|&m| {
+                        let mf = &self.files[self.syms[m].file];
+                        mf.lang == Lang::Rust && mf.package == *pkg
+                    })
+                    .collect();
+                match own.len() {
+                    0 | 1 => Typed::Resolved(
+                        self.method_on(t, &e.name, &mut HashSet::new(), 0)
+                            .map(|(m, via_base)| {
+                                let c = if via_base {
+                                    Confidence::Likely
+                                } else {
+                                    Confidence::Exact
+                                };
+                                (m, c)
+                            }),
+                    ),
+                    _ => {
+                        Typed::Resolved(self.overload_pick(e, &own).map(|m| (m, Confidence::Exact)))
+                    }
+                }
+            }
             Ty::Known(t) => Typed::Resolved(
                 self.method_on(t, &e.name, &mut HashSet::new(), 0)
                     .map(|(m, via_base)| {

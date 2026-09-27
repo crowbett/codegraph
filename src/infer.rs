@@ -19,6 +19,18 @@
 //! fields and function return types. Everything is best effort: an unknown expression
 //! yields no hint and the resolver falls back to name-based rules.
 //!
+//! Rust literals give `T:` hints of their std shape, `_` standing for an unknown part:
+//! `"s"` -> `T:&str`, `b"s"` -> `T:&[u8;_]`, `[x; n]` -> `T:[_;_]`, `vec![..]` ->
+//! `T:Vec<_>`, `format!(..)` -> `T:String`, `x as T` -> `T:T`, a range index
+//! `&b"s"[..]` -> `T:[u8]`; module-level `const`/`static` items bind their declared type.
+//! The resolver adds `M:` results of shape-revealing std methods on a known non-repo
+//! receiver (`to_vec` -> `Vec<_>`, `as_bytes` -> `&[u8]`, see `RUST_STD_SHAPES`).
+//!
+//! A second hint, the **argument hint** (`at` in the edge's `extra`, [`Infer::arg_hint`]),
+//! uses the same grammar for the first argument of a Rust call named like a std trait
+//! method a type may implement several times (`Bytes::from(x)`, `a.partial_cmp(b)`, the
+//! resolver's `TRAIT_OVERLOADS`): the impl whose first parameter type fits it is picked.
+//!
 //! Rust generic parameters with a single meaningful bound are substituted in parameter
 //! and return types directly; the function symbol also records them in its `fields` as
 //! `(<T>, T:<bound>)` ([`Infer::generic_fields`]) so the resolver can bind what only it
@@ -869,6 +881,20 @@ impl<'a> Infer<'a> {
                     Self::decl_v(out, self.t(x), at, hint.clone(), value, func);
                 }
             }
+            // Module-level only: a const in a function body is a repo symbol, not a local.
+            (Lang::Rust, "const_item" | "static_item")
+                if self
+                    .nav
+                    .parent(n)
+                    .is_some_and(|p| matches!(p.kind(), "source_file" | "declaration_list")) =>
+            {
+                if let (Some(nm), Some(t)) =
+                    (n.child_by_field_name("name"), n.child_by_field_name("type"))
+                {
+                    let hint = mk("T:", &squash(self.t(t)));
+                    Self::decl(out, self.t(nm), at, hint, false);
+                }
+            }
             (Lang::Rust, "for_expression") => {
                 let (Some(p), Some(v)) = (
                     n.child_by_field_name("pattern"),
@@ -1255,8 +1281,83 @@ impl<'a> Infer<'a> {
                 let t = e.named_child(1)?;
                 mk("T:", &squash(self.t(t)))
             }
+            _ if self.lang == Lang::Rust => self.eval_rust_literal(e, d),
             _ => None,
         }
+    }
+
+    /// Rust literal shapes: `"s"` -> `&str`, `b"s"` -> `&[u8;_]`, `[x; n]` -> `[_;_]`,
+    /// `vec![..]` -> `Vec<_>`, `format!(..)` -> `String`, `x as T` -> `T`, and a range
+    /// index of a known type (`&b"s"[..]` -> `[u8]`). `_` is an unknown part.
+    fn eval_rust_literal(&mut self, e: Node<'a>, d: u8) -> Option<String> {
+        match e.kind() {
+            "string_literal" | "raw_string_literal" => {
+                let t = self.t(e);
+                if t.starts_with('b') {
+                    Some("T:&[u8;_]".into())
+                } else if t.starts_with('c') {
+                    None
+                } else {
+                    Some("T:&str".into())
+                }
+            }
+            "array_expression" => Some("T:[_;_]".into()),
+            "macro_invocation" => {
+                let m = e.child_by_field_name("macro")?;
+                match self.t(m) {
+                    "vec" => Some("T:Vec<_>".into()),
+                    "format" => Some("T:String".into()),
+                    _ => None,
+                }
+            }
+            "type_cast_expression" => {
+                let t = e.child_by_field_name("type")?;
+                mk("T:", &squash(self.t(t)))
+            }
+            "index_expression" => {
+                // `x[..]`, `x[a..b]`: a slice of `x`'s elements.
+                let idx = e.named_child(1)?;
+                if idx.kind() != "range_expression" {
+                    return None;
+                }
+                let base = self.eval(e.named_child(0)?, d)?;
+                let slice = slice_of(base.strip_prefix("T:")?)?;
+                mk("T:", &slice)
+            }
+            _ => None,
+        }
+    }
+
+    /// Type hint of the first argument of the call whose callee name is `name` (Rust,
+    /// calls named like a std trait method several impls may provide: `Bytes::from(x)`),
+    /// for picking the impl by argument type. Also reads a single-identifier argument
+    /// in a macro token tree (`assert_eq!(Vec::from(b), ..)`).
+    pub(crate) fn arg_hint(&mut self, name: Node<'a>) -> Option<String> {
+        if self.lang != Lang::Rust || !self.hints_enabled() {
+            return None;
+        }
+        let nav = self.nav;
+        let parent = nav.parent(name)?;
+        if parent.kind() == "token_tree" {
+            let args = nav.next_sibling(name)?;
+            let inner = named(args);
+            if args.kind() != "token_tree" || !self.t(args).starts_with('(') || inner.len() != 1 {
+                return None;
+            }
+            return self.eval(inner[0], 0).filter(|h| h != "L");
+        }
+        let mut call = parent;
+        for _ in 0..3 {
+            if call.kind() == "call_expression" {
+                break;
+            }
+            call = nav.parent(call)?;
+        }
+        if call.kind() != "call_expression" {
+            return None;
+        }
+        let arg = call.child_by_field_name("arguments")?.named_child(0)?;
+        self.eval(arg, 0).filter(|h| h != "L")
     }
 
     /// (object, field) of a member access.
@@ -1702,6 +1803,48 @@ fn strip_generics(s: &str) -> String {
         }
     }
     out.replace("::::", "::")
+}
+
+/// Type of a range index into a (squashed) Rust type: `&[u8;_]` / `Vec<u8>` / `[u8]` ->
+/// `[u8]`, `String` / `&str` -> `str`.
+fn slice_of(ty: &str) -> Option<String> {
+    let mut t = ty.trim();
+    loop {
+        let before = t;
+        t = t.trim_start_matches('&');
+        if let Some(rest) = t.strip_prefix('\'') {
+            t = rest.trim_start_matches(|c: char| c.is_alphanumeric() || c == '_');
+        }
+        t = t.trim_start();
+        t = t
+            .strip_prefix("mut")
+            .filter(|r| r.starts_with([' ', '[']))
+            .unwrap_or(t);
+        t = t.trim_start();
+        if t == before {
+            break;
+        }
+    }
+    if let Some(inner) = t.strip_prefix('[').and_then(|x| x.strip_suffix(']')) {
+        let mut depth = 0i32;
+        let mut cut = inner.len();
+        for (i, c) in inner.char_indices() {
+            match c {
+                '<' | '[' | '(' => depth += 1,
+                '>' | ']' | ')' => depth -= 1,
+                ';' if depth == 0 => {
+                    cut = i;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        return Some(format!("[{}]", &inner[..cut]));
+    }
+    if let Some(arg) = t.strip_prefix("Vec<").and_then(|x| x.strip_suffix('>')) {
+        return Some(format!("[{arg}]"));
+    }
+    matches!(t, "str" | "String").then(|| "str".to_string())
 }
 
 /// Replace a bare generic parameter (`B`, `&B`, `&mut B`, `*T`) with its bound; `None`
