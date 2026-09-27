@@ -670,6 +670,45 @@ fn is_self_param(p: &str) -> bool {
     t == "self" || t.starts_with("self:") || t.starts_with("self ")
 }
 
+/// Element `idx` of a Rust tuple type value (`(ExtendedFloat, bool)`, behind references,
+/// after `?`/unwrap), or `None` when `v` is not a tuple text.
+fn tuple_elem(v: &Val, idx: &str) -> Option<Val> {
+    let Val::Text {
+        fi,
+        from,
+        text,
+        unwrap,
+        elem,
+        ..
+    } = v
+    else {
+        return None;
+    };
+    let t = if *unwrap {
+        unwrap_text(Lang::Rust, text)
+    } else {
+        text.clone()
+    };
+    let t = if *elem {
+        element_of(Lang::Rust, &t)?
+    } else {
+        t
+    };
+    let t = t.trim().trim_start_matches('&');
+    let inner = t.strip_prefix('(')?.strip_suffix(')')?;
+    let part = split_top(inner, ',')
+        .get(idx.parse::<usize>().ok()?)?
+        .trim();
+    (!part.is_empty()).then(|| Val::Text {
+        fi: *fi,
+        from: *from,
+        text: part.to_string(),
+        unwrap: false,
+        awaited: false,
+        elem: false,
+    })
+}
+
 /// `F` for a Rust type text `F`, `&F`, `&'a mut F` (a candidate bare generic), else "".
 fn generic_core(text: &str) -> &str {
     let mut t = text.trim();
@@ -1020,6 +1059,20 @@ impl Ctx {
                 match bt {
                     Ty::Known(_) | Ty::External(_) => Val::Ty(Ty::External(None)),
                     Ty::Unknown => Val::Ty(Ty::Unknown),
+                }
+            }
+            "F:" if name.bytes().all(|b| b.is_ascii_digit())
+                && self.files[fi].lang == Lang::Rust =>
+            {
+                // `t.0` / `let (a, b) = f()`: element of a tuple type, else a tuple struct's
+                // positional field.
+                let bv = self.eval_val(fi, from, base, d);
+                if let Some(v) = tuple_elem(&bv, name) {
+                    return v;
+                }
+                match self.bind_val(&bv, d) {
+                    Ty::Known(t) => self.field_of(t, name, &mut HashSet::new(), d),
+                    other => Val::Ty(other),
                 }
             }
             "F:" => match self.bind_val(&self.eval_val(fi, from, base, d), d) {

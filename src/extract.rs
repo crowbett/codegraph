@@ -404,7 +404,8 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
         } else if matches!(
             sym.kind,
             SymKind::Struct | SymKind::Class | SymKind::Interface
-        ) {
+        ) || (lang == Lang::Rust && sym.kind == SymKind::Enum)
+        {
             sym.fields = infer.fields_of(node);
         }
     }

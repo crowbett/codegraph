@@ -55,3 +55,4 @@ pub mod overload;
 pub mod slices;
 pub mod gen;
 pub mod conv;
+pub mod pat;

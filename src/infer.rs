@@ -10,7 +10,7 @@
 //! | `T:<type>` | a written type (`*Store`, `Box<dyn Backend>`, `http.Handler`) |
 //! | `C:<callee>` | the result of calling a function or constructor (`NewStore`, `Foo::new`) |
 //! | `M:<name>@<hint>` | the result of calling method `name` on `<hint>` |
-//! | `F:<name>@<hint>` | field `name` of `<hint>` |
+//! | `F:<name>@<hint>` | field `name` of `<hint>`; Rust: `F:1@..` is a tuple element or positional field, `F:Number.0@T:Value` payload 0 of enum variant `Value::Number` (from match/`if let`/`let` patterns) |
 //! | `Q:<hint>` | `<hint>` unwrapped (Rust `?`, `.unwrap()`); `A:<hint>` awaited |
 //! | `E:<hint>` | an element of the collection `<hint>` (loop variables, callback params) |
 //! | `L` | a local variable or parameter with no known type (never a repo symbol) |
@@ -558,6 +558,20 @@ impl<'a> Infer<'a> {
 
     /// A binding's type hint: its written type, else its initializer's.
     fn decl_hint(&mut self, d: &Decl<'a>, depth: u8) -> Option<String> {
+        // `@F:1`: a projection of the value's hint (`let (a, b) = f()` binds b to
+        // `F:1@C:f`), see `rust_pattern_decls`.
+        let proj = d.hint.as_deref().and_then(|h| h.strip_prefix('@'));
+        if let Some(p) = proj {
+            let p = p.to_string();
+            let base = self.decl_hint(
+                &Decl {
+                    hint: None,
+                    ..d.clone()
+                },
+                depth,
+            )?;
+            return (base != "L").then(|| mk(&format!("{p}@"), &base)).flatten();
+        }
         if d.hint.is_some() {
             return d.hint.clone();
         }
@@ -877,6 +891,11 @@ impl<'a> Infer<'a> {
                 let func = n
                     .child_by_field_name("value")
                     .is_some_and(|v| Self::is_func_value(v));
+                if !simple {
+                    // `let (a, b) = f()`, `let Point { x, y } = p`.
+                    self.rust_pattern_decls(pat, n.child_by_field_name("value"), at, out);
+                    return;
+                }
                 for x in names {
                     Self::decl_v(out, self.t(x), at, hint.clone(), value, func);
                 }
@@ -936,18 +955,24 @@ impl<'a> Infer<'a> {
                     .filter(|x| x.kind() == "identifier" && p.named_child_count() == 2);
                 match (inner, v) {
                     (Some(x), Some(v)) => Self::decl_elem(out, self.t(x), v.end_byte(), v),
-                    _ => {
-                        for x in pattern_names(p) {
-                            Self::decl(out, self.t(x), n.start_byte(), None, false);
-                        }
-                    }
+                    _ => self.rust_pattern_decls(p, v, n.start_byte(), out),
                 }
             }
             (Lang::Rust, "match_arm") => {
                 if let Some(p) = n.child_by_field_name("pattern") {
-                    for x in pattern_names(p) {
-                        Self::decl(out, self.t(x), n.start_byte(), None, false);
-                    }
+                    // `match_pattern` wraps the pattern (and an `if` guard).
+                    let p = if p.kind() == "match_pattern" {
+                        p.named_child(0).unwrap_or(p)
+                    } else {
+                        p
+                    };
+                    let scrut = self
+                        .nav
+                        .parent(n)
+                        .and_then(|b| self.nav.parent(b))
+                        .filter(|m| m.kind() == "match_expression")
+                        .and_then(|m| m.child_by_field_name("value"));
+                    self.rust_pattern_decls(p, scrut, n.start_byte(), out);
                 }
             }
             (Lang::TypeScript | Lang::Tsx | Lang::JavaScript, "variable_declarator") => {
@@ -1051,6 +1076,133 @@ impl<'a> Infer<'a> {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Bindings of a Rust pattern matched against `scrut` (a match arm, `if let`, `let`),
+    /// with the types the pattern itself reveals:
+    /// - `x` (catch-all) is the scrutinee; `Some(x)` / `Ok(x)` its payload (`E:`);
+    /// - `Value::Number(n)` is payload 0 of that variant: `F:Number.0@T:Value` (enum
+    ///   symbols record variant payloads as fields `Variant.<i>` / `Variant.<name>`);
+    /// - `Compound::Map { ser, .. }` / `Point { x, .. }`: `F:Map.ser@T:Compound`,
+    ///   `F:x@T:Point`;
+    /// - `(a, b)`: element `i` of the scrutinee (`@F:i`, projected in `decl_hint`).
+    ///
+    /// Every other bound name is declared with no type (it still shadows).
+    fn rust_pattern_decls(
+        &self,
+        p: Node<'a>,
+        scrut: Option<Node<'a>>,
+        at: usize,
+        out: &mut Vec<Decl<'a>>,
+    ) {
+        let mut p = p;
+        while p.kind() == "reference_pattern" {
+            match p.named_child(0) {
+                Some(c) => p = c,
+                None => break,
+            }
+        }
+        let binding = |x: Node<'a>| -> Option<Node<'a>> {
+            let x = if matches!(x.kind(), "ref_pattern" | "mut_pattern") {
+                x.named_child(x.named_child_count().saturating_sub(1) as u32)?
+            } else {
+                x
+            };
+            (x.kind() == "identifier").then_some(x)
+        };
+        let decl = |name: Node<'a>, hint: Option<String>, value: Option<Node<'a>>, elem| Decl {
+            name: self.t(name).to_string(),
+            at,
+            hint,
+            value,
+            elem,
+            func: false,
+        };
+        let mut typed: Vec<(Node<'a>, Decl<'a>)> = Vec::new();
+        match p.kind() {
+            "identifier" | "mut_pattern" | "ref_pattern" => {
+                // A lowercase name binds the scrutinee (`FOO` / `None` are constants).
+                if let (Some(x), Some(v)) = (binding(p), scrut) {
+                    if self
+                        .t(x)
+                        .starts_with(|c: char| c.is_lowercase() || c == '_')
+                    {
+                        typed.push((x, decl(x, None, Some(v), false)));
+                    }
+                }
+            }
+            "tuple_struct_pattern" => {
+                let kids = named(p);
+                let Some(path) = kids.first() else { return };
+                let path = squash(self.t(*path));
+                let payload = &kids[1..];
+                let last = path.rsplit("::").next().unwrap_or(&path);
+                if matches!(last, "Some" | "Ok") {
+                    if let ([one], Some(v)) = (payload, scrut) {
+                        if let Some(x) = binding(*one) {
+                            typed.push((x, decl(x, None, Some(v), true)));
+                        }
+                    }
+                } else if let Some((qual, variant)) = path.rsplit_once("::") {
+                    for (i, c) in payload.iter().enumerate() {
+                        if let Some(x) = binding(*c) {
+                            let h = mk(&format!("F:{variant}.{i}@T:"), qual);
+                            typed.push((x, decl(x, h, None, false)));
+                        }
+                    }
+                }
+            }
+            "struct_pattern" => {
+                let Some(ty) = p.child_by_field_name("type") else {
+                    return;
+                };
+                let path = squash(self.t(ty));
+                // `Enum::Variant { .. }` (two capitalized segments) or `Struct { .. }`.
+                let (prefix, base) = match path.rsplit_once("::") {
+                    Some((q, v))
+                        if v.starts_with(char::is_uppercase)
+                            && q.rsplit("::")
+                                .next()
+                                .is_some_and(|s| s.starts_with(char::is_uppercase)) =>
+                    {
+                        (format!("{v}."), q.to_string())
+                    }
+                    _ => (String::new(), path.clone()),
+                };
+                for fp in named(p) {
+                    if fp.kind() != "field_pattern" {
+                        continue;
+                    }
+                    let Some(fname) = fp.child_by_field_name("name") else {
+                        continue;
+                    };
+                    let x = match fp.child_by_field_name("pattern") {
+                        Some(pat) => binding(pat),
+                        None => Some(fname),
+                    };
+                    if let Some(x) = x {
+                        let h = mk(&format!("F:{prefix}{}@T:", self.t(fname)), &base);
+                        typed.push((x, decl(x, h, None, false)));
+                    }
+                }
+            }
+            "tuple_pattern" => {
+                if let Some(v) = scrut {
+                    for (i, c) in named(p).into_iter().enumerate() {
+                        if let Some(x) = binding(c) {
+                            typed.push((x, decl(x, Some(format!("@F:{i}")), Some(v), false)));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        for x in pattern_names(p) {
+            match typed.iter().position(|(n, _)| n.id() == x.id()) {
+                Some(i) => out.push(typed.swap_remove(i).1),
+                None => Self::decl(out, self.t(x), at, None, false),
+            }
         }
     }
 
@@ -1531,20 +1683,23 @@ impl<'a> Infer<'a> {
                 }
             }
             Lang::Rust => {
-                let Some(body) = def
-                    .child_by_field_name("body")
-                    .filter(|b| b.kind() == "field_declaration_list")
-                else {
+                let Some(body) = def.child_by_field_name("body") else {
                     return out;
                 };
-                let mut c = body.walk();
-                for fd in body.named_children(&mut c) {
-                    if let (Some(n), Some(t)) = (
-                        fd.child_by_field_name("name"),
-                        fd.child_by_field_name("type"),
-                    ) {
-                        out.push((self.t(n).to_string(), format!("T:{}", squash(self.t(t)))));
+                if body.kind() == "enum_variant_list" {
+                    // Variant payloads: `Number(Number)` -> `Number.0`, `Map { ser }` ->
+                    // `Map.ser` (read by `F:` hints of match patterns).
+                    for v in named(body) {
+                        let (Some(vn), Some(vb)) =
+                            (v.child_by_field_name("name"), v.child_by_field_name("body"))
+                        else {
+                            continue;
+                        };
+                        let prefix = format!("{}.", self.t(vn));
+                        self.rust_field_list(vb, &prefix, &mut out);
                     }
+                } else {
+                    self.rust_field_list(body, "", &mut out);
                 }
             }
             Lang::TypeScript | Lang::Tsx | Lang::JavaScript => {
@@ -1644,6 +1799,34 @@ impl<'a> Infer<'a> {
             Lang::C | Lang::Cpp => {}
         }
         out
+    }
+
+    /// Rust named (`{ a: A }`) or positional (`(A, B)` -> `0`, `1`) fields, names
+    /// prefixed with `prefix`.
+    fn rust_field_list(&self, body: Node<'a>, prefix: &str, out: &mut Vec<(String, String)>) {
+        match body.kind() {
+            "field_declaration_list" => {
+                for fd in named(body) {
+                    if let (Some(n), Some(t)) = (
+                        fd.child_by_field_name("name"),
+                        fd.child_by_field_name("type"),
+                    ) {
+                        out.push((
+                            format!("{prefix}{}", self.t(n)),
+                            format!("T:{}", squash(self.t(t))),
+                        ));
+                    }
+                }
+            }
+            "ordered_field_declaration_list" => {
+                let mut c = body.walk();
+                let types: Vec<Node<'_>> = body.children_by_field_name("type", &mut c).collect();
+                for (i, t) in types.into_iter().enumerate() {
+                    out.push((format!("{prefix}{i}"), format!("T:{}", squash(self.t(t)))));
+                }
+            }
+            _ => {}
+        }
     }
 
     /// `this.x = e` / `self.x = e` inside a method body -> field hints (first wins).

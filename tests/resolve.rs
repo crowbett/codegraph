@@ -255,6 +255,17 @@ fn rust_trait_overloads_picked_by_argument_type() {
     }
 }
 
+#[test]
+fn rust_pattern_bindings_are_typed() {
+    let ix = index_fixture("rust_infer");
+    let f = "src/pat.rs";
+    // `let (f, _ok) = pair()` with `-> (Num, bool)`.
+    assert_edge(&ix, f, 22, "as_f64", "pat::Num::as_f64", "exact");
+    // `Val::Number(n)`: payload 0 of the variant; `Val::Map { inner }`: its field.
+    assert_edge(&ix, f, 24, "as_f64", "pat::Num::as_f64", "exact");
+    assert_edge(&ix, f, 25, "as_f64", "pat::Num::as_f64", "exact");
+}
+
 fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
     let mut st = ix
         .store
