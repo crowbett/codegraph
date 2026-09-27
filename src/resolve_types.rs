@@ -13,7 +13,10 @@ use super::{Confidence, Ctx, EdgeKind, Lang, SymKind, E};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Ty {
     Known(usize),
-    External,
+    /// Outside the repo. `Some(id)`: a type some in-repo trait is implemented for
+    /// (`impl BufMut for Vec<u8>`), an index into `Ctx::ext_names`, so its extension
+    /// methods still resolve.
+    External(Option<u32>),
     Unknown,
 }
 
@@ -751,6 +754,19 @@ impl Ctx {
                         };
                     }
                 }
+                // An in-repo trait's method on a std type (`vec.put(..)` with
+                // `impl BufMut for Vec<u8>`).
+                if let Ty::External(Some(id)) = bt {
+                    if let Some(m) = self.extension_method(fi, id, name) {
+                        return match self.syms[m].ret.clone() {
+                            Some(r) => {
+                                let mf = self.syms[m].file;
+                                self.eval_val(mf, Some(self.syms[m].id), &r, d)
+                            }
+                            None => Val::Ty(Ty::Unknown),
+                        };
+                    }
+                }
                 if lang == Lang::Rust && PASSTHROUGH.contains(&name) {
                     return bv;
                 }
@@ -787,8 +803,8 @@ impl Ctx {
                     return bv;
                 }
                 match bt {
-                    Ty::Known(_) => Val::Ty(Ty::External),
-                    other => Val::Ty(other),
+                    Ty::Known(_) | Ty::External(_) => Val::Ty(Ty::External(None)),
+                    Ty::Unknown => Val::Ty(Ty::Unknown),
                 }
             }
             "F:" => match self.bind_val(&self.eval_val(fi, from, base, d), d) {
@@ -890,7 +906,18 @@ impl Ctx {
             }
             None => scope.names.get(name).is_some_and(|(_, t)| t.is_empty()),
         };
-        Val::Ty(if external { Ty::External } else { Ty::Unknown })
+        // `Vec::with_capacity(..)`, `Vec::new()`: the external type itself.
+        let ext = match (lang, qual) {
+            (Lang::Rust, Some(q)) if SELF_CTORS.contains(&name) || name == "with_capacity" => {
+                self.ext_id(lang, q.rsplit("::").next().unwrap_or(q))
+            }
+            _ => None,
+        };
+        Val::Ty(if external {
+            Ty::External(ext)
+        } else {
+            Ty::Unknown
+        })
     }
 
     fn any_type_named(&self, name: &str) -> bool {
@@ -932,7 +959,7 @@ impl Ctx {
                     text
                 };
                 match normalize(lang, text, *unwrap, *awaited, 0) {
-                    Norm::External => Ty::External,
+                    Norm::External => Ty::External(None),
                     Norm::Unknown => Ty::Unknown,
                     Norm::SelfType => match self.self_type(*from).0 {
                         Some(n) => self.find_type(*fi, None, &n, *from),
@@ -977,15 +1004,15 @@ impl Ctx {
                             .get(head)
                             .or_else(|| scope.names.get(head).map(|(_, t)| t));
                         match bound {
-                            Some(t) if t.is_empty() => Ty::External,
-                            _ if matches!(head, "std" | "core" | "alloc") => Ty::External,
+                            Some(t) if t.is_empty() => Ty::External(None),
+                            _ if matches!(head, "std" | "core" | "alloc") => Ty::External(None),
                             _ => Ty::Unknown,
                         }
                     }
                 };
             }
             return match scope.modules.get(q) {
-                Some(t) if t.is_empty() => Ty::External,
+                Some(t) if t.is_empty() => Ty::External(None),
                 Some(t) => self.pick_type(fi, &self.type_syms_in(t, name)),
                 None => {
                     if lang == Lang::Python {
@@ -1004,7 +1031,7 @@ impl Ctx {
         }
         if let Some((orig, targets)) = scope.names.get(name) {
             if targets.is_empty() {
-                return Ty::External;
+                return Ty::External(None);
             }
             let m = self.type_syms_in(targets, orig);
             let m = if m.is_empty() {
@@ -1052,8 +1079,10 @@ impl Ctx {
             // `T`, `W`, `F`: a generic parameter we can't see (struct/impl generics), not a
             // std type.
             _ if all.is_empty() && looks_generic(name) => Ty::Unknown,
-            _ if all.is_empty() => Ty::External,
-            _ if builtin_type(lang, name) && same_unit.is_empty() => Ty::External,
+            _ if all.is_empty() => Ty::External(self.ext_id(lang, name)),
+            _ if builtin_type(lang, name) && same_unit.is_empty() => {
+                Ty::External(self.ext_id(lang, name))
+            }
             _ => Ty::Unknown,
         }
     }
@@ -1314,6 +1343,61 @@ impl Ctx {
         }
     }
 
+    /// Id of an external type name some in-repo trait is implemented for (Rust only).
+    fn ext_id(&self, lang: Lang, name: &str) -> Option<u32> {
+        if lang != Lang::Rust {
+            return None;
+        }
+        self.ext_ids.get(name).copied()
+    }
+
+    /// Method `name` that an in-repo trait adds to external type `ext_names[id]`, as seen
+    /// from file `fi`: the trait must be in scope there (imported, glob-imported or
+    /// declared in the file), its impl for the type provides the method or the trait
+    /// does (a provided method), and exactly one such method exists.
+    pub(super) fn extension_method(&self, fi: usize, id: u32, name: &str) -> Option<usize> {
+        let ty = self.ext_names.get(id as usize)?;
+        let traits = self.bases.get(ty)?;
+        let scope = &self.scopes[fi];
+        let mut found: Vec<usize> = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+        for tr in traits {
+            if !seen.insert(tr.as_str()) {
+                continue;
+            }
+            let trait_syms: Vec<usize> = self
+                .by_name
+                .get(tr)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|&t| self.syms[t].kind == SymKind::Trait)
+                .collect();
+            let in_scope = scope.names.contains_key(tr.as_str())
+                || trait_syms.iter().any(|&t| {
+                    let f = self.syms[t].file;
+                    f == fi || scope.globs.contains(&f)
+                });
+            if trait_syms.is_empty() || !in_scope {
+                continue;
+            }
+            let provided = self.by_member.get(&(tr.clone(), name.to_string()));
+            if provided.is_none_or(Vec::is_empty) {
+                continue;
+            }
+            match self.by_member.get(&(ty.clone(), name.to_string())) {
+                Some(own) if !own.is_empty() => found.extend(own.iter().copied()),
+                _ => found.extend(provided.into_iter().flatten().copied()),
+            }
+        }
+        found.sort_unstable();
+        found.dedup();
+        match found.as_slice() {
+            [m] => Some(*m),
+            _ => None,
+        }
+    }
+
     /// Resolve a receiver call through its type hint.
     pub(super) fn resolve_typed(&self, e: &E) -> Typed {
         let Some(hint) = e.hint.as_deref() else {
@@ -1324,7 +1408,11 @@ impl Ctx {
         }
         match self.eval_hint(e.file, e.from_symbol, hint) {
             Ty::Unknown => Typed::NoOpinion,
-            Ty::External => Typed::Resolved(None),
+            Ty::External(Some(id)) => Typed::Resolved(
+                self.extension_method(e.file, id, &e.name)
+                    .map(|m| (m, Confidence::Exact)),
+            ),
+            Ty::External(None) => Typed::Resolved(None),
             Ty::Known(t) => Typed::Resolved(
                 self.method_on(t, &e.name, &mut HashSet::new(), 0)
                     .map(|(m, via_base)| {

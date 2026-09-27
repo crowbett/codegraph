@@ -170,6 +170,10 @@ struct Ctx {
     by_stem: HashMap<String, Vec<usize>>,
     mentioned: Vec<HashSet<String>>,
     bases: HashMap<String, Vec<String>>,
+    /// Types implementing an in-repo trait that are not repo types themselves (`Vec` in
+    /// `impl BufMut for Vec<u8>`), by id; see `types::Ty::External`.
+    ext_names: Vec<String>,
+    ext_ids: HashMap<String, u32>,
     ts_paths: Vec<(String, Vec<String>)>,
     ts_base: Option<String>,
     /// Per-file import scopes (filled after the import pass).
@@ -1006,6 +1010,19 @@ fn resolve_edges(
     }
     crate::util::trace("resolve.pass1", t0);
     ctx.fill_mentions(edges);
+    let mut ext: Vec<String> = ctx
+        .bases
+        .keys()
+        .filter(|k| !k.is_empty() && !ctx.by_name.contains_key(k.as_str()))
+        .cloned()
+        .collect();
+    ext.sort_unstable();
+    ctx.ext_ids = ext
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.clone(), i as u32))
+        .collect();
+    ctx.ext_names = ext;
     for (fi, scope) in scopes.iter().enumerate() {
         for (orig, _) in scope.names.values() {
             ctx.mentioned[fi].insert(orig.clone());
@@ -1357,6 +1374,8 @@ fn load_ctx(store: &Store, repo_id: i64, root: &Path) -> Result<Ctx> {
         by_file,
         mentioned: vec![HashSet::new(); files.len()],
         bases: HashMap::new(),
+        ext_names: Vec::new(),
+        ext_ids: HashMap::new(),
         files,
         syms,
         by_name,

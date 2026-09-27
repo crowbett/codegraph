@@ -43,3 +43,4 @@ pub fn turbofish() {
     let r = Repo::open(Box::new(MemBackend::default())).unwrap();
     assert!(r.name().is_empty() && r.cast::<u8>() == 0);
 }
+pub mod ext;

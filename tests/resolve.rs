@@ -93,6 +93,33 @@ fn rust_loop_vars_callbacks_reexports_and_test_modules() {
 }
 
 #[test]
+fn rust_extension_traits_on_std_types() {
+    let ix = index_fixture("rust_infer");
+    // `impl Put for Vec<u8>` with `Put` in scope: the impl's method, or the trait's
+    // provided one.
+    assert_edge(
+        &ix,
+        "tests/ext_use.rs",
+        6,
+        "put_one",
+        "ext::Vec::put_one",
+        "exact",
+    );
+    assert_edge(
+        &ix,
+        "tests/ext_use.rs",
+        7,
+        "twice",
+        "ext::Put::twice",
+        "exact",
+    );
+    // Without the trait in scope Rust would not compile the call: no guess.
+    assert_eq!(edge(&ix.store, "tests/ext_unused.rs", 5, "put_one"), None);
+    // std's own method stays external.
+    assert_eq!(edge(&ix.store, "tests/ext_unused.rs", 4, "push"), None);
+}
+
+#[test]
 fn rust_path_attribute_modules() {
     let ix = index_fixture("rust_infer");
     // tests/lex.rs: `#[path = "lex/cases.rs"] mod cases;` whose `crate::walk` is the

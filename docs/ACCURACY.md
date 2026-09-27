@@ -76,15 +76,15 @@ the v0.1.1 baseline was re-scored with the fixed harness so deltas stay comparab
 harness on the current corpus; `bench/results/accuracy.json` is the latest recorded run.
 
 <!-- results:start -->
-codegraph `8a41f9d`
+codegraph `e2c3b1c`
 
 | language | files | defs found | callers recall | callers precision | false call edges | refs recall | refs precision | impl recall | impl precision |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | Go | 364 | 100.0% | 98.9% | 98.9% | 1.1% | 98.6% | 99.4% | 87.5% | 79.5% |
 | Python | 124 | 100.0% | 96.0% | 98.3% | 1.7% | 76.4% | 98.5% | 100.0% | 91.4% |
-| Rust | 195 | 94.7% | 88.3% | 97.4% | 2.6% | 66.9% | 92.9% | – | – |
+| Rust | 195 | 94.7% | 88.7% | 97.4% | 2.6% | 67.1% | 92.9% | – | – |
 | TypeScript/JS | 396 | 99.9% | 94.6% | 98.8% | 1.2% | 73.0% | 98.6% | 50.0% | 28.6% |
-| **all** | 1079 | 98.4% | 95.1% | 98.4% | 1.6% | 82.6% | 97.6% | 87.5% | 74.8% |
+| **all** | 1079 | 98.4% | 95.2% | 98.4% | 1.6% | 82.6% | 97.6% | 87.5% | 74.8% |
 
 Confidence calibration (share of judged edges that are correct):
 
@@ -92,15 +92,15 @@ Confidence calibration (share of judged edges that are correct):
 |---|---:|---:|---:|
 | Go | 100.0% (18673/18673) | 67.7% (65/96) | 49.1% (82/167) |
 | Python | 99.8% (4222/4230) | 98.1% (508/518) | 69.8% (132/189) |
-| Rust | 95.0% (7902/8319) | 90.1% (1014/1126) | 7.7% (13/168) |
+| Rust | 95.0% (7922/8340) | 90.1% (1016/1128) | 7.7% (13/168) |
 | TypeScript/JS | 99.1% (4904/4947) | 96.6% (199/206) | 92.0% (276/300) |
-| all | 98.7% (35701/36169) | 91.8% (1786/1946) | 61.0% (503/824) |
+| all | 98.7% (35721/36190) | 91.8% (1788/1948) | 61.0% (503/824) |
 
 Per repo:
 
 | repo | lang | callers recall | callers precision | GT call sites | resolved call edges | refs recall |
 |---|---|---:|---:|---:|---:|---:|
-| bytes | rust | 79.2% | 94.6% | 1277 | 1199 | 67.5% |
+| bytes | rust | 81.0% | 94.6% | 1277 | 1222 | 68.5% |
 | chi | go | 100.0% | 98.7% | 1283 | 1463 | 98.8% |
 | click | python | 94.6% | 97.7% | 2449 | 3459 | 75.4% |
 | devkit | typescript | 99.7% | 99.7% | 701 | 977 | 85.8% |
