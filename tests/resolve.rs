@@ -85,6 +85,12 @@ fn ts_factories_generics_and_super() {
     // A call signature whose return type spans lines (`Map<` .. `>`) before the next
     // signature: the rest of the file must still parse.
     assert_edge(&ix, f, 20, "run", "factory.Later.run", "exact");
+    // Generic `implements Named<string>` / `extends Box<T>`.
+    assert_eq!(impls(&ix, "Named"), vec!["generic.StrBox".to_string()]);
+    assert_eq!(
+        edges_to(&ix, "inherit", "Box"),
+        vec!["generic.Named".to_string()]
+    );
 }
 
 #[test]
@@ -139,16 +145,21 @@ fn rust_path_attribute_modules() {
 }
 
 fn impls(ix: &common::Indexed, name: &str) -> Vec<String> {
+    edges_to(ix, "impl", name)
+}
+
+/// Qualified names of the symbols with a `kind` edge to a symbol named `name`.
+fn edges_to(ix: &common::Indexed, kind: &str, name: &str) -> Vec<String> {
     let mut st = ix
         .store
         .conn()
         .prepare(
             "SELECT f.qname FROM edges e JOIN symbols f ON f.id = e.from_symbol
              JOIN symbols t ON t.id = e.to_symbol
-             WHERE e.kind = 'impl' AND t.name = ?1 ORDER BY f.qname",
+             WHERE e.kind = ?1 AND t.name = ?2 ORDER BY f.qname",
         )
         .unwrap();
-    st.query_map([name], |r| r.get(0))
+    st.query_map([kind, name], |r| r.get(0))
         .unwrap()
         .map(Result::unwrap)
         .collect()

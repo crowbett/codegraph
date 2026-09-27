@@ -88,8 +88,16 @@
 (implements_clause
   (type_identifier) @name) @reference.impl
 
+(implements_clause
+  (generic_type
+    name: (type_identifier) @name)) @reference.impl
+
 (extends_type_clause
   type: (type_identifier) @name) @reference.inherit
+
+(extends_type_clause
+  type: (generic_type
+    name: (type_identifier) @name)) @reference.inherit
 
 (nested_type_identifier
   module: (_) @qualifier
