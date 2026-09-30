@@ -215,6 +215,13 @@ fn python_relative_imports_and_inheritance() {
         "exact",
     );
     assert_eq!(edge(&ix.store, "pkg/sub/tasks.py", 2, "models"), None);
+    // Names used as values and in union annotations; locals are not symbols.
+    let tasks = "pkg/sub/tasks.py";
+    assert_edge(&ix, tasks, 15, "U", "pkg.models.User", "exact");
+    assert_edge(&ix, tasks, 16, "run", "pkg.sub.tasks.run", "exact");
+    assert_edge(&ix, tasks, 16, "U", "pkg.models.User", "exact");
+    assert_edge(&ix, tasks, 17, "helper", "pkg.util.helper", "exact");
+    assert_eq!(edge(&ix.store, tasks, 19, "local"), None);
     assert_edge(
         &ix,
         "pkg/sub/tasks.py",

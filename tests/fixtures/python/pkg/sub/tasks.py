@@ -10,3 +10,10 @@ def run():
     u = U()
     models.User()
     return u.rename("x")
+
+
+def registry(kind: U | None = None) -> dict:
+    handlers = {"run": run, "user": U}
+    default = helper
+    local = handlers
+    return local

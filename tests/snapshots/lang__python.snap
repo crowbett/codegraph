@@ -10,6 +10,7 @@ symbols:
   pkg/models.py:16-18 method pkg.models.User.rename  [pub, in pkg.models.User]
   pkg/sub/tasks.py:5-5 const pkg.sub.tasks.MAX_TASKS  [pub]
   pkg/sub/tasks.py:8-12 function pkg.sub.tasks.run  [pub]
+  pkg/sub/tasks.py:15-19 function pkg.sub.tasks.registry  [pub]
   pkg/util.py:1-2 function pkg.util.helper  [pub]
 edges:
   main.py:1 import <file>: pkg.util => pkg/util.py
@@ -30,5 +31,10 @@ edges:
   pkg/sub/tasks.py:3 ref <file>: User => pkg.models.User (exact)
   pkg/sub/tasks.py:9 call pkg.sub.tasks.run: helper => pkg.util.helper (exact)
   pkg/sub/tasks.py:10 call pkg.sub.tasks.run: U => pkg.models.User (exact)
+  pkg/sub/tasks.py:11 value pkg.sub.tasks.run: models => ?
   pkg/sub/tasks.py:11 call pkg.sub.tasks.run: models.User => pkg.models.User (exact)
   pkg/sub/tasks.py:12 call pkg.sub.tasks.run: u.rename => pkg.models.User.rename (exact)
+  pkg/sub/tasks.py:15 ref pkg.sub.tasks.registry: U => pkg.models.User (exact)
+  pkg/sub/tasks.py:16 value pkg.sub.tasks.registry: run => pkg.sub.tasks.run (exact)
+  pkg/sub/tasks.py:16 value pkg.sub.tasks.registry: U => pkg.models.User (exact)
+  pkg/sub/tasks.py:17 value pkg.sub.tasks.registry: helper => pkg.util.helper (exact)

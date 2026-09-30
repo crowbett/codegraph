@@ -56,6 +56,64 @@
 (argument_list
   (identifier) @name @reference.value)
 
+; names used as values elsewhere (`cls = Option`, `callback=show_version`,
+; `{"type": EngineType}`, `[Class1, Class2]`, `return decorator`, `@pass_context`) and as
+; the object of an attribute (`ParameterSource.ENVIRONMENT`, `@cli.command()`). Only names
+; defined or imported in the file survive extraction; locals never do.
+(attribute
+  object: (identifier) @name) @reference.value
+
+(assignment
+  right: (identifier) @name) @reference.value
+
+(keyword_argument
+  value: (identifier) @name) @reference.value
+
+(pair
+  value: (identifier) @name) @reference.value
+
+(list
+  (identifier) @name) @reference.value
+
+(tuple
+  (identifier) @name) @reference.value
+
+(set
+  (identifier) @name) @reference.value
+
+(return_statement
+  (identifier) @name) @reference.value
+
+(decorator
+  (identifier) @name) @reference.value
+
+; annotation shapes beyond a bare name: `Context | None`, `CompletionItem[str]`
+(type
+  (binary_operator
+    left: (identifier) @name)) @reference.type
+
+(type
+  (binary_operator
+    right: (identifier) @name)) @reference.type
+
+(type
+  (binary_operator
+    left: (binary_operator
+      left: (identifier) @name))) @reference.type
+
+(type
+  (binary_operator
+    left: (binary_operator
+      right: (identifier) @name))) @reference.type
+
+(type
+  (subscript
+    value: (identifier) @name)) @reference.type
+
+(type
+  (generic_type
+    (identifier) @name)) @reference.type
+
 ; ---- imports --------------------------------------------------------------
 (import_statement) @import
 (import_from_statement) @import

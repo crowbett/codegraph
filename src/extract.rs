@@ -534,24 +534,24 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
 
     // Bare identifiers passed as values are kept only when they name something
     // defined or imported in this file (everything else is a local variable).
+    let imported: std::collections::HashSet<String> = facts
+        .imports
+        .iter()
+        .flat_map(|i| i.bindings.iter())
+        .filter(|b| matches!(b.kind, BindKind::Name | BindKind::Default))
+        .map(|b| {
+            if b.local.is_empty() {
+                b.name.clone()
+            } else {
+                b.local.clone()
+            }
+        })
+        .collect();
     let known: std::collections::HashSet<String> = facts
         .symbols
         .iter()
         .map(|s| s.name.clone())
-        .chain(
-            facts
-                .imports
-                .iter()
-                .flat_map(|i| i.bindings.iter())
-                .filter(|b| matches!(b.kind, BindKind::Name | BindKind::Default))
-                .map(|b| {
-                    if b.local.is_empty() {
-                        b.name.clone()
-                    } else {
-                        b.local.clone()
-                    }
-                }),
-        )
+        .chain(imported.iter().cloned())
         .collect();
 
     // References: drop the ones that sit on a definition's own name.
@@ -588,8 +588,11 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
             && r.qualifier.is_none()
             && name.len() == 1
             && name.chars().all(|c| c.is_ascii_uppercase())
+            && !imported.contains(&name)
         {
-            // Generic type parameters (`T`, `K`, `V`).
+            // Generic type parameters (`T`, `K`, `V`), unless an import binds the name
+            // (`from .models import User as U`). A same-file `type T` is no evidence: generic
+            // parameters shadow it everywhere else.
             continue;
         }
         if r.kind == EdgeKind::Value && r.qualifier.is_none() && !known.contains(&name) {

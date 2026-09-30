@@ -723,7 +723,9 @@ fn kind_ok(edge: EdgeKind, sym: SymKind, lang: Lang) -> bool {
             sym,
             SymKind::Class | SymKind::Interface | SymKind::Struct | SymKind::Trait
         ),
-        EdgeKind::Value => matches!(sym, SymKind::Function | SymKind::Method),
+        // A function or a class/type passed around as a value (`isinstance(x, Foo)`,
+        // `cls = Option`).
+        EdgeKind::Value => matches!(sym, SymKind::Function | SymKind::Method) || sym.is_type_like(),
         EdgeKind::Import => false,
     }
 }
