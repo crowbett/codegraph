@@ -225,3 +225,18 @@ with write ~50 s, resolve ~25 s, index + FTS rebuild ~85 s ⇒ roughly **150–1
 the bar at 60k files. Under 60 s for 100k files needs #6 (fewer rows / smaller FTS) and
 cheaper index builds (or building FTS in the background after the graph is queryable), plus
 whatever the unprofiled Go resolve cost turns out to be.
+
+## After the refs, macro and resolver work (2026-09-29)
+
+Release build, cold `--full` index into an empty data dir, same machine:
+
+| repo | files | symbols | edges | exact | time |
+|---|---:|---:|---:|---:|---:|
+| rust-lang/rust 1.85.0 | 31,294 | 228,135 | 1.28 M | 589 k | 30.8 s (1529eae: 34.8 s best of 3, 1.03 M edges) |
+| Linux v6.12 | 59,994 | 3.01 M | 8.47 M | 1.58 M | 91.8 s (b221410: 114-129 s) |
+
+More edges than before (import-statement and value references, `macro_rules!`
+expansions) at no cost in time. On the way, a Python base-class walk without a visited set
+turned the rust-lang/rust index into a hang (40+ min of CPU; f62ef69 bounds it), which the
+accuracy corpus could not show.
+

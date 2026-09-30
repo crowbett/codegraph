@@ -118,6 +118,10 @@ $env:KIT_DATA_DIR = "$env:TEMP\cg" ; .\target\release\codegraph.exe index C:\Use
   change that regresses recall/precision on any language, or calibration (`exact`/`likely`/
   `name_only`), gets reverted or fixed, not shipped on vibes. Read the miss reports in
   `.cache/bench/report/*.tsv` before assuming a regression is a harness bug.
+- The corpus cannot show performance cliffs: after a resolver change also time a big repo
+  (`codegraph index .cache/bench/scale/rust --full` into a temp `KIT_DATA_DIR`, ~31 s on
+  this box; the Linux clone next to it ~92 s). A by-name walk without a visited set once
+  turned the rust-lang/rust index from 31 s into a hang while every accuracy number held.
 - Adding or changing a type hint: the grammar lives in `src/infer.rs`'s module doc (`S`,
   `T:`, `C:`, `M:`, `F:`, `Q:`/`A:`, `E:`, `L`, `U`, Python's `I:`/`P:`/`V:`/`D:`) — read it, keep new hints inside `MAX_DEPTH`/
   `MAX_HINT`, and add fixture coverage under `tests/fixtures/{go,rust,ts}_infer/` plus an
