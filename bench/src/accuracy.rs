@@ -271,6 +271,27 @@ fn lang_family(lang: &str) -> Option<&'static str> {
     }
 }
 
+/// A TS/JS shorthand property (`{ make_, extend_ }`, one per line or inline) resolved to the
+/// same-file definition it names. `{ make_ }` is `{ make_: make_ }`, but scip-typescript
+/// records only the contextual type's member there (`Annotation.make_`) when the object has
+/// one, never the binding the value comes from; both are valid readings of the site.
+fn shorthand_local(cg: &Cg, fid: i64, line: &str, o: &Occ, to: i64, name: &str) -> bool {
+    if cg.files.get(&fid).and_then(|(_, l)| lang_family(l)) != Some("ts") || is_local(&o.symbol) {
+        return false;
+    }
+    let Some((bs, be)) = byte_range(line, o.start, o.end) else {
+        return false;
+    };
+    let (before, after) = (line[..bs].trim_end(), line[be..].trim_start());
+    let open = before.is_empty() || before.ends_with('{') || before.ends_with(',');
+    let close = after.is_empty() || after.starts_with(',') || after.starts_with('}');
+    open && close
+        && cg
+            .syms
+            .get(&to)
+            .is_some_and(|s| s.file == fid && s.name == name)
+}
+
 // ---- source text -------------------------------------------------------------
 
 struct Sources {
@@ -575,6 +596,18 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
             let (bs, _) = byte_range(line, o.start, o.end).unwrap_or((0, 0));
             let edge = find_edge(&cg, fid, o.line + 1, bs as u32 + 1, &name);
             let expect = def_to_cg.get(o.symbol.as_str()).copied();
+            // Other symbols SCIP records on this exact range: a TS shorthand property
+            // (`{ out, err }`) is both the local binding and the contextual type's member.
+            // One edge can name either.
+            let alt_hit = |t: i64| {
+                scip.on_line(path, o.line).iter().any(|x| {
+                    !x.is_def
+                        && x.start == o.start
+                        && x.end == o.end
+                        && x.symbol != o.symbol
+                        && correct_target(&cg, &scip, &def_text, &x.symbol, t)
+                })
+            };
             let outcome = match (expect, edge) {
                 (None, _) => Outcome::NoDef,
                 (_, None) => Outcome::NoEdge,
@@ -587,6 +620,8 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
                     {
                         Outcome::Hit
                     }
+                    Some(t) if alt_hit(t) => Outcome::Hit,
+                    Some(t) if shorthand_local(&cg, fid, line, o, t, &name) => Outcome::Hit,
                     Some(t) if related(&o.symbol, t) => Outcome::Dispatch,
                     Some(_) => Outcome::Wrong,
                 },
@@ -670,7 +705,18 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
         if is_local(&o.symbol) && !scip.defs.contains_key(&o.symbol) {
             continue;
         }
-        let verdict = if !scip.defs.contains_key(&o.symbol) {
+        // Every symbol SCIP records on this exact range is a valid reading of the site
+        // (see `alt_hit` above).
+        let alt_ok = occs.iter().any(|x| {
+            !x.is_def
+                && x.start == o.start
+                && x.end == o.end
+                && x.symbol != o.symbol
+                && correct_target(&cg, &scip, &def_text, &x.symbol, to)
+        });
+        let verdict = if alt_ok || shorthand_local(&cg, e.file, &line, o, to, &e.name) {
+            Verdict::Correct
+        } else if !scip.defs.contains_key(&o.symbol) {
             Verdict::False
         } else if correct_target(&cg, &scip, &def_text, &o.symbol, to)
             || platform_twin(&cg, &scip, &def_text, &mut twin_src, &o.symbol, to)

@@ -72,7 +72,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 168
+        "index_ms": 103
       }
     },
     "chi": {
@@ -146,7 +146,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 184
+        "index_ms": 121
       }
     },
     "click": {
@@ -220,7 +220,7 @@
           "dispatch": 0,
           "false_edges": 6
         },
-        "index_ms": 381
+        "index_ms": 234
       }
     },
     "devkit": {
@@ -294,7 +294,7 @@
           "dispatch": 0,
           "false_edges": 1
         },
-        "index_ms": 109
+        "index_ms": 66
       }
     },
     "echo": {
@@ -368,7 +368,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 483
+        "index_ms": 297
       }
     },
     "fd": {
@@ -442,7 +442,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 137
+        "index_ms": 94
       }
     },
     "keep": {
@@ -516,7 +516,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 213
+        "index_ms": 121
       }
     },
     "ky": {
@@ -576,7 +576,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 367
+        "index_ms": 210
       }
     },
     "ledger": {
@@ -650,7 +650,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 128
+        "index_ms": 77
       }
     },
     "mobx": {
@@ -662,8 +662,8 @@
         "defs_found": 558,
         "calls": {
           "gt": 2285,
-          "hit": 1965,
-          "dispatch": 23,
+          "hit": 1972,
+          "dispatch": 16,
           "wrong": 36,
           "unresolved": 150,
           "no_edge": 13,
@@ -671,9 +671,9 @@
         },
         "refs": {
           "gt": 4333,
-          "hit": 2785,
-          "dispatch": 23,
-          "wrong": 98,
+          "hit": 2796,
+          "dispatch": 16,
+          "wrong": 94,
           "unresolved": 196,
           "no_edge": 1106,
           "no_def": 125
@@ -724,7 +724,7 @@
           "dispatch": 0,
           "false_edges": 39
         },
-        "index_ms": 996
+        "index_ms": 545
       }
     },
     "pulse": {
@@ -798,7 +798,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 184
+        "index_ms": 101
       }
     },
     "recall": {
@@ -872,7 +872,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 126
+        "index_ms": 69
       }
     },
     "serde-json": {
@@ -946,7 +946,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 315
+        "index_ms": 194
       }
     },
     "stash": {
@@ -1020,7 +1020,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 134
+        "index_ms": 85
       }
     },
     "urfave-cli": {
@@ -1094,7 +1094,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 365
+        "index_ms": 227
       }
     },
     "zustand": {
@@ -1115,9 +1115,9 @@
         },
         "refs": {
           "gt": 818,
-          "hit": 488,
+          "hit": 500,
           "dispatch": 0,
-          "wrong": 76,
+          "wrong": 64,
           "unresolved": 139,
           "no_edge": 115,
           "no_def": 0
@@ -1161,7 +1161,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 148
+        "index_ms": 90
       }
     }
   },
@@ -1234,7 +1234,7 @@
         "dispatch": 0,
         "false_edges": 0
       },
-      "index_ms": 1429
+      "index_ms": 867
     },
     "python": {
       "files": 124,
@@ -1304,7 +1304,7 @@
         "dispatch": 0,
         "false_edges": 6
       },
-      "index_ms": 635
+      "index_ms": 380
     },
     "rust": {
       "files": 195,
@@ -1374,7 +1374,7 @@
         "dispatch": 0,
         "false_edges": 0
       },
-      "index_ms": 754
+      "index_ms": 476
     },
     "ts": {
       "files": 396,
@@ -1382,8 +1382,8 @@
       "defs_found": 1042,
       "calls": {
         "gt": 3400,
-        "hit": 2971,
-        "dispatch": 23,
+        "hit": 2978,
+        "dispatch": 16,
         "wrong": 44,
         "unresolved": 251,
         "no_edge": 13,
@@ -1391,9 +1391,9 @@
       },
       "refs": {
         "gt": 6923,
-        "hit": 4685,
-        "dispatch": 23,
-        "wrong": 176,
+        "hit": 4708,
+        "dispatch": 16,
+        "wrong": 160,
         "unresolved": 365,
         "no_edge": 1549,
         "no_def": 125
@@ -1444,7 +1444,7 @@
         "dispatch": 0,
         "false_edges": 40
       },
-      "index_ms": 1620
+      "index_ms": 911
     }
   }
 }

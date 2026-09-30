@@ -75,6 +75,13 @@ the v0.1.1 baseline was re-scored with the fixed harness so deltas stay comparab
   test files, which sit outside its tsconfig). Real locals always have a definition. Such
   sites are left unjudged instead of counted false (widened on 2026-09-26 from import
   bindings only; the baseline was re-scored with the same rule).
+- TS/JS shorthand properties (`{ make_, extend_ }`): `{ make_ }` means `{ make_: make_ }`,
+  but scip-typescript records only the contextual type's member (`Annotation.make_`) when
+  the object has one, never the binding the value comes from. A target counts as correct
+  when the site is shaped like a shorthand property (after `{` or `,`, before `,`, `}` or
+  the end of the line) and the target is the same-named definition in the same file. Any
+  other symbol SCIP records on the exact same range is also accepted. Added on 2026-09-29;
+  the baseline was re-scored with it (TS refs hits +23).
 - Fields and Rust enum variants are not codegraph symbols and are excluded; rust-analyzer emits
   no implementation relationships, so Rust impl edges are unscored.
 
