@@ -18,6 +18,7 @@ symbols:
   src/store.rs:26-28 method store::Store::get  [pub]
   src/store.rs:30-32 method store::Store::find
   src/store.rs:36-38 method store::Store::load  [pub]
+  src/store.rs:42-42 type store::Result  [pub, doc="The crate's own result, as many crates define it."]
   src/util.rs:2-5 function util::new  [pub, doc="Free function named like `Store::new`."]
   src/util.rs:8-8 function util::helper  [pub, doc="Shared helper."]
   src/util.rs:11-15 macro util::getters  [doc="Generates one getter per name (defined by macro_rules!, expanded by codegraph)."]
@@ -63,6 +64,8 @@ edges:
   src/store.rs:35 impl store::Store: Backend => store::Backend (exact)
   src/store.rs:35 ref <file>: Store => store::Store (exact)
   src/store.rs:37 call store::Store::load: self.items.len => ?
+  src/store.rs:42 ref store::Result: std::result.Result => ?
+  src/store.rs:42 ref store::Result: Kind => store::Kind (exact)
   src/util.rs:3 call util::new: helper => util::helper (exact)
   src/util.rs:13 call util::getters: new => util::new (exact)
   src/util.rs:17 call <file>: getters => util::getters (exact)

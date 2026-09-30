@@ -60,6 +60,44 @@ const RUST_PRIMITIVES: &[&str] = &[
     "f64", "bool", "char", "str",
 ];
 
+/// Names the Rust std prelude (2021) brings into every module.
+const RUST_PRELUDE: &[&str] = &[
+    "Option",
+    "Result",
+    "Vec",
+    "String",
+    "Box",
+    "ToString",
+    "ToOwned",
+    "Clone",
+    "Copy",
+    "Send",
+    "Sync",
+    "Sized",
+    "Unpin",
+    "Default",
+    "Drop",
+    "Fn",
+    "FnMut",
+    "FnOnce",
+    "Iterator",
+    "IntoIterator",
+    "Extend",
+    "DoubleEndedIterator",
+    "ExactSizeIterator",
+    "From",
+    "Into",
+    "TryFrom",
+    "TryInto",
+    "FromIterator",
+    "AsRef",
+    "AsMut",
+    "PartialEq",
+    "Eq",
+    "PartialOrd",
+    "Ord",
+];
+
 /// Resolution counters for one repo.
 #[derive(Debug, Clone, Copy, Default, serde::Serialize)]
 pub struct ResolveStats {
@@ -3514,6 +3552,9 @@ impl Ctx {
             o == lang || (lang.is_c_family() && o.is_c_family())
         };
         match lang {
+            // A std prelude name this file neither defines nor imports is the prelude's
+            // (`Result<T, E>` beside the crate's own `type Result<T> = ..` in error.rs).
+            Lang::Rust if RUST_PRELUDE.contains(&e.name.as_str()) => None,
             Lang::Rust => {
                 let m: Vec<usize> = cands
                     .iter()

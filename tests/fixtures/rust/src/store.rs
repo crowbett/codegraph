@@ -37,3 +37,6 @@ impl Backend for Store {
         self.items.len()
     }
 }
+
+/// The crate's own result, as many crates define it.
+pub type Result<T> = std::result::Result<T, Kind>;

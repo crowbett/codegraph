@@ -133,6 +133,8 @@ fn rust_impl_blocks_traits_and_modules() {
             .collect()
     };
     assert_eq!(fmt_error, [None]);
+    // `Result<(), fmt::Error>` in src/fmt.rs is the prelude's, not store.rs's `type Result<T>`.
+    assert_eq!(edge(&ix.store, "src/fmt.rs", 7, "Result"), None);
     // `impl Backend for Store` links the struct to the trait.
     let (from, to): (String, String) = ix
         .store
