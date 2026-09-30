@@ -20,6 +20,10 @@ symbols:
   src/store.rs:36-38 method store::Store::load  [pub]
   src/util.rs:2-5 function util::new  [pub, doc="Free function named like `Store::new`."]
   src/util.rs:8-8 function util::helper  [pub, doc="Shared helper."]
+  src/util.rs:11-15 macro util::getters  [doc="Generates one getter per name (defined by macro_rules!, expanded by codegraph)."]
+  src/util.rs:17-17 function util::alpha  [pub]
+  src/util.rs:17-17 function util::beta  [pub]
+  src/util.rs:19-21 function util::sum  [pub]
 edges:
   src/fmt.rs:2 import <file>: std::fmt => (external)
   src/fmt.rs:2 ref <file>: fmt => ?
@@ -60,3 +64,7 @@ edges:
   src/store.rs:35 ref <file>: Store => store::Store (exact)
   src/store.rs:37 call store::Store::load: self.items.len => ?
   src/util.rs:3 call util::new: helper => util::helper (exact)
+  src/util.rs:13 call util::getters: new => util::new (exact)
+  src/util.rs:17 call <file>: getters => util::getters (exact)
+  src/util.rs:20 call util::sum: alpha => util::alpha (exact)
+  src/util.rs:20 call util::sum: beta => util::beta (exact)

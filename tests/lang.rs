@@ -109,6 +109,9 @@ fn rust_impl_blocks_traits_and_modules() {
     // Types in path-qualifier position are references: `Store::new()`, `store::Kind::Missing`,
     // and the same inside a macro's token tree.
     assert_edge(&ix, "src/main.rs", 8, "Store", "store::Store", "exact");
+    // Functions a same-file `macro_rules!` generates are defined at the invocation.
+    assert_edge(&ix, "src/util.rs", 20, "alpha", "util::alpha", "exact");
+    assert_edge(&ix, "src/util.rs", 20, "beta", "util::beta", "exact");
     // `use store::{Backend, Store};` references both items.
     assert_edge(&ix, "src/main.rs", 5, "Store", "store::Store", "exact");
     assert_edge(&ix, "src/main.rs", 5, "Backend", "store::Backend", "exact");

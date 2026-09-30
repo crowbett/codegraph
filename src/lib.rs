@@ -13,6 +13,7 @@ pub mod index;
 pub(crate) mod infer;
 pub mod lang;
 pub mod layout;
+mod macros;
 pub mod mcp;
 pub mod model;
 pub mod output;

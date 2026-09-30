@@ -20,7 +20,7 @@ use crate::model::{EdgeKind, SymKind};
 /// [`extract`]. Past it the remaining references are still emitted, without hints, so a
 /// hostile file cannot stall indexing (or the single-threaded MCP refresh). Real files
 /// finish in milliseconds.
-const HINT_BUDGET: Duration = Duration::from_secs(2);
+pub(crate) const HINT_BUDGET: Duration = Duration::from_secs(2);
 /// References between two checks of [`HINT_BUDGET`].
 const BUDGET_EVERY: usize = 256;
 /// In-progress query matches tree-sitter may keep; bounds the query cursor on
@@ -75,8 +75,10 @@ pub struct RawSymbol {
     pub ret: Option<String>,
     /// Field name -> type hint (structs/classes); Go embedded fields are `~Type`.
     pub fields: Vec<(String, String)>,
-    start_byte: usize,
-    end_byte: usize,
+    pub(crate) start_byte: usize,
+    pub(crate) end_byte: usize,
+    /// Where the name token starts.
+    pub(crate) name_byte: usize,
 }
 
 /// A reference (call, type use, impl, inherit) found in a file.
@@ -237,12 +239,12 @@ pub fn extract(lang: Lang, src: &[u8]) -> Result<FileFacts> {
             };
             if let (Some(before), Some(after)) = (errs(src)?, errs(&patched)?) {
                 if after < before {
-                    return extract_inner(lang, &patched, start);
+                    return extract_inner(lang, &patched, start, None);
                 }
             }
         }
     }
-    extract_inner(lang, src, start)
+    extract_inner(lang, src, start, None)
 }
 
 /// ERROR / MISSING nodes in a tree.
@@ -271,8 +273,23 @@ fn count_errors(root: Node<'_>) -> usize {
     }
 }
 
-/// `start`: when extraction of this file began (the [`HINT_BUDGET`] clock).
-fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
+/// Extract a Rust `macro_rules!` expansion (see [`crate::macros`]).
+pub(crate) fn extract_expansion(
+    src: &[u8],
+    start: Instant,
+    ctx: &crate::macros::Ctx<'_>,
+) -> Result<FileFacts> {
+    extract_inner(Lang::Rust, src, start, Some(ctx))
+}
+
+/// `start`: when extraction of this file began (the [`HINT_BUDGET`] clock). `macros`: the
+/// macros of the file an expansion came from.
+fn extract_inner(
+    lang: Lang,
+    src: &[u8],
+    start: Instant,
+    macros: Option<&crate::macros::Ctx<'_>>,
+) -> Result<FileFacts> {
     let query = lang.query()?;
     let Some(tree) = lang.with_parser(|p| p.parse(src, None))? else {
         return Ok(FileFacts::default());
@@ -641,6 +658,10 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
         });
     }
     facts.limited = match_limited || !infer.hints_enabled();
+    drop(infer);
+    if lang == Lang::Rust && !facts.limited {
+        crate::macros::expand_file(root, src, start, macros, &mut facts);
+    }
 
     Ok(facts)
 }
@@ -1214,8 +1235,38 @@ fn normalize_qualifier(s: &str) -> String {
     }
 }
 
+/// Re-sort `facts.symbols` by start (macro expansions append theirs) and renumber every
+/// index into it (`parent`, `refs[].from`). Returns old index -> new index.
+pub(crate) fn merge_symbols_sorted(facts: &mut FileFacts) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..facts.symbols.len()).collect();
+    order.sort_by_key(|&i| {
+        let s = &facts.symbols[i];
+        (s.start_byte, std::cmp::Reverse(s.end_byte), i)
+    });
+    let mut perm = vec![0; order.len()];
+    for (new, &old) in order.iter().enumerate() {
+        perm[old] = new;
+    }
+    let mut old: Vec<Option<RawSymbol>> = std::mem::take(&mut facts.symbols)
+        .into_iter()
+        .map(Some)
+        .collect();
+    facts.symbols = order
+        .iter()
+        .filter_map(|&i| old[i].take())
+        .map(|mut s| {
+            s.parent = s.parent.map(|p| perm[p]);
+            s
+        })
+        .collect();
+    for r in &mut facts.refs {
+        r.from = r.from.map(|f| perm[f]);
+    }
+    perm
+}
+
 /// Innermost symbol whose byte range contains `pos`.
-fn enclosing(symbols: &[RawSymbol], pos: usize) -> Option<usize> {
+pub(crate) fn enclosing(symbols: &[RawSymbol], pos: usize) -> Option<usize> {
     // symbols are sorted by start_byte; find the last one starting at or before pos.
     let idx = symbols.partition_point(|s| s.start_byte <= pos);
     let mut cur = idx.checked_sub(1);
@@ -1549,6 +1600,7 @@ fn build_symbols<'t>(
             fields: Vec::new(),
             start_byte: sb,
             end_byte: eb,
+            name_byte: d.name.start_byte(),
         });
         let _ = i;
         stack.push(facts.symbols.len() - 1);

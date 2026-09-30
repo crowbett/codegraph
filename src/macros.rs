@@ -1,0 +1,993 @@
+//! Rust `macro_rules!` expansion at extraction time.
+//!
+//! A `macro_rules!` macro defined in a file is expanded where that file invokes it. The
+//! invocation's tokens are matched against the rules the way rustc does it (fragments,
+//! repetitions with separators, the first arm that matches wins), the arm's transcriber is
+//! instantiated, and the resulting text is parsed and extracted like a small file of its
+//! own: inside a copy of the enclosing `impl`/`trait` header for items of an impl, as
+//! items at module level, inside a throwaway function anywhere else. Everything extracted
+//! from that text whose *name token came from the invocation* is mapped back to the
+//! invocation's position: `deserialize_number!(deserialize_i32)` in an impl defines the
+//! method `deserialize_i32` there, and `stream.next()` in the tokens handed to
+//! `test_stream!(data, Value, |stream| { .. })` gets `stream`'s type from the expansion
+//! (`let mut $stream = de.into_iter::<$ty>()`). Names written only in the macro body
+//! (a literal `fn helper()`) have no position of their own in the invoking file and are
+//! dropped. A transcriber invoking a macro expands again, up to [`MAX_DEPTH`] levels.
+//!
+//! Not covered: macros defined in another file (`#[macro_use]`, `$crate::m!`), procedural
+//! macros, and hygiene (a macro-body local shadowing a caller's name is not modeled).
+
+use std::cell::Cell;
+use std::collections::HashMap;
+use std::time::Instant;
+
+use tree_sitter::Node;
+
+use crate::extract::{FileFacts, RawRef, RawSymbol};
+
+/// Expansion levels (an expansion invoking a macro is level 2).
+pub(crate) const MAX_DEPTH: u8 = 4;
+/// Bytes of one transcribed expansion; larger ones are skipped.
+const MAX_EXPANSION: usize = 256 * 1024;
+/// Invocations expanded per file.
+const MAX_INVOCATIONS: usize = 4096;
+/// Expansions per file, all levels together.
+const MAX_EXPANSIONS: usize = 4096;
+/// Wrapper function around expansions in statement/expression position.
+const STMT_WRAPPER: &str = "__codegraph_expansion";
+
+#[derive(Clone, Debug)]
+struct Tok {
+    text: String,
+    /// Directly after the previous token of its source (no whitespace between).
+    glued: bool,
+    /// Byte offset in the source being expanded, when the token comes from there.
+    origin: Option<usize>,
+}
+
+#[derive(Clone, Debug)]
+enum Tt {
+    Leaf(Tok),
+    Group {
+        open: Tok,
+        close: Tok,
+        inner: Vec<Tt>,
+    },
+}
+
+#[derive(Clone, Debug)]
+enum Pat {
+    Tok(String),
+    Frag {
+        name: String,
+        kind: String,
+    },
+    Rep {
+        inner: Vec<Pat>,
+        sep: Option<String>,
+        op: String,
+    },
+    Group {
+        open: String,
+        inner: Vec<Pat>,
+    },
+}
+
+#[derive(Clone, Debug)]
+enum Tr {
+    Tok(Tok),
+    Var(String, Tok),
+    /// `$( .. ) sep op`: the count comes from the bindings, so `op` is not kept.
+    Rep {
+        inner: Vec<Tr>,
+        sep: Option<Tok>,
+    },
+    Group {
+        open: Tok,
+        close: Tok,
+        inner: Vec<Tr>,
+    },
+}
+
+#[derive(Clone, Debug)]
+enum Bind {
+    One(Vec<Tt>),
+    Seq(Vec<Bind>),
+}
+
+type Binds = HashMap<String, Bind>;
+
+/// One `(matcher) => { transcriber }` arm.
+type Rule = (Vec<Pat>, Vec<Tr>);
+
+/// The `macro_rules!` macros visible to an expansion: name -> rules (matcher, transcriber).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Macros {
+    rules: HashMap<String, Vec<Rule>>,
+}
+
+/// Macros and depth handed to the extraction of an expansion.
+pub(crate) struct Ctx<'a> {
+    pub(crate) macros: &'a Macros,
+    pub(crate) depth: u8,
+    /// Expansions left for the whole file, shared by every level (a macro whose
+    /// expansion invokes it many times over would otherwise multiply per level).
+    budget: &'a Cell<usize>,
+}
+
+fn text<'a>(n: Node<'_>, src: &'a [u8]) -> &'a str {
+    n.utf8_text(src).unwrap_or("")
+}
+
+fn children(n: Node<'_>) -> Vec<Node<'_>> {
+    let mut c = n.walk();
+    n.children(&mut c).collect()
+}
+
+fn is_delim(s: &str) -> bool {
+    matches!(s, "(" | ")" | "[" | "]" | "{" | "}")
+}
+
+// ---- reading the tree ----------------------------------------------------------------
+
+/// Tokens between the delimiters of a `token_tree`.
+fn tts_of(group: Node<'_>, src: &[u8]) -> Vec<Tt> {
+    let ch = children(group);
+    let inner = if ch.len() >= 2 && is_delim(ch[0].kind()) {
+        &ch[1..ch.len() - 1]
+    } else {
+        &ch[..]
+    };
+    let mut prev_end = ch.first().map_or(group.start_byte(), Node::end_byte);
+    let mut out = Vec::with_capacity(inner.len());
+    for &c in inner {
+        let glued = c.start_byte() == prev_end;
+        prev_end = c.end_byte();
+        out.push(tt_of(c, glued, src));
+    }
+    out
+}
+
+fn tt_of(n: Node<'_>, glued: bool, src: &[u8]) -> Tt {
+    if n.kind() == "token_tree" {
+        let ch = children(n);
+        if let (Some(first), Some(last)) = (ch.first(), ch.last()) {
+            if is_delim(first.kind()) && ch.len() >= 2 {
+                return Tt::Group {
+                    open: leaf(*first, glued, src),
+                    close: leaf(*last, false, src),
+                    inner: tts_of(n, src),
+                };
+            }
+        }
+    }
+    Tt::Leaf(leaf(n, glued, src))
+}
+
+fn leaf(n: Node<'_>, glued: bool, src: &[u8]) -> Tok {
+    Tok {
+        text: text(n, src).to_string(),
+        glued,
+        origin: Some(n.start_byte()),
+    }
+}
+
+/// Matcher of a `token_tree_pattern` / the inside of a `token_repetition_pattern`.
+fn pats_of(nodes: &[Node<'_>], src: &[u8]) -> Vec<Pat> {
+    let mut out = Vec::new();
+    for &c in nodes {
+        match c.kind() {
+            "token_binding_pattern" => {
+                let name = c
+                    .child_by_field_name("name")
+                    .map(|n| text(n, src).trim_start_matches('$').to_string())
+                    .unwrap_or_default();
+                let kind = c
+                    .child_by_field_name("type")
+                    .map(|n| text(n, src).to_string())
+                    .unwrap_or_default();
+                out.push(Pat::Frag { name, kind });
+            }
+            "token_repetition_pattern" => {
+                let (inner, sep, op) = repetition(c, src);
+                out.push(Pat::Rep {
+                    inner: pats_of(&inner, src),
+                    sep,
+                    op,
+                });
+            }
+            "token_tree_pattern" => {
+                let ch = children(c);
+                let open = ch
+                    .first()
+                    .map(|f| text(*f, src).to_string())
+                    .unwrap_or_default();
+                let inner = if ch.len() >= 2 {
+                    &ch[1..ch.len() - 1]
+                } else {
+                    &ch[..]
+                };
+                out.push(Pat::Group {
+                    open,
+                    inner: pats_of(inner, src),
+                });
+            }
+            _ => out.push(Pat::Tok(text(c, src).to_string())),
+        }
+    }
+    out
+}
+
+/// `$( inner ) sep? op` -> (inner nodes, separator, operator). The grammar matches the
+/// separator with an unnamed regex, so it is no node: it is the text between `)` and `op`.
+fn repetition<'t>(n: Node<'t>, src: &[u8]) -> (Vec<Node<'t>>, Option<String>, String) {
+    let ch = children(n);
+    let open = ch.iter().position(|c| c.kind() == "(");
+    let close = ch.iter().rposition(|c| c.kind() == ")");
+    let (Some(o), Some(cl)) = (open, close) else {
+        return (Vec::new(), None, "*".into());
+    };
+    let op = ch[cl + 1..]
+        .iter()
+        .rfind(|c| matches!(c.kind(), "*" | "+" | "?"));
+    let sep_end = op.map_or(n.end_byte(), Node::start_byte);
+    let sep = std::str::from_utf8(&src[ch[cl].end_byte()..sep_end])
+        .ok()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let op = op.map_or_else(|| "*".into(), |o| text(*o, src).to_string());
+    (ch[o + 1..cl].to_vec(), sep, op)
+}
+
+/// Transcriber tokens of a `token_tree` / the inside of a `token_repetition`.
+fn trs_of(nodes: &[Node<'_>], mut prev_end: usize, src: &[u8]) -> Vec<Tr> {
+    let mut out = Vec::new();
+    for &c in nodes {
+        let glued = c.start_byte() == prev_end;
+        prev_end = c.end_byte();
+        let tok = |n: Node<'_>, glued: bool| Tok {
+            text: text(n, src).to_string(),
+            glued,
+            origin: None,
+        };
+        match c.kind() {
+            "metavariable" => {
+                let name = text(c, src).trim_start_matches('$').to_string();
+                out.push(Tr::Var(name, tok(c, glued)));
+            }
+            "token_repetition" => {
+                let (inner, sep, _) = repetition(c, src);
+                let start = inner.first().map_or(c.start_byte(), Node::start_byte);
+                out.push(Tr::Rep {
+                    inner: trs_of(&inner, start, src),
+                    sep: sep.map(|text| Tok {
+                        text,
+                        glued: true,
+                        origin: None,
+                    }),
+                });
+            }
+            "token_tree" => {
+                let ch = children(c);
+                if ch.len() >= 2 && is_delim(ch[0].kind()) {
+                    out.push(Tr::Group {
+                        open: tok(ch[0], glued),
+                        close: tok(ch[ch.len() - 1], false),
+                        inner: trs_of(&ch[1..ch.len() - 1], ch[0].end_byte(), src),
+                    });
+                } else {
+                    out.push(Tr::Tok(tok(c, glued)));
+                }
+            }
+            _ => out.push(Tr::Tok(tok(c, glued))),
+        }
+    }
+    out
+}
+
+/// Every `macro_rules!` definition under `root`.
+fn definitions(root: Node<'_>, src: &[u8], into: &mut Macros) {
+    walk(root, &mut |n| {
+        if n.kind() != "macro_definition" {
+            return true;
+        }
+        let Some(name) = n.child_by_field_name("name") else {
+            return false;
+        };
+        let mut arms = Vec::new();
+        for rule in children(n).into_iter().filter(|c| c.kind() == "macro_rule") {
+            let (Some(left), Some(right)) = (
+                rule.child_by_field_name("left"),
+                rule.child_by_field_name("right"),
+            ) else {
+                continue;
+            };
+            let lch = children(left);
+            let pats = if lch.len() >= 2 && is_delim(lch[0].kind()) {
+                pats_of(&lch[1..lch.len() - 1], src)
+            } else {
+                pats_of(&lch, src)
+            };
+            let rch = children(right);
+            let trs = if rch.len() >= 2 && is_delim(rch[0].kind()) {
+                trs_of(&rch[1..rch.len() - 1], rch[0].end_byte(), src)
+            } else {
+                trs_of(&rch, right.start_byte(), src)
+            };
+            arms.push((pats, trs));
+        }
+        into.rules.insert(text(name, src).to_string(), arms);
+        false
+    });
+}
+
+/// Pre-order walk; `f` returns whether to descend into the node.
+fn walk<'t>(root: Node<'t>, f: &mut dyn FnMut(Node<'t>) -> bool) {
+    let mut cur = root.walk();
+    let mut descend = f(root);
+    loop {
+        if descend && cur.goto_first_child() {
+            descend = f(cur.node());
+            continue;
+        }
+        loop {
+            if cur.node().id() == root.id() {
+                return;
+            }
+            if cur.goto_next_sibling() {
+                descend = f(cur.node());
+                break;
+            }
+            if !cur.goto_parent() {
+                return;
+            }
+        }
+    }
+}
+
+// ---- matching ------------------------------------------------------------------------
+
+fn match_all(pats: &[Pat], tts: &[Tt]) -> Option<Binds> {
+    let (n, b) = match_prefix(pats, tts)?;
+    (n == tts.len()).then_some(b)
+}
+
+fn leaf_text(t: Option<&Tt>) -> Option<&str> {
+    match t {
+        Some(Tt::Leaf(k)) => Some(k.text.as_str()),
+        _ => None,
+    }
+}
+
+/// Match `pats` against a prefix of `tts`: (tokens consumed, bindings).
+fn match_prefix(pats: &[Pat], tts: &[Tt]) -> Option<(usize, Binds)> {
+    let mut binds = Binds::new();
+    let mut i = 0;
+    for p in pats {
+        match p {
+            Pat::Tok(t) => {
+                if leaf_text(tts.get(i)) != Some(t.as_str()) {
+                    return None;
+                }
+                i += 1;
+            }
+            Pat::Group { open, inner } => match tts.get(i) {
+                Some(Tt::Group {
+                    open: o, inner: ti, ..
+                }) if o.text == *open => {
+                    binds.extend(match_all(inner, ti)?);
+                    i += 1;
+                }
+                _ => return None,
+            },
+            Pat::Frag { name, kind } => {
+                let n = frag_len(kind, &tts[i..])?;
+                binds.insert(name.clone(), Bind::One(tts[i..i + n].to_vec()));
+                i += n;
+            }
+            Pat::Rep { inner, sep, op } => {
+                let mut iters: Vec<Binds> = Vec::new();
+                loop {
+                    if op == "?" && !iters.is_empty() {
+                        break;
+                    }
+                    let mut k = i;
+                    if !iters.is_empty() {
+                        if let Some(s) = sep {
+                            if leaf_text(tts.get(k)) != Some(s.as_str()) {
+                                break;
+                            }
+                            k += 1;
+                        }
+                    }
+                    let Some((n, b)) = match_prefix(inner, &tts[k..]) else {
+                        break;
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    iters.push(b);
+                    i = k + n;
+                }
+                if op == "+" && iters.is_empty() {
+                    return None;
+                }
+                let mut vars = Vec::new();
+                pat_vars(inner, &mut vars);
+                for v in vars {
+                    let seq = iters
+                        .iter()
+                        .map(|b| b.get(&v).cloned().unwrap_or(Bind::Seq(Vec::new())))
+                        .collect();
+                    binds.insert(v, Bind::Seq(seq));
+                }
+            }
+        }
+    }
+    Some((i, binds))
+}
+
+fn pat_vars(pats: &[Pat], out: &mut Vec<String>) {
+    for p in pats {
+        match p {
+            Pat::Frag { name, .. } => out.push(name.clone()),
+            Pat::Rep { inner, .. } | Pat::Group { inner, .. } => pat_vars(inner, out),
+            Pat::Tok(_) => {}
+        }
+    }
+}
+
+fn is_ident(s: &str) -> bool {
+    let mut c = s.chars();
+    c.next().is_some_and(|f| f.is_alphabetic() || f == '_')
+        && s != "_"
+        && s.chars().all(|x| x.is_alphanumeric() || x == '_')
+}
+
+fn is_literal(s: &str) -> bool {
+    s.starts_with(|c: char| c.is_ascii_digit() || c == '"' || c == '\'')
+        || s.starts_with("b\"")
+        || s.starts_with("b'")
+        || s.starts_with("r\"")
+        || s.starts_with("r#")
+        || s.starts_with("br")
+        || matches!(s, "true" | "false")
+}
+
+/// Tokens a fragment of `kind` takes from the front of `tts`, rustc-style: an expression,
+/// type or pattern runs to the first token of its follow set at the top level.
+fn frag_len(kind: &str, tts: &[Tt]) -> Option<usize> {
+    let first = tts.first();
+    match kind {
+        "ident" => leaf_text(first).filter(|t| is_ident(t)).map(|_| 1),
+        "lifetime" => leaf_text(first).filter(|t| t.starts_with('\'')).map(|_| 1),
+        "literal" => match leaf_text(first) {
+            Some(t) if is_literal(t) => Some(1),
+            Some("-") if leaf_text(tts.get(1)).is_some_and(is_literal) => Some(2),
+            _ => None,
+        },
+        "tt" => first.map(|_| 1),
+        "block" => match first {
+            Some(Tt::Group { open, .. }) if open.text == "{" => Some(1),
+            _ => None,
+        },
+        "vis" => match leaf_text(first) {
+            Some("pub") => Some(match tts.get(1) {
+                Some(Tt::Group { open, .. }) if open.text == "(" => 2,
+                _ => 1,
+            }),
+            _ => Some(0),
+        },
+        "expr" | "expr_2021" | "stmt" => {
+            let stops: &[&str] = if kind == "stmt" {
+                &[";"]
+            } else {
+                &[",", ";", "=>"]
+            };
+            // A closure's parameter list may hold commas: `|a, b| a + b`.
+            let skip = match leaf_text(first) {
+                Some("move") if leaf_text(tts.get(1)) == Some("|") => closing_pipe(tts, 2),
+                Some("|") => closing_pipe(tts, 1),
+                _ => 0,
+            };
+            nonzero(skip + until(&tts[skip..], stops, false))
+        }
+        "ty" | "path" => nonzero(until(
+            tts,
+            &[",", ";", "=>", "=", "|", "{", "as", "where"],
+            true,
+        )),
+        "pat" => nonzero(until(tts, &["=>", ",", "=", "if", "in"], false)),
+        "pat_param" => nonzero(until(tts, &["=>", ",", "=", "if", "in", "|"], false)),
+        "meta" => nonzero(until(tts, &[","], false)),
+        "item" => nonzero(tts.len()),
+        _ => None,
+    }
+}
+
+fn nonzero(n: usize) -> Option<usize> {
+    (n > 0).then_some(n)
+}
+
+/// Index just past the `|` closing a closure parameter list that starts at `from`.
+fn closing_pipe(tts: &[Tt], from: usize) -> usize {
+    tts[from..]
+        .iter()
+        .position(|t| leaf_text(Some(t)) == Some("|"))
+        .map_or(0, |p| from + p + 1)
+}
+
+/// Tokens before the first top-level stop token (angle brackets nest when `angles`).
+fn until(tts: &[Tt], stops: &[&str], angles: bool) -> usize {
+    let mut depth = 0i32;
+    for (i, t) in tts.iter().enumerate() {
+        let Some(s) = leaf_text(Some(t)) else {
+            continue;
+        };
+        if angles {
+            match s {
+                "<" => depth += 1,
+                ">" => depth -= 1,
+                ">>" => depth -= 2,
+                _ => {}
+            }
+            if depth < 0 {
+                return i;
+            }
+        }
+        if depth <= 0 && stops.contains(&s) {
+            return i;
+        }
+    }
+    tts.len()
+}
+
+// ---- transcription ---------------------------------------------------------------------
+
+#[derive(Default)]
+struct Out {
+    text: String,
+    /// (output offset of a token, its origin), in output order.
+    map: Vec<(usize, usize)>,
+}
+
+impl Out {
+    fn tok(&mut self, t: &Tok, glued: bool) {
+        if !glued && !self.text.is_empty() {
+            self.text.push(' ');
+        }
+        if let Some(o) = t.origin {
+            self.map.push((self.text.len(), o));
+        }
+        self.text.push_str(&t.text);
+    }
+
+    fn tts(&mut self, tts: &[Tt], first_glued: bool) {
+        for (i, t) in tts.iter().enumerate() {
+            let g = |k: &Tok| if i == 0 { first_glued } else { k.glued };
+            match t {
+                Tt::Leaf(k) => self.tok(k, g(k)),
+                Tt::Group { open, close, inner } => {
+                    self.tok(open, g(open));
+                    self.tts(inner, true);
+                    self.tok(close, close.glued || inner.is_empty());
+                }
+            }
+        }
+    }
+
+    /// The origin of the token starting at output offset `at`.
+    fn origin(&self, at: usize) -> Option<usize> {
+        self.map
+            .binary_search_by_key(&at, |&(o, _)| o)
+            .ok()
+            .map(|i| self.map[i].1)
+    }
+}
+
+fn lookup<'b>(binds: &'b Binds, name: &str, idx: &[usize]) -> Option<&'b Bind> {
+    let mut b = binds.get(name)?;
+    for &i in idx {
+        match b {
+            Bind::Seq(v) => b = v.get(i)?,
+            Bind::One(_) => break,
+        }
+    }
+    Some(b)
+}
+
+fn tr_vars(trs: &[Tr], out: &mut Vec<String>) {
+    for t in trs {
+        match t {
+            Tr::Var(n, _) => out.push(n.clone()),
+            Tr::Rep { inner, .. } | Tr::Group { inner, .. } => tr_vars(inner, out),
+            Tr::Tok(_) => {}
+        }
+    }
+}
+
+fn transcribe(trs: &[Tr], binds: &Binds, idx: &mut Vec<usize>, out: &mut Out) -> Option<()> {
+    for t in trs {
+        if out.text.len() > MAX_EXPANSION {
+            return None;
+        }
+        match t {
+            Tr::Tok(k) => out.tok(k, k.glued),
+            Tr::Var(name, k) => match lookup(binds, name, idx) {
+                Some(Bind::One(tts)) => out.tts(tts, k.glued),
+                Some(Bind::Seq(_)) => return None,
+                // `$crate` and unbound names stay as written (`$crate` -> `crate`).
+                None if name == "crate" => out.tok(
+                    &Tok {
+                        text: "crate".into(),
+                        glued: k.glued,
+                        origin: None,
+                    },
+                    k.glued,
+                ),
+                None => out.tok(k, k.glued),
+            },
+            Tr::Group { open, close, inner } => {
+                out.tok(open, open.glued);
+                transcribe(inner, binds, idx, out)?;
+                out.tok(close, close.glued || inner.is_empty());
+            }
+            Tr::Rep { inner, sep, .. } => {
+                let mut vars = Vec::new();
+                tr_vars(inner, &mut vars);
+                let count = vars
+                    .iter()
+                    .find_map(|v| match lookup(binds, v, idx) {
+                        Some(Bind::Seq(s)) => Some(s.len()),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                for i in 0..count {
+                    if i > 0 {
+                        if let Some(s) = sep {
+                            out.tok(s, true);
+                        }
+                    }
+                    idx.push(i);
+                    let r = transcribe(inner, binds, idx, out);
+                    idx.pop();
+                    r?;
+                }
+            }
+        }
+    }
+    Some(())
+}
+
+// ---- expansion -------------------------------------------------------------------------
+
+/// Line start offsets of `src`.
+fn line_starts(src: &[u8]) -> Vec<usize> {
+    std::iter::once(0)
+        .chain(
+            src.iter()
+                .enumerate()
+                .filter(|&(_, &b)| b == b'\n')
+                .map(|(i, _)| i + 1),
+        )
+        .collect()
+}
+
+/// 1-based (line, column) of byte `at`.
+fn line_col(starts: &[usize], at: usize) -> (u32, u32) {
+    let line = starts.partition_point(|&s| s <= at).max(1);
+    (line as u32, (at - starts[line - 1]) as u32 + 1)
+}
+
+/// Where an invocation sits: the text wrapped around its expansion so it parses as the
+/// right thing.
+fn context(inv: Node<'_>, src: &[u8]) -> (String, String) {
+    let mut p = inv.parent();
+    if p.is_some_and(|x| x.kind() == "expression_statement") {
+        p = p.and_then(|x| x.parent());
+    }
+    match p {
+        Some(list) if list.kind() == "declaration_list" => match list.parent() {
+            Some(owner) if matches!(owner.kind(), "impl_item" | "trait_item") => {
+                let head = String::from_utf8_lossy(&src[owner.start_byte()..list.start_byte()]);
+                (format!("{head}{{\n"), "\n}\n".into())
+            }
+            _ => (String::new(), String::new()),
+        },
+        Some(f) if f.kind() == "source_file" => (String::new(), String::new()),
+        _ => (format!("fn {STMT_WRAPPER}() {{\n"), "\n}\n".into()),
+    }
+}
+
+/// Expand every invocation in `root` of a `macro_rules!` macro defined in this file (or
+/// handed down by an enclosing expansion) and splice what the expansions define and
+/// reference into `facts`.
+pub(crate) fn expand_file(
+    root: Node<'_>,
+    src: &[u8],
+    start: Instant,
+    outer: Option<&Ctx<'_>>,
+    facts: &mut FileFacts,
+) {
+    let depth = outer.map_or(0, |c| c.depth);
+    if depth >= MAX_DEPTH {
+        return;
+    }
+    let mut table = outer.map(|c| c.macros.clone()).unwrap_or_default();
+    if memchr_str(src, b"macro_rules") {
+        definitions(root, src, &mut table);
+    }
+    if table.rules.is_empty() {
+        return;
+    }
+    let mut invocations: Vec<Node<'_>> = Vec::new();
+    walk(root, &mut |n| match n.kind() {
+        "macro_definition" => false,
+        "macro_invocation" => {
+            let known = n
+                .child_by_field_name("macro")
+                .filter(|m| m.kind() == "identifier")
+                .is_some_and(|m| table.rules.contains_key(text(m, src)));
+            if known && invocations.len() < MAX_INVOCATIONS {
+                invocations.push(n);
+            }
+            true
+        }
+        _ => true,
+    });
+    if invocations.is_empty() {
+        return;
+    }
+    let starts = line_starts(src);
+    let own_budget = Cell::new(MAX_EXPANSIONS);
+    let budget = outer.map_or(&own_budget, |c| c.budget);
+    let ctx = Ctx {
+        macros: &table,
+        depth: depth + 1,
+        budget,
+    };
+    for inv in invocations {
+        if start.elapsed() > crate::extract::HINT_BUDGET || budget.get() == 0 {
+            return;
+        }
+        budget.set(budget.get() - 1);
+        let Some(name) = inv.child_by_field_name("macro").map(|m| text(m, src)) else {
+            continue;
+        };
+        let Some(args) = children(inv).into_iter().find(|c| c.kind() == "token_tree") else {
+            continue;
+        };
+        let tts = tts_of(args, src);
+        let Some(out) = table.rules[name].iter().find_map(|(pats, trs)| {
+            let binds = match_all(pats, &tts)?;
+            let mut out = Out::default();
+            transcribe(trs, &binds, &mut Vec::new(), &mut out)?;
+            Some(out)
+        }) else {
+            continue;
+        };
+        if out.map.is_empty() {
+            continue;
+        }
+        let (head, tail) = context(inv, src);
+        let synthetic = format!("{head}{}{tail}", out.text);
+        let Ok(sub) = crate::extract::extract_expansion(synthetic.as_bytes(), start, &ctx) else {
+            continue;
+        };
+        let map = |at: usize| at.checked_sub(head.len()).and_then(|x| out.origin(x));
+        splice(facts, sub, synthetic.as_bytes(), &map, inv, &starts);
+    }
+}
+
+fn memchr_str(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
+/// Move the symbols and references of an expansion whose names map back to the invoking
+/// source into `facts`.
+fn splice(
+    facts: &mut FileFacts,
+    sub: FileFacts,
+    synthetic: &[u8],
+    map: &dyn Fn(usize) -> Option<usize>,
+    inv: Node<'_>,
+    starts: &[usize],
+) {
+    let sub_starts = line_starts(synthetic);
+    let at = |line: u32, col: u32| -> Option<usize> {
+        let s = *sub_starts.get(line.checked_sub(1)? as usize)?;
+        Some(s + col.checked_sub(1)? as usize)
+    };
+    let outer_parent = crate::extract::enclosing(&facts.symbols, inv.start_byte());
+
+    // Symbols: kept when their name token came from the invocation.
+    let mut kept: HashMap<usize, usize> = HashMap::new(); // sub index -> index in `new`
+    let mut new: Vec<RawSymbol> = Vec::new();
+    let mut sub_parent: Vec<Option<usize>> = Vec::new();
+    for (i, mut s) in sub.symbols.into_iter().enumerate() {
+        let Some(o) = map(s.name_byte) else {
+            continue;
+        };
+        kept.insert(i, new.len());
+        sub_parent.push(s.parent);
+        // The definition is its name token at the invocation.
+        let end = o + s.name.len();
+        (s.start_line, s.start_col) = line_col(starts, o);
+        (s.end_line, s.end_col) = line_col(starts, end);
+        (s.start_byte, s.end_byte, s.name_byte) = (o, end, o);
+        new.push(s);
+    }
+    let base = facts.symbols.len();
+    let sep = "::";
+    for (k, s) in new.iter_mut().enumerate() {
+        if let Some(&p) = sub_parent[k].and_then(|p| kept.get(&p)) {
+            s.parent = Some(base + p);
+        } else {
+            s.parent = outer_parent;
+            let own = s
+                .local_qname
+                .strip_prefix(&format!("{STMT_WRAPPER}{sep}"))
+                .unwrap_or(&s.local_qname)
+                .to_string();
+            s.local_qname = match outer_parent {
+                Some(p) => format!("{}{sep}{own}", facts.symbols[p].local_qname),
+                None => own,
+            };
+        }
+    }
+    // Fix children's qnames after their parents were renamed.
+    for k in 0..new.len() {
+        if let Some(p) = new[k].parent.filter(|&p| p >= base) {
+            let parent_q = new[p - base].local_qname.clone();
+            let name = new[k].name.clone();
+            let container = new[k].container.clone();
+            new[k].local_qname = match container {
+                Some(c) if new[p - base].name != c => format!("{parent_q}{sep}{c}{sep}{name}"),
+                _ => format!("{parent_q}{sep}{name}"),
+            };
+        }
+    }
+    let first_new = base;
+    facts.symbols.extend(new);
+
+    // References: kept when their name token came from the invocation; they replace what
+    // plain extraction saw at the same place (the expansion knows more, like types).
+    let mut refs: Vec<RawRef> = Vec::new();
+    for mut r in sub.refs {
+        let Some(o) = at(r.line, r.col).and_then(map) else {
+            continue;
+        };
+        let (line, col) = line_col(starts, o);
+        r.line = line;
+        r.col = col;
+        r.from = r.from.and_then(|f| kept.get(&f)).map(|&k| first_new + k);
+        refs.push(r);
+    }
+    let perm = crate::extract::merge_symbols_sorted(facts);
+    for r in &mut refs {
+        r.from = match r.from {
+            Some(f) => Some(perm[f]),
+            None => crate::extract::enclosing(&facts.symbols, at_line_col(starts, r.line, r.col)),
+        };
+    }
+    facts.refs.retain(|old| {
+        !refs
+            .iter()
+            .any(|r| r.line == old.line && r.col == old.col && r.name == old.name)
+    });
+    facts.refs.extend(refs);
+    facts.refs.sort_by_key(|r| (r.line, r.col));
+}
+
+fn at_line_col(starts: &[usize], line: u32, col: u32) -> usize {
+    starts
+        .get(line.saturating_sub(1) as usize)
+        .map_or(0, |s| s + col.saturating_sub(1) as usize)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::extract::{extract, FileFacts};
+    use crate::lang::Lang;
+    use crate::model::SymKind;
+
+    fn facts(src: &str) -> FileFacts {
+        extract(Lang::Rust, src.as_bytes()).unwrap()
+    }
+
+    fn sym<'f>(f: &'f FileFacts, name: &str) -> &'f crate::extract::RawSymbol {
+        f.symbols
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("no symbol {name}"))
+    }
+
+    #[test]
+    fn recursive_macro_defines_methods_of_the_impl() {
+        let f = facts(
+            "struct De;\n\
+             macro_rules! num {\n\
+                 ($m:ident) => { num!($m, visit); };\n\
+                 ($m:ident, $v:ident) => { fn $m(&self) -> u8 { 0 } };\n\
+             }\n\
+             impl De {\n\
+                 num!(deserialize_i8);\n\
+             }\n",
+        );
+        let s = sym(&f, "deserialize_i8");
+        assert_eq!(s.kind, SymKind::Method);
+        assert_eq!(s.container.as_deref(), Some("De"));
+        assert_eq!((s.start_line, s.start_col), (7, 6));
+        // Names written only in the macro body have no place in this file.
+        assert!(f.symbols.iter().all(|s| s.name != "visit"));
+    }
+
+    #[test]
+    fn repetitions_with_separators_and_trailing_comma() {
+        let f = facts(
+            "macro_rules! fns {\n\
+                 ($($n:ident),* $(,)?) => { $(pub fn $n() {})* };\n\
+             }\n\
+             mod m {\n\
+                 fns!(alpha, beta,);\n\
+             }\n",
+        );
+        assert_eq!(sym(&f, "alpha").local_qname, "m::alpha");
+        assert_eq!(sym(&f, "beta").start_line, 5);
+    }
+
+    #[test]
+    fn fragments_stop_at_their_follow_set() {
+        // `ty` keeps generic arguments together; `expr` keeps a closure's parameters.
+        let f = facts(
+            "macro_rules! pair {\n\
+                 ($t:ty, $e:expr, $n:ident) => { fn $n(x: $t) { let f = $e; } };\n\
+             }\n\
+             pair!(HashMap<u8, Vec<(u8, u8)>>, |a, b| a + b, both);\n",
+        );
+        assert_eq!(sym(&f, "both").start_line, 4);
+    }
+
+    #[test]
+    fn calls_in_invocation_tokens_are_typed_by_the_expansion() {
+        let f = facts(
+            "struct Stream;\n\
+             impl Stream { fn next(&mut self) {} }\n\
+             fn open() -> Stream { Stream }\n\
+             macro_rules! with {\n\
+                 (|$s:ident| $body:block) => {{ let mut $s = open(); $body }};\n\
+             }\n\
+             fn run() {\n\
+                 with!(|stream| { stream.next(); });\n\
+             }\n",
+        );
+        let r = f.refs.iter().find(|r| r.name == "next").expect("next call");
+        assert_eq!((r.line, r.qualifier.as_deref()), (8, Some("stream")));
+        assert_eq!(r.hint.as_deref(), Some("C:open"));
+        let from = r.from.map(|i| f.symbols[i].name.as_str());
+        assert_eq!(from, Some("run"));
+    }
+
+    #[test]
+    fn no_matching_arm_expands_nothing() {
+        let f = facts(
+            "macro_rules! only_ident { ($n:ident) => { fn $n() {} }; }\n\
+             only_ident!(1 + 2);\n",
+        );
+        assert!(f.symbols.iter().all(|s| s.kind != SymKind::Function));
+    }
+
+    #[test]
+    fn self_multiplying_macros_stay_bounded() {
+        // Each level invokes the macro eight times: 8^4 without the shared budget.
+        let src = "macro_rules! boom {\n\
+                       ($n:ident) => { boom!($n); boom!($n); boom!($n); boom!($n);\n\
+                                       boom!($n); boom!($n); boom!($n); boom!($n); };\n\
+                   }\n\
+                   fn f() { boom!(x); boom!(y); }\n";
+        let t = std::time::Instant::now();
+        let _ = facts(src);
+        assert!(t.elapsed() < std::time::Duration::from_secs(5));
+    }
+}
