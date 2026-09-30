@@ -17,3 +17,10 @@ export const main = (): void => {
   app.run();
   app.greet("x");
 };
+
+export const registry = { helper, sum: add };
+export const isApp = (x: unknown): boolean => x instanceof App;
+export const pick = (flag: boolean) => {
+  const local = helper;
+  return flag ? local : App;
+};

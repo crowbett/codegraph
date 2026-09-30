@@ -6,6 +6,9 @@ symbols:
   src/index.ts:5-13 class src.App  [pub]
   src/index.ts:8-12 method src.App.run  [pub, in src.App]
   src/index.ts:15-19 function src.main  [pub]
+  src/index.ts:21-21 const src.registry  [pub]
+  src/index.ts:22-22 function src.isApp  [pub]
+  src/index.ts:23-26 function src.pick  [pub]
   src/lib/math.ts:2-4 function math.add  [pub, default, doc="Adds two numbers."]
   src/lib/math.ts:6-8 function math.helper  [pub]
   src/lib/strings.ts:1-3 function strings.helper  [pub]
@@ -29,4 +32,8 @@ edges:
   src/index.ts:16 call src.main: App => src.App (exact)
   src/index.ts:17 call src.main: app.run => src.App.run (exact)
   src/index.ts:18 call src.main: app.greet => strings.Greeter.greet (likely)
+  src/index.ts:21 value src.registry: helper => math.helper (exact)
+  src/index.ts:21 value src.registry: add => math.add (exact)
+  src/index.ts:22 value src.isApp: App => src.App (exact)
+  src/index.ts:24 value src.pick: helper => math.helper (exact)
   src/lib/strings.ts:12 call strings.Greeter.greet: this.format => strings.Greeter.format (exact)

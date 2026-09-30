@@ -134,3 +134,34 @@
 ; re-exports: `export * from './x'`, `export { a as b } from './x'`
 (export_statement
   source: (string)) @import
+
+; names used as values elsewhere: `{ increment: inc }`, `{ setState }`, `x instanceof E`,
+; `Flags.x`, `api.retry = retry`, `const f = g`, `return h`, `[a, b]`, `export { a as b }`.
+; Only names defined or imported in the file survive extraction; locals never do.
+(pair
+  value: (identifier) @name) @reference.value
+
+(shorthand_property_identifier) @name @reference.value
+
+(binary_expression
+  operator: "instanceof"
+  right: (identifier) @name) @reference.value
+
+(member_expression
+  object: (identifier) @name) @reference.value
+
+(assignment_expression
+  right: (identifier) @name) @reference.value
+
+(variable_declarator
+  value: (identifier) @name) @reference.value
+
+(return_statement
+  (identifier) @name) @reference.value
+
+(array
+  (identifier) @name) @reference.value
+
+(export_clause
+  (export_specifier
+    name: (identifier) @name)) @reference.value

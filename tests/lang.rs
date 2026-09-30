@@ -162,6 +162,12 @@ fn typescript_default_vs_named_exports() {
         "exact",
     );
     assert_edge(&ix, "src/index.ts", 11, "add", "math.add", "exact");
+    // Names used as values: shorthand and keyed properties, `instanceof`, initializers.
+    assert_edge(&ix, "src/index.ts", 21, "helper", "math.helper", "exact");
+    assert_edge(&ix, "src/index.ts", 21, "add", "math.add", "exact");
+    assert_edge(&ix, "src/index.ts", 22, "App", "src.App", "exact");
+    assert_edge(&ix, "src/index.ts", 24, "helper", "math.helper", "exact");
+    assert_eq!(edge(&ix.store, "src/index.ts", 25, "local"), None);
     assert_edge(&ix, "src/index.ts", 9, "helper", "math.helper", "exact");
     // Namespace import through a tsconfig `paths` alias.
     assert_edge(&ix, "src/index.ts", 10, "helper", "strings.helper", "exact");

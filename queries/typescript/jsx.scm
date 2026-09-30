@@ -5,3 +5,6 @@
 
 (jsx_self_closing_element
   name: (identifier) @name) @reference.call
+
+(jsx_closing_element
+  name: (identifier) @name) @reference.call
