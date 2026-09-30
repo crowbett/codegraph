@@ -18,12 +18,12 @@
 //! macros, and hygiene (a macro-body local shadowing a caller's name is not modeled).
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use tree_sitter::Node;
 
-use crate::extract::{FileFacts, RawRef, RawSymbol};
+use crate::extract::FileFacts;
 
 /// Expansion levels (an expansion invoking a macro is level 2).
 pub(crate) const MAX_DEPTH: u8 = 4;
@@ -31,6 +31,9 @@ pub(crate) const MAX_DEPTH: u8 = 4;
 const MAX_EXPANSION: usize = 256 * 1024;
 /// Invocations expanded per file.
 const MAX_INVOCATIONS: usize = 4096;
+/// Nesting of a definition or an invocation's arguments; deeper ones are not expanded
+/// (matching and transcription recurse along it).
+const MAX_NEST: usize = 64;
 /// Expansions per file, all levels together.
 const MAX_EXPANSIONS: usize = 4096;
 /// Wrapper function around expansions in statement/expression position.
@@ -295,6 +298,9 @@ fn definitions(root: Node<'_>, src: &[u8], into: &mut Macros) {
         let Some(name) = n.child_by_field_name("name") else {
             return false;
         };
+        if !shallow(n, MAX_NEST) {
+            return false;
+        }
         let mut arms = Vec::new();
         for rule in children(n).into_iter().filter(|c| c.kind() == "macro_rule") {
             let (Some(left), Some(right)) = (
@@ -320,6 +326,31 @@ fn definitions(root: Node<'_>, src: &[u8], into: &mut Macros) {
         into.rules.insert(text(name, src).to_string(), arms);
         false
     });
+}
+
+/// Whether the subtree under `n` is at most `limit` levels deep (iterative).
+fn shallow(n: Node<'_>, limit: usize) -> bool {
+    let mut cur = n.walk();
+    let mut depth = 0usize;
+    loop {
+        if cur.goto_first_child() {
+            depth += 1;
+            if depth > limit {
+                return false;
+            }
+            continue;
+        }
+        loop {
+            if depth == 0 {
+                return true;
+            }
+            if cur.goto_next_sibling() {
+                break;
+            }
+            cur.goto_parent();
+            depth -= 1;
+        }
+    }
 }
 
 /// Pre-order walk; `f` returns whether to descend into the node.
@@ -700,6 +731,17 @@ fn context(inv: Node<'_>, src: &[u8]) -> (String, String) {
     }
 }
 
+/// Expansion results waiting to be merged into a file's facts (once, at the end).
+struct Pending {
+    /// Symbols and references extraction found before expanding.
+    orig_syms: usize,
+    orig_refs: usize,
+    /// Symbols expansions defined, by (name position, name) -> index in `facts.symbols`.
+    defined: HashMap<(usize, String), usize>,
+    /// (line, col, name) of every reference an expansion saw: it replaces the original.
+    seen: HashSet<(u32, u32, String)>,
+}
+
 /// Expand every invocation in `root` of a `macro_rules!` macro defined in this file (or
 /// handed down by an enclosing expansion) and splice what the expansions define and
 /// reference into `facts`.
@@ -721,21 +763,8 @@ pub(crate) fn expand_file(
     if table.rules.is_empty() {
         return;
     }
-    let mut invocations: Vec<Node<'_>> = Vec::new();
-    walk(root, &mut |n| match n.kind() {
-        "macro_definition" => false,
-        "macro_invocation" => {
-            let known = n
-                .child_by_field_name("macro")
-                .filter(|m| m.kind() == "identifier")
-                .is_some_and(|m| table.rules.contains_key(text(m, src)));
-            if known && invocations.len() < MAX_INVOCATIONS {
-                invocations.push(n);
-            }
-            true
-        }
-        _ => true,
-    });
+    let mut invocations: Vec<Inv<'_>> = Vec::new();
+    known_invocations(root, src, &table, &mut invocations);
     if invocations.is_empty() {
         return;
     }
@@ -747,17 +776,23 @@ pub(crate) fn expand_file(
         depth: depth + 1,
         budget,
     };
-    for inv in invocations {
+    let mut pend = Pending {
+        orig_syms: facts.symbols.len(),
+        orig_refs: facts.refs.len(),
+        defined: HashMap::new(),
+        seen: HashSet::new(),
+    };
+    let mut next = 0;
+    while let Some(&inv) = invocations.get(next) {
+        next += 1;
         if start.elapsed() > crate::extract::HINT_BUDGET || budget.get() == 0 {
-            return;
+            break;
         }
         budget.set(budget.get() - 1);
-        let Some(name) = inv.child_by_field_name("macro").map(|m| text(m, src)) else {
+        let (name, args) = (text(inv.name, src), inv.args);
+        if !shallow(args, MAX_NEST) {
             continue;
-        };
-        let Some(args) = children(inv).into_iter().find(|c| c.kind() == "token_tree") else {
-            continue;
-        };
+        }
         let tts = tts_of(args, src);
         let Some(out) = table.rules[name].iter().find_map(|(pats, trs)| {
             let binds = match_all(pats, &tts)?;
@@ -765,127 +800,193 @@ pub(crate) fn expand_file(
             transcribe(trs, &binds, &mut Vec::new(), &mut out)?;
             Some(out)
         }) else {
+            // Not expandable: invocations among its arguments still are, on their own.
+            known_invocations(args, src, &table, &mut invocations);
             continue;
         };
         if out.map.is_empty() {
             continue;
         }
-        let (head, tail) = context(inv, src);
+        let (head, tail) = context(inv.anchor, src);
         let synthetic = format!("{head}{}{tail}", out.text);
         let Ok(sub) = crate::extract::extract_expansion(synthetic.as_bytes(), start, &ctx) else {
             continue;
         };
         let map = |at: usize| at.checked_sub(head.len()).and_then(|x| out.origin(x));
-        splice(facts, sub, synthetic.as_bytes(), &map, inv, &starts);
+        splice(
+            facts,
+            &mut pend,
+            sub,
+            synthetic.as_bytes(),
+            &map,
+            inv.anchor,
+            &starts,
+        );
     }
+    finish(facts, &pend);
+}
+
+/// One invocation of a known macro: `name!(args)` as a node, or as tokens inside another
+/// macro's arguments (`assert_eq!(m!(x), y)`), which tree-sitter does not parse.
+#[derive(Clone, Copy)]
+struct Inv<'t> {
+    name: Node<'t>,
+    args: Node<'t>,
+    /// Decides the context the expansion is parsed in ([`context`]).
+    anchor: Node<'t>,
+}
+
+/// Invocations of `table`'s macros under `root`, outside macro definitions and without
+/// descending into their arguments: an invocation passed to another reaches the expansion
+/// through its tokens (and is queued on its own when the outer one does not expand).
+fn known_invocations<'t>(root: Node<'t>, src: &[u8], table: &Macros, out: &mut Vec<Inv<'t>>) {
+    let known = |n: Node<'_>| n.kind() == "identifier" && table.rules.contains_key(text(n, src));
+    let mut skip: HashSet<usize> = HashSet::new();
+    let top = root.id();
+    walk(root, &mut |n| {
+        if n.id() != top && skip.contains(&n.id()) {
+            return false;
+        }
+        match n.kind() {
+            "macro_definition" => false,
+            "macro_invocation" if n.id() != top => {
+                let name = n.child_by_field_name("macro").filter(|m| known(*m));
+                let args = children(n).into_iter().find(|c| c.kind() == "token_tree");
+                if let (Some(name), Some(args)) = (name, args) {
+                    if out.len() < MAX_INVOCATIONS {
+                        out.push(Inv {
+                            name,
+                            args,
+                            anchor: n,
+                        });
+                    }
+                    return false;
+                }
+                true
+            }
+            "token_tree" => {
+                let ch = children(n);
+                for w in ch.windows(3) {
+                    if known(w[0])
+                        && w[1].kind() == "!"
+                        && w[2].kind() == "token_tree"
+                        && out.len() < MAX_INVOCATIONS
+                    {
+                        skip.insert(w[2].id());
+                        out.push(Inv {
+                            name: w[0],
+                            args: w[2],
+                            anchor: w[0],
+                        });
+                    }
+                }
+                true
+            }
+            _ => true,
+        }
+    });
 }
 
 fn memchr_str(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
-/// Move the symbols and references of an expansion whose names map back to the invoking
-/// source into `facts`.
+/// Append the symbols and references of one expansion whose names map back to the
+/// invoking source. Indexes into `facts.symbols` stay valid until [`finish`] re-sorts.
 fn splice(
     facts: &mut FileFacts,
+    pend: &mut Pending,
     sub: FileFacts,
     synthetic: &[u8],
     map: &dyn Fn(usize) -> Option<usize>,
     inv: Node<'_>,
     starts: &[usize],
 ) {
+    const SEP: &str = "::";
     let sub_starts = line_starts(synthetic);
     let at = |line: u32, col: u32| -> Option<usize> {
         let s = *sub_starts.get(line.checked_sub(1)? as usize)?;
         Some(s + col.checked_sub(1)? as usize)
     };
-    let outer_parent = crate::extract::enclosing(&facts.symbols, inv.start_byte());
+    let orig_syms = pend.orig_syms;
+    let original =
+        |facts: &FileFacts, pos: usize| crate::extract::enclosing(&facts.symbols[..orig_syms], pos);
+    let outer_parent = original(facts, inv.start_byte());
 
     // Symbols: kept when their name token came from the invocation.
-    let mut kept: HashMap<usize, usize> = HashMap::new(); // sub index -> index in `new`
-    let mut new: Vec<RawSymbol> = Vec::new();
-    let mut sub_parent: Vec<Option<usize>> = Vec::new();
+    let mut kept: HashMap<usize, usize> = HashMap::new(); // sub index -> facts index
+    let mut sub_qname: HashMap<usize, String> = HashMap::new();
     for (i, mut s) in sub.symbols.into_iter().enumerate() {
         let Some(o) = map(s.name_byte) else {
             continue;
         };
-        kept.insert(i, new.len());
-        sub_parent.push(s.parent);
+        let key = (o, s.name.clone());
+        if let Some(&g) = pend.defined.get(&key) {
+            kept.insert(i, g);
+            continue;
+        }
         // The definition is its name token at the invocation.
         let end = o + s.name.len();
         (s.start_line, s.start_col) = line_col(starts, o);
         (s.end_line, s.end_col) = line_col(starts, end);
         (s.start_byte, s.end_byte, s.name_byte) = (o, end, o);
-        new.push(s);
-    }
-    let base = facts.symbols.len();
-    let sep = "::";
-    for (k, s) in new.iter_mut().enumerate() {
-        if let Some(&p) = sub_parent[k].and_then(|p| kept.get(&p)) {
-            s.parent = Some(base + p);
+        let own_q = std::mem::take(&mut s.local_qname);
+        if let Some((p, g)) = s.parent.and_then(|p| kept.get(&p).map(|&g| (p, g))) {
+            s.parent = Some(g);
+            let rest = sub_qname
+                .get(&p)
+                .and_then(|pq| own_q.strip_prefix(pq.as_str()))
+                .map_or_else(|| format!("{SEP}{}", s.name), str::to_string);
+            s.local_qname = format!("{}{rest}", facts.symbols[g].local_qname);
         } else {
             s.parent = outer_parent;
-            let own = s
-                .local_qname
-                .strip_prefix(&format!("{STMT_WRAPPER}{sep}"))
-                .unwrap_or(&s.local_qname)
-                .to_string();
+            let own = own_q
+                .strip_prefix(&format!("{STMT_WRAPPER}{SEP}"))
+                .unwrap_or(&own_q);
             s.local_qname = match outer_parent {
-                Some(p) => format!("{}{sep}{own}", facts.symbols[p].local_qname),
-                None => own,
+                Some(p) => format!("{}{SEP}{own}", facts.symbols[p].local_qname),
+                None => own.to_string(),
             };
         }
+        sub_qname.insert(i, own_q);
+        facts.symbols.push(s);
+        let g = facts.symbols.len() - 1;
+        kept.insert(i, g);
+        pend.defined.insert(key, g);
     }
-    // Fix children's qnames after their parents were renamed.
-    for k in 0..new.len() {
-        if let Some(p) = new[k].parent.filter(|&p| p >= base) {
-            let parent_q = new[p - base].local_qname.clone();
-            let name = new[k].name.clone();
-            let container = new[k].container.clone();
-            new[k].local_qname = match container {
-                Some(c) if new[p - base].name != c => format!("{parent_q}{sep}{c}{sep}{name}"),
-                _ => format!("{parent_q}{sep}{name}"),
-            };
-        }
-    }
-    let first_new = base;
-    facts.symbols.extend(new);
 
     // References: kept when their name token came from the invocation; they replace what
     // plain extraction saw at the same place (the expansion knows more, like types).
-    let mut refs: Vec<RawRef> = Vec::new();
     for mut r in sub.refs {
         let Some(o) = at(r.line, r.col).and_then(map) else {
             continue;
         };
-        let (line, col) = line_col(starts, o);
-        r.line = line;
-        r.col = col;
-        r.from = r.from.and_then(|f| kept.get(&f)).map(|&k| first_new + k);
-        refs.push(r);
-    }
-    let perm = crate::extract::merge_symbols_sorted(facts);
-    for r in &mut refs {
-        r.from = match r.from {
-            Some(f) => Some(perm[f]),
-            None => crate::extract::enclosing(&facts.symbols, at_line_col(starts, r.line, r.col)),
+        (r.line, r.col) = line_col(starts, o);
+        if !pend.seen.insert((r.line, r.col, r.name.clone())) {
+            continue;
+        }
+        r.from = match r.from.and_then(|f| kept.get(&f)) {
+            Some(&g) => Some(g),
+            None => original(facts, o),
         };
+        facts.refs.push(r);
     }
-    facts.refs.retain(|old| {
-        !refs
-            .iter()
-            .any(|r| r.line == old.line && r.col == old.col && r.name == old.name)
+}
+
+/// Drop the original references an expansion replaced, then restore source order.
+fn finish(facts: &mut FileFacts, pend: &Pending) {
+    if pend.seen.is_empty() && facts.symbols.len() == pend.orig_syms {
+        return;
+    }
+    let mut i = 0;
+    facts.refs.retain(|r| {
+        let original = i < pend.orig_refs;
+        i += 1;
+        !(original && pend.seen.contains(&(r.line, r.col, r.name.clone())))
     });
-    facts.refs.extend(refs);
     facts.refs.sort_by_key(|r| (r.line, r.col));
+    crate::extract::merge_symbols_sorted(facts);
 }
-
-fn at_line_col(starts: &[usize], line: u32, col: u32) -> usize {
-    starts
-        .get(line.saturating_sub(1) as usize)
-        .map_or(0, |s| s + col.saturating_sub(1) as usize)
-}
-
 #[cfg(test)]
 mod tests {
     use crate::extract::{extract, FileFacts};
@@ -976,6 +1077,40 @@ mod tests {
              only_ident!(1 + 2);\n",
         );
         assert!(f.symbols.iter().all(|s| s.kind != SymKind::Function));
+    }
+
+    #[test]
+    fn deeply_nested_arguments_are_not_expanded() {
+        let deep = format!("{}x{}", "(".repeat(200), ")".repeat(200));
+        let src = format!(
+            "macro_rules! m {{ ($t:tt, $n:ident) => {{ fn $n() {{}} }}; }}
+m!({deep}, shallow_fn);
+"
+        );
+        let f = facts(&src);
+        assert!(f.symbols.iter().all(|s| s.name != "shallow_fn"));
+    }
+
+    #[test]
+    fn a_name_the_transcriber_repeats_is_defined_once() {
+        let f = facts(
+            "macro_rules! twice { ($n:ident) => { fn $n() {} fn $n() {} }; }
+             macro_rules! outer { ($n:ident) => { twice!($n); }; }
+             outer!(once);
+",
+        );
+        assert_eq!(f.symbols.iter().filter(|s| s.name == "once").count(), 1);
+    }
+
+    #[test]
+    fn invocations_inside_one_that_does_not_expand_still_do() {
+        let f = facts(
+            "macro_rules! def { ($n:ident) => { fn $n() {} }; }
+             macro_rules! only_lit { (1) => {}; }
+             only_lit!(def!(inner_fn));
+",
+        );
+        assert_eq!(sym(&f, "inner_fn").start_line, 3);
     }
 
     #[test]
