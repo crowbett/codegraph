@@ -67,6 +67,10 @@ impl Dirs {
     pub fn scip(&self, name: &str) -> PathBuf {
         self.cache.join("scip").join(format!("{name}.scip"))
     }
+    /// go/types implementation pairs of a Go repo (bench/gotruth), next to its SCIP index.
+    pub fn goimpl(&self, name: &str) -> PathBuf {
+        self.cache.join("scip").join(format!("{name}.goimpl.tsv"))
+    }
     fn tools(&self) -> PathBuf {
         self.cache.join("tools")
     }
@@ -182,6 +186,15 @@ fn install_tools(dirs: &Dirs, c: &Corpus, langs: &[&str]) -> Result<()> {
             ),
         ]);
         run(cmd, "go install scip-go")?;
+    }
+    if langs.contains(&"go") {
+        // Rebuilt every prepare (cheap, cached by go): implementation truth from go/types.
+        let mut cmd = Command::new("go");
+        cmd.current_dir(dirs.bench.join("gotruth"))
+            .args(["build", "-o"])
+            .arg(tools.join("go").join(exe("gotruth")))
+            .arg(".");
+        run(cmd, "go build gotruth")?;
     }
     let node = tools.join("node");
     let need_node = langs.iter().any(|l| matches!(*l, "typescript" | "python"));
@@ -313,11 +326,26 @@ pub fn prepare(dirs: &Dirs, only: &[String], force: bool) -> Result<()> {
             && !force;
         if fresh {
             eprintln!("{}: scip index up to date", r.name);
-            continue;
+        } else {
+            eprintln!("{}: building scip index ({})", r.name, r.lang);
+            scip_index(dirs, r)?;
+            std::fs::write(&stamp, &r.rev)?;
         }
-        eprintln!("{}: building scip index ({})", r.name, r.lang);
-        scip_index(dirs, r)?;
-        std::fs::write(&stamp, &r.rev)?;
+        let goimpl = dirs.goimpl(&r.name);
+        if r.lang == "go" && (!fresh || !goimpl.is_file()) {
+            eprintln!("{}: go/types implementations", r.name);
+            let mut c = Command::new(dirs.tools().join("go").join(exe("gotruth")));
+            c.arg(dirs.corpus(&r.name));
+            let o = c.output().context("run gotruth")?;
+            if !o.status.success() {
+                bail!(
+                    "gotruth {}: {}",
+                    r.name,
+                    String::from_utf8_lossy(&o.stderr).trim()
+                );
+            }
+            std::fs::write(&goimpl, &o.stdout)?;
+        }
     }
     Ok(())
 }

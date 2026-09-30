@@ -795,6 +795,34 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
             }
         }
     }
+    // Go: go/types' own pairs (bench/gotruth) complete scip-go's, which misses some
+    // cross-package implementations. Either source is ground truth.
+    if let Ok(text) = std::fs::read_to_string(dirs.goimpl(&r.name)) {
+        let at = |path: &str, line: &str, name: &str| -> Option<i64> {
+            let fid = *cg.by_path.get(path)?;
+            let line: u32 = line.parse().ok()?;
+            cg.sym_by_file_name
+                .get(&(fid, name.to_string()))?
+                .iter()
+                .filter(|&&id| {
+                    let s = &cg.syms[&id];
+                    s.start <= line && line <= s.end
+                })
+                .min_by_key(|&&id| cg.syms[&id].end - cg.syms[&id].start)
+                .copied()
+        };
+        for l in text.lines() {
+            let f: Vec<&str> = l.split('\t').collect();
+            let [tp, tl, tn, ip, il, iname] = f[..] else {
+                continue;
+            };
+            if let (Some(ca), Some(cb)) = (at(tp, tl, tn), at(ip, il, iname)) {
+                if gt_pairs.insert((ca, cb)) {
+                    gt_fam.insert((ca, cb), "go");
+                }
+            }
+        }
+    }
     let mut cg_pairs: HashSet<(i64, i64)> = HashSet::new();
     // Indexers without implementation relationships (rust-analyzer) give no impl truth:
     // leave impl unscored instead of calling every codegraph impl edge false.

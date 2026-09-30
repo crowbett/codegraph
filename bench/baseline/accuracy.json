@@ -72,7 +72,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 113
+        "index_ms": 106
       }
     },
     "chi": {
@@ -146,7 +146,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 119
+        "index_ms": 118
       }
     },
     "click": {
@@ -220,7 +220,7 @@
           "dispatch": 0,
           "false_edges": 6
         },
-        "index_ms": 232
+        "index_ms": 229
       }
     },
     "devkit": {
@@ -294,7 +294,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 64
+        "index_ms": 65
       }
     },
     "echo": {
@@ -359,7 +359,7 @@
             "false_edges": 553
           }
         },
-        "impl_gt": 32,
+        "impl_gt": 54,
         "impl_hit": 0,
         "impl_edges": {
           "resolved": 0,
@@ -368,7 +368,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 305
+        "index_ms": 291
       }
     },
     "fd": {
@@ -442,7 +442,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 99
+        "index_ms": 92
       }
     },
     "keep": {
@@ -507,7 +507,7 @@
             "false_edges": 101
           }
         },
-        "impl_gt": 9,
+        "impl_gt": 10,
         "impl_hit": 0,
         "impl_edges": {
           "resolved": 0,
@@ -516,7 +516,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 127
+        "index_ms": 125
       }
     },
     "ky": {
@@ -576,7 +576,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 215
+        "index_ms": 209
       }
     },
     "ledger": {
@@ -650,7 +650,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 82
+        "index_ms": 77
       }
     },
     "mobx": {
@@ -724,7 +724,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 564
+        "index_ms": 550
       }
     },
     "pulse": {
@@ -789,7 +789,7 @@
             "false_edges": 67
           }
         },
-        "impl_gt": 13,
+        "impl_gt": 14,
         "impl_hit": 0,
         "impl_edges": {
           "resolved": 0,
@@ -798,7 +798,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 106
+        "index_ms": 98
       }
     },
     "recall": {
@@ -872,7 +872,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 70
+        "index_ms": 71
       }
     },
     "serde-json": {
@@ -1020,7 +1020,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 88
+        "index_ms": 85
       }
     },
     "urfave-cli": {
@@ -1094,7 +1094,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 230
+        "index_ms": 218
       }
     },
     "zustand": {
@@ -1161,7 +1161,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 88
+        "index_ms": 85
       }
     }
   },
@@ -1225,7 +1225,7 @@
           "false_edges": 1223
         }
       },
-      "impl_gt": 160,
+      "impl_gt": 184,
       "impl_hit": 0,
       "impl_edges": {
         "resolved": 0,
@@ -1234,7 +1234,7 @@
         "dispatch": 0,
         "false_edges": 0
       },
-      "index_ms": 887
+      "index_ms": 850
     },
     "python": {
       "files": 124,
@@ -1304,7 +1304,7 @@
         "dispatch": 0,
         "false_edges": 6
       },
-      "index_ms": 384
+      "index_ms": 377
     },
     "rust": {
       "files": 195,
@@ -1374,7 +1374,7 @@
         "dispatch": 0,
         "false_edges": 0
       },
-      "index_ms": 492
+      "index_ms": 475
     },
     "ts": {
       "files": 396,
@@ -1444,7 +1444,7 @@
         "dispatch": 0,
         "false_edges": 0
       },
-      "index_ms": 931
+      "index_ms": 909
     }
   }
 }

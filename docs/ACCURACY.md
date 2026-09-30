@@ -10,7 +10,7 @@ language's semantic indexer, which resolves every reference the way the compiler
 
 | language | indexer | notes |
 |---|---|---|
-| Go | scip-go 0.2.7 | |
+| Go | scip-go 0.2.7 + go/types (`bench/gotruth`) | implementations from either (scip-go misses some cross-package ones) |
 | Rust | `rust-analyzer scip` (toolchain's) | emits no implementation relationships, so Rust impl edges are unscored |
 | TypeScript/JS | scip-typescript 0.4.0 | `npm install` runs in the clone first so types resolve |
 | Python | scip-python 0.6.6 | patched locally for a Windows `path.sep` regex crash; `src/` layout passed via `pyrightconfig.json` `extraPaths` |
@@ -88,10 +88,15 @@ the v0.1.1 baseline was re-scored with the fixed harness so deltas stay comparab
   an interface's own `extends` or for local symbols (classes in files outside the tsconfig,
   such as mobx's tests), so codegraph edges from those are unjudged. Added on 2026-09-29;
   the baseline was re-scored with it.
-- Known ground-truth gaps, still scored as false: scip-go does not record echo's
-  `XConfig -> MiddlewareConfigurator` (value-receiver `ToMiddleware` in package
-  `middleware`, interface in `echo`; 22 pairs), and scip-python omits some direct subclass
-  pairs it records one level down (`BadParameter(UsageError)` is missing while
+- Go implementations: scip-go misses some (echo's 22 cross-package value-receiver
+  `XConfig -> MiddlewareConfigurator` pairs), so `prepare` also runs `bench/gotruth`, which
+  asks go/types (`types.Implements`, on `T` and `*T`, inside each package's own
+  compilation, test variants included) for every in-module type/interface pair. A pair
+  either source reports is ground truth. Added on 2026-09-29; the baseline was re-scored.
+- Known ground-truth gaps, still scored as false: generic Go types and interfaces
+  (`uintValue[T] -> ValueCreator[T, C]`: `Implements` cannot check uninstantiated generics
+  and scip-go records nothing for them), and scip-python drops some direct subclass pairs it
+  records one level down (`BadParameter(UsageError)` is missing while
   `MissingParameter -> BadParameter` is present).
 - Fields and Rust enum variants are not codegraph symbols and are excluded; rust-analyzer emits
   no implementation relationships, so Rust impl edges are unscored.
