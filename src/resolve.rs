@@ -2842,6 +2842,28 @@ impl Ctx {
         None
     }
 
+    /// Rust: whether method `s` can be called from a file of package `pkg` with import
+    /// scope `scope`: same crate, an inherent method, or its trait (the impl's, or the
+    /// trait declaring it) is imported.
+    fn rust_visible(&self, s: usize, pkg: &str, scope: &Scope) -> bool {
+        let sym = &self.syms[s];
+        if self.files[sym.file].package == pkg {
+            return true;
+        }
+        let tr = sym
+            .fields
+            .iter()
+            .find(|(k, _)| k == crate::extract::IMPL_TRAIT)
+            .map(|(_, v)| v.as_str())
+            .or_else(|| {
+                sym.parent
+                    .and_then(|p| self.by_id.get(&p))
+                    .filter(|&&pi| self.syms[pi].kind == SymKind::Trait)
+                    .map(|&pi| self.syms[pi].name.as_str())
+            });
+        tr.is_none_or(|t| scope.names.contains_key(t))
+    }
+
     fn resolve_qualified(
         &self,
         e: &E,
@@ -2860,6 +2882,21 @@ impl Ctx {
         // hint is typed and goes through 1b).
         let declared_this = q == "this" && e.hint.as_deref().is_some_and(|h| h != "S");
         if !declared_this && (is_self_word(q) || recv.as_deref() == Some(q)) {
+            // Rust: impls are keyed by type name across the repo, so in a workspace another
+            // crate's `impl Tr for [u8]` looks like this `[u8]`'s. A method from another
+            // crate is callable when inherent, or when its trait is in scope here.
+            let pkg = &self.files[fi].package;
+            let visible: Vec<usize>;
+            let cands = if lang == Lang::Rust {
+                visible = cands
+                    .iter()
+                    .copied()
+                    .filter(|&s| self.rust_visible(s, pkg, scope))
+                    .collect();
+                &visible[..]
+            } else {
+                cands
+            };
             if let Some(ty) = &self_ty {
                 let m: Vec<usize> = cands
                     .iter()

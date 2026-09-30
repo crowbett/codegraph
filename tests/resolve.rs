@@ -791,3 +791,13 @@ fn rust_trait_methods_called_by_path_with_an_explicit_receiver() {
     // `Make::make(..)` takes no `self`: its first argument is not a receiver.
     assert_ne!(target(32, "make"), Some((22, "exact".into())));
 }
+
+#[test]
+fn rust_trait_impls_of_another_workspace_crate_do_not_apply() {
+    let ix = index_fixture("rust_ws");
+    // Crate `b` implements its own `Len` for `[u8]`; crate `a` neither defines nor imports
+    // it, so `self.len()` on a `[u8]` in `a` is std's, not b's.
+    assert_eq!(edge(&ix.store, "a/src/lib.rs", 7, "len"), None);
+    // Inside `b` the trait is its own.
+    assert!(edge(&ix.store, "b/src/lib.rs", 17, "len").is_some());
+}
