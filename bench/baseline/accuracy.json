@@ -72,7 +72,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 102
+        "index_ms": 395
       }
     },
     "chi": {
@@ -146,7 +146,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 119
+        "index_ms": 408
       }
     },
     "click": {
@@ -166,12 +166,12 @@
           "no_def": 0
         },
         "refs": {
-          "gt": 4994,
+          "gt": 5070,
           "hit": 1690,
           "dispatch": 55,
           "wrong": 382,
-          "unresolved": 1839,
-          "no_edge": 1028,
+          "unresolved": 1843,
+          "no_edge": 1100,
           "no_def": 0
         },
         "call_edges": {
@@ -220,7 +220,7 @@
           "dispatch": 0,
           "false_edges": 1
         },
-        "index_ms": 226
+        "index_ms": 847
       }
     },
     "devkit": {
@@ -294,7 +294,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 65
+        "index_ms": 328
       }
     },
     "echo": {
@@ -368,7 +368,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 298
+        "index_ms": 1313
       }
     },
     "fd": {
@@ -442,7 +442,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 93
+        "index_ms": 540
       }
     },
     "keep": {
@@ -516,7 +516,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 128
+        "index_ms": 448
       }
     },
     "ky": {
@@ -576,7 +576,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 208
+        "index_ms": 939
       }
     },
     "ledger": {
@@ -650,7 +650,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 75
+        "index_ms": 289
       }
     },
     "mobx": {
@@ -724,7 +724,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 546
+        "index_ms": 2152
       }
     },
     "pulse": {
@@ -798,7 +798,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 104
+        "index_ms": 330
       }
     },
     "recall": {
@@ -872,7 +872,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 68
+        "index_ms": 371
       }
     },
     "serde-json": {
@@ -946,7 +946,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 191
+        "index_ms": 850
       }
     },
     "stash": {
@@ -1020,7 +1020,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 86
+        "index_ms": 390
       }
     },
     "urfave-cli": {
@@ -1094,7 +1094,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 222
+        "index_ms": 796
       }
     },
     "zustand": {
@@ -1161,7 +1161,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 83
+        "index_ms": 325
       }
     }
   },
@@ -1234,7 +1234,7 @@
         "dispatch": 0,
         "false_edges": 0
       },
-      "index_ms": 871
+      "index_ms": 3295
     },
     "python": {
       "files": 124,
@@ -1250,12 +1250,12 @@
         "no_def": 0
       },
       "refs": {
-        "gt": 6521,
+        "gt": 6597,
         "hit": 2895,
         "dispatch": 55,
         "wrong": 396,
-        "unresolved": 1869,
-        "no_edge": 1306,
+        "unresolved": 1873,
+        "no_edge": 1378,
         "no_def": 0
       },
       "call_edges": {
@@ -1304,7 +1304,7 @@
         "dispatch": 0,
         "false_edges": 1
       },
-      "index_ms": 369
+      "index_ms": 1507
     },
     "rust": {
       "files": 195,
@@ -1374,7 +1374,7 @@
         "dispatch": 0,
         "false_edges": 0
       },
-      "index_ms": 472
+      "index_ms": 2175
     },
     "ts": {
       "files": 396,
@@ -1444,7 +1444,7 @@
         "dispatch": 0,
         "false_edges": 0
       },
-      "index_ms": 902
+      "index_ms": 3744
     }
   }
 }

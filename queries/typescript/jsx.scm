@@ -12,3 +12,9 @@
 ; `onClick={handler}`
 (jsx_expression
   (identifier) @name) @reference.value
+
+; property reads inside JSX (`{store.count}`), see tags.scm
+(jsx_expression
+  (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)

@@ -425,3 +425,58 @@ bench while fixing: the new alias hint `I:<local>` collided with the (undocument
 tuple hint `I:<n>@..` and broke typed calls, so bindings use `U` and the grammar table now
 lists `I:`, `P:`, `V:`, `D:` too. Not fixed, documented: textual macro scope.
 
+
+## Reference recall (branch `refs-recall`, 2026-09-30)
+
+Goal: the refs column. Before: all languages 97.7% (Rust 95.9, TS/JS 95.9). Method as
+before: cluster `.cache/bench/report/*.refmisses.tsv`, fix the biggest cluster, bench, read
+`*.false.tsv` for what the fix broke, repeat.
+
+| commit | what | effect |
+|---|---|---|
+| f5965b0 | a single capital (`enum N`, `class T`) is a generic parameter only where one is declared in scope (Rust, Go, Python); `Enum::Variant { .. }` in literals/patterns and `use Enum::*` reference the enum | Rust refs 95.9 -> 97.0 |
+| 853feea | macros: an unseparated `$($n:expr)*` takes one expression each (ends where the next operand starts) | serde_json's `number_partialeq_ok!(.. f32::consts::E f32::consts::PI ..)` had bound the whole list to one `$n` and produced refs with concatenated/garbage qualifiers; Rust defs 99.6 -> 100 |
+| dc2a9d3 | Rust unit structs, consts/statics, fn values (field initializers, `let`, arrays, tuples, macro tokens incl. `map_err(Error::io)`), scoped generic trait impls | Rust refs 97.0 -> 98.8, precision 99.2 -> 99.3 |
+| 6f28170 | `use super::x` inside an inline `mod tests` of a non-root module; `self::` paths | +8 exact |
+| 03f9536, d7411ae | TS/JS property reads (`this.isDisposed` getters, typed receivers), `this.m` pinned to the enclosing class by id | TS refs 95.9 -> 97.9 |
+| f8dc443 | `export { a as b }` aliases, values in comparisons/defaults | TS 97.9 -> 98.2 |
+| 57e5347 | Go values outside argument lists, Go/Python constants as value targets | Go refs 99.2 -> 99.8 (+2563 exact, all correct) |
+| 5ffef07 | harness: scip-python annotated module constants (`INT: t.Final[..]`) | baseline re-scored (2c5d775) |
+| a741adf | perf: local lookups by cursor descent, generic params from query captures | see below |
+| a21ac28 | `refs` printed `# codegraph` where every other command prints `# rust/codegraph` | found in the smoke run |
+| 91b3e89 | (in the review commit, unmentioned in its message) `callees`/`path` no longer walk value edges into constants and variables | Go/Python constants are data, not calls; `refs`/`impact` keep them |
+| 91b3e89 | review round (read-only rust-reviewer, findings reproduced against HEAD and 386a5b6): hostile Go receiver `*A[A[..]]` stack overflow + O(n^2) rescans; glob-imported variants guessed onto same-named structs (`likely`) -> hint `X`, scope-only; `let N = 3` and capitalized locals; Go `select` receive bindings and local `const` as locals; emptied `by_name` keys after a resident splice | Rust exact 12688 -> 12686 (two guesses gone), rest unchanged |
+
+Dead ends and near misses, each caught by the bench or a test before it was kept:
+- The broad capitalized-identifier capture first took path tails (`N::Float`, `fmt::Error`)
+  unqualified: Rust precision 99.2 -> 98.7, `likely` 95.8 -> 91.5. Path tails and field
+  reads in macro tokens are now taken only with their qualifier.
+- `use super::*` rebased to the file itself made every associated type a glob candidate
+  (5 false `Item` edges): dropped, the file's names are in scope anyway.
+- `this.b` for a plain field resolved to a same-named getter of another `class A` in the
+  same test file (by container *name*): members are matched by the enclosing class's id.
+- Matching every TS `member_expression` doubled in-progress query matches on a long call
+  chain; past the match limit tree-sitter evicted the call captures (tests/limits.rs).
+- Python constants as value targets looked like a precision drop (99.6 -> 98.5): all 74
+  "false" edges were `click.INT` & co., which scip-python references as a type descriptor
+  that has no definition. A ground-truth artifact, fixed in the harness, not in codegraph.
+
+Performance (the corpus can't show it): an unconditional generic-parameter scope walk made
+parsing rust-lang/rust 13 -> 23 s (fixed before dc2a9d3 was committed). Go's local lookups
+made kubernetes +21% CPU; tree-sitter 0.27's `parent()` is O(depth), so the enclosing-
+function walk was O(depth^2) per name; a single cursor descent fixed it. The box was
+loaded by another session's release build throughout, so the comparison is process CPU
+time, min of runs, interleaved with 386a5b6: kubernetes 88.1 -> 82.9 s, rust-lang/rust
+379 -> 364 s, with 8% / 5% more edges.
+
+Process slip: 03f9536 and 57e5347 were committed with a failing test (a gate chained with
+`;`/a pipe that hid the exit code); each was fixed in the next commit (d7411ae, f34174c).
+
+Recorded (docs/ACCURACY.md): all languages refs 97.7 -> 99.2% (Go 99.8, Python 99.1, Rust
+98.8, TS/JS 98.2), refs precision 99.6 -> 99.7%, defs 100%, callers unchanged (99.5 / 99.4),
+exact 99.9%, likely 97.5%, name_only 87.9%.
+
+Left: TS object-literal members typed by a call's parameter (`defineTool({ run, summarize })`,
+devkit's last 40 misses); Rust attribute arguments (`#[arg(value_parser = parse_millis)]`);
+same-named locals in sibling anonymous callbacks (mobx's `class A` / `type Time` per
+test); refs to bare fn values in Rust glob-imported modules (`round_nearest_tie_even`).

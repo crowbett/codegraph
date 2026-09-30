@@ -8,6 +8,11 @@ symbols:
   a/a.go:15-17 method a.Store.Get  [pub, doc="Get returns an item."]
   a/a.go:19-21 method a.Store.lookup
   a/a.go:24-24 function a.Helper  [pub, doc="Helper is a package-level function named like b.Helper."]
+  a/a.go:27-27 const a.DefaultName  [pub, doc="DefaultName is used when none is set."]
+  a/a.go:30-33 struct a.Options  [pub, doc="Options configures a Store."]
+  a/a.go:36-42 function a.Defaults  [pub, doc="Defaults are the default options."]
+  a/a.go:44-47 function a.maker
+  a/a.go:49-57 function a.shadow
   b/b.go:6-6 function b.Helper  [pub, doc="Helper shares its name with a.Helper."]
   b/b.go:9-11 function b.Use  [pub, doc="Use calls into package a."]
   main.go:11-16 function main.main
@@ -20,6 +25,15 @@ edges:
   a/a.go:15 ref a.Store.Get: Store => a.Store (exact)
   a/a.go:16 call a.Store.Get: s.lookup => a.Store.lookup (exact)
   a/a.go:19 ref a.Store.lookup: Store => a.Store (exact)
+  a/a.go:36 ref a.Defaults: Options => a.Options (exact)
+  a/a.go:37 ref a.Defaults: Options => a.Options (exact)
+  a/a.go:37 value a.Defaults: DefaultName => a.DefaultName (exact)
+  a/a.go:37 value a.Defaults: Helper => a.Helper (exact)
+  a/a.go:38 value a.Defaults: DefaultName => a.DefaultName (exact)
+  a/a.go:39 value a.Defaults: Helper => a.Helper (exact)
+  a/a.go:45 value a.maker: Helper => a.Helper (exact)
+  a/a.go:53 value a.shadow: Helper => ?
+  a/a.go:56 value a.shadow: DefaultName => ?
   b/b.go:3 import <file>: example.com/app/a => a/a.go
   b/b.go:9 ref b.Use: a.Store => a.Store (exact)
   b/b.go:10 call b.Use: s.Get => a.Store.Get (exact)

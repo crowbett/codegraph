@@ -262,17 +262,18 @@ scored site by site.
 
 | language | files | defs found | callers recall | false call edges | refs recall | refs precision | impl recall / precision |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Go | 364 | 100% | 100.0% | 0.2% | 99.2% | 99.9% | 100% / 94.4% |
-| Python | 124 | 100% | 100.0% | 0.4% | 98.9% | 99.6% | 100% / 99.0% |
-| TypeScript/JS | 396 | 100% | 99.2% | 0.5% | 95.9% | 99.7% | 100% / 100% |
-| Rust | 195 | 99.6% | 98.5% | 1.3% | 95.9% | 99.2% | – |
-| **all** | 1079 | 99.9% | 99.5% | 0.6% | 97.7% | 99.6% | 100% / 96.3% |
+| Go | 364 | 100% | 100.0% | 0.2% | 99.8% | 99.9% | 100% / 94.4% |
+| Python | 124 | 100% | 100.0% | 0.4% | 99.1% | 99.7% | 100% / 99.0% |
+| TypeScript/JS | 396 | 100% | 99.2% | 0.5% | 98.2% | 99.7% | 100% / 100% |
+| Rust | 195 | 100% | 98.5% | 1.3% | 98.8% | 99.3% | – |
+| **all** | 1079 | 100% | 99.5% | 0.6% | 99.2% | 99.7% | 100% / 96.3% |
 
 The same harness scores the v0.1.1 resolver at 77.0% callers recall with 13.8% false call
 edges. Where it still falls short, honestly: Rust extension traits on std types (`impl
 BufMut for &mut [u8]`), impls on reference types and receivers typed only through closures
-(serde-json 98.3%, bytes 97.8% callers recall), TS member reads (`this.prop`, `a.getter`) and
-object-literal properties that implement an interface member, and impl pairs no ground truth
+(serde-json 98.3%, bytes 97.8% callers recall), object-literal properties typed by a call's
+parameter (`defineTool({ run, summarize })`), Rust attribute arguments
+(`#[arg(value_parser = f)]`), and impl pairs no ground truth
 can decide (generic Go interfaces; see [docs/ACCURACY.md](docs/ACCURACY.md), which also has
 per-repo numbers). Go and Python implementations are also checked against the language
 itself (go/types, the runtime MRO), not only the SCIP indexers.
@@ -282,10 +283,10 @@ Confidence calibration (share of judged edges that are actually correct):
 | language | exact | likely | name_only |
 |---|---:|---:|---:|
 | Go | 100.0% | 85.2% | 76.1% |
-| Python | 99.9% | 99.6% | 78.1% |
+| Python | 99.9% | 99.6% | 77.8% |
 | TypeScript/JS | 99.8% | 100.0% | 95.7% |
 | Rust | 99.6% | 95.8% | 46.7% |
-| **all** | 99.8% (43,192 / 43,262) | 97.4% | 87.9% |
+| **all** | 99.9% (47,193 / 47,258) | 97.5% | 87.9% |
 
 Rust has no `impl`/`inherit` score: rust-analyzer's SCIP output emits no implementation
 relationships to compare against.

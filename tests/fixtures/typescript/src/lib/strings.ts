@@ -16,3 +16,16 @@ export class Greeter {
     return `hi ${n}`;
   }
 }
+
+/** A counter with an accessor. */
+export class Counter {
+  count = 0;
+
+  get isEmpty(): boolean {
+    return this.count === 0;
+  }
+
+  describe(): string {
+    return this.isEmpty ? "empty" : `${this.count}`;
+  }
+}

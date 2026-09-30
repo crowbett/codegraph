@@ -757,7 +757,8 @@ fn kind_ok(edge: EdgeKind, sym: SymKind, lang: Lang) -> bool {
                 || matches!(sym, SymKind::Class | SymKind::Struct)
                 || (lang == Lang::Go && sym == SymKind::Type)
         }
-        EdgeKind::Ref => sym.is_type_like(),
+        // Rust constants and statics used as values (`MAX_DEPTH`, `&NO_PROGRESS`).
+        EdgeKind::Ref => sym.is_type_like() || (lang == Lang::Rust && sym == SymKind::Const),
         EdgeKind::Impl => matches!(sym, SymKind::Trait | SymKind::Interface | SymKind::Class),
         EdgeKind::Inherit => matches!(
             sym,
@@ -765,7 +766,14 @@ fn kind_ok(edge: EdgeKind, sym: SymKind, lang: Lang) -> bool {
         ),
         // A function or a class/type passed around as a value (`isinstance(x, Foo)`,
         // `cls = Option`).
-        EdgeKind::Value => matches!(sym, SymKind::Function | SymKind::Method) || sym.is_type_like(),
+        EdgeKind::Value => {
+            matches!(sym, SymKind::Function | SymKind::Method)
+                || sym.is_type_like()
+                // Go package-level variables and constants (`h = DefaultHandler`), Python
+                // module constants (`type=click.STRING`).
+                || (matches!(lang, Lang::Go | Lang::Python)
+                    && matches!(sym, SymKind::Var | SymKind::Const))
+        }
         EdgeKind::Import => false,
     }
 }
@@ -1670,6 +1678,15 @@ fn edge_row(
     })))
 }
 
+/// Names a JS/TS symbol is also exported under (`export { a as b }`): importers look it
+/// up by those, so they are keys of `by_name` too.
+fn export_aliases(s: &S) -> impl Iterator<Item = &str> {
+    s.fields
+        .iter()
+        .filter(|(k, _)| k == crate::extract::EXPORT_AS)
+        .map(|(_, v)| v.as_str())
+}
+
 /// by_name, by_member, by_id, by_file.
 type SymTables = (
     HashMap<String, Vec<usize>>,
@@ -1687,6 +1704,9 @@ fn sym_tables(syms: &[S], nfiles: usize) -> SymTables {
                     let mut m: HashMap<String, Vec<usize>> = HashMap::with_capacity(syms.len() / 2);
                     for (i, s) in syms.iter().enumerate() {
                         m.entry(s.name.clone()).or_default().push(i);
+                        for a in export_aliases(s) {
+                            m.entry(a.to_string()).or_default().push(i);
+                        }
                     }
                     m
                 },
@@ -1910,9 +1930,9 @@ impl Ctx {
                 Some(j + new_n - old_n)
             }
         };
-        for list in self.by_name.values_mut().chain(self.by_member.values_mut()) {
+        let reindex = |list: &mut Vec<usize>| {
             if list.last().is_some_and(|&j| j < start) {
-                continue;
+                return true;
             }
             list.retain_mut(|j| match shift(*j) {
                 Some(k) => {
@@ -1921,7 +1941,12 @@ impl Ctx {
                 }
                 None => false,
             });
-        }
+            // A name no symbol carries any more is no key, as in a fresh context
+            // (`ext_ids` tells external names by absence).
+            !list.is_empty()
+        };
+        self.by_name.retain(|_, list| reindex(list));
+        self.by_member.retain(|_, list| reindex(list));
         self.by_id.retain(|_, j| match shift(*j) {
             Some(k) => {
                 *j = k;
@@ -1941,9 +1966,11 @@ impl Ctx {
         for i in start..start + new_n {
             let s = &self.syms[i];
             self.by_id.insert(s.id, i);
-            let list = self.by_name.entry(s.name.clone()).or_default();
-            let at = list.partition_point(|&j| j < i);
-            list.insert(at, i);
+            for name in std::iter::once(s.name.as_str()).chain(export_aliases(s)) {
+                let list = self.by_name.entry(name.to_string()).or_default();
+                let at = list.partition_point(|&j| j < i);
+                list.insert(at, i);
+            }
             if let (SymKind::Method, Some(c)) = (s.kind, &s.container) {
                 let list = self
                     .by_member
@@ -2823,6 +2850,19 @@ impl Ctx {
         (None, recv)
     }
 
+    /// Id of the nearest type-like symbol enclosing `from` (the class of a method).
+    fn enclosing_type_id(&self, from: Option<i64>) -> Option<i64> {
+        let mut cur = from.and_then(|id| self.by_id.get(&id).copied());
+        while let Some(i) = cur {
+            let s = &self.syms[i];
+            if s.kind.is_type_like() {
+                return Some(s.id);
+            }
+            cur = s.parent.and_then(|p| self.by_id.get(&p).copied());
+        }
+        None
+    }
+
     fn resolve_edge(&self, e: &E, scope: &Scope) -> Option<(usize, Confidence)> {
         if let Some(h) = e.hint.as_deref() {
             if let Some(local) = crate::infer::binding_local(h) {
@@ -2919,6 +2959,12 @@ impl Ctx {
         if lang == Lang::Python && q.starts_with("super(") {
             return self.resolve_py_super(e);
         }
+        // Rust `self::f()`, `use self::Esc::*`: the current module, not a receiver.
+        if lang == Lang::Rust && q == "self" && !e.dot {
+            let (files, _) = self.rust_path(fi, "self")?;
+            let m = self.lookup_in(&files, &e.name, e.kind, 2);
+            return self.pick(fi, &m, Confidence::Exact, Confidence::Likely);
+        }
         let (self_ty, recv) = self.self_type(e.from_symbol);
         // 1. self-like (unless TS declared `this` explicitly: `function f(this: T)`, whose
         // hint is typed and goes through 1b).
@@ -2940,11 +2986,18 @@ impl Ctx {
                 cands
             };
             if let Some(ty) = &self_ty {
-                let m: Vec<usize> = cands
+                let mut m: Vec<usize> = cands
                     .iter()
                     .copied()
                     .filter(|&s| self.syms[s].container.as_deref() == Some(ty.as_str()))
                     .collect();
+                // A JS/TS class body is one place: members of this class itself, not of a
+                // same-named class elsewhere (test files declare `class A` many times over).
+                if lang.is_js_family() {
+                    if let Some(cid) = self.enclosing_type_id(e.from_symbol) {
+                        m.retain(|&s| self.syms[s].parent == Some(cid));
+                    }
+                }
                 if let Some(r) = self.pick(fi, &m, Confidence::Exact, Confidence::Likely) {
                     return Some(r);
                 }
@@ -2961,6 +3014,12 @@ impl Ctx {
                             if seen.insert(b.clone()) {
                                 if let Some(r) = self.by_container(e, cands, b, Confidence::Likely)
                                 {
+                                    // A property read (`this.b`) is a field more often than a
+                                    // same-named base's getter picked among several.
+                                    let guess = r.1 == Confidence::NameOnly;
+                                    if guess && e.kind == EdgeKind::Value && lang.is_js_family() {
+                                        return None;
+                                    }
                                     return Some(r);
                                 }
                                 next.push(b.clone());
@@ -3550,7 +3609,10 @@ impl Ctx {
                 return self.pick(fi, &m, Confidence::Likely, Confidence::Likely);
             }
         }
-        // 5. Wider fallbacks per language.
+        // 5. Wider fallbacks per language; none for a scope-only name.
+        if e.hint.as_deref() == Some(crate::infer::SCOPED) {
+            return None;
+        }
         let same_lang = |s: usize| {
             let o = self.files[self.syms[s].file].lang;
             o == lang || (lang.is_c_family() && o.is_c_family())

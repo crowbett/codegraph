@@ -98,6 +98,28 @@
   (identifier)
   (#match? @name "^[A-Z]")) @reference.type
 
+; the same in struct literals and patterns: `Compound::Map { .. }`, `Stored::Chunks { .. }`
+(scoped_type_identifier
+  path: (identifier) @name
+  (#match? @name "^[A-Z]")) @reference.type
+
+(scoped_type_identifier
+  path: (scoped_identifier
+    path: (_) @qualifier
+    name: (identifier) @name)
+  (#match? @name "^[A-Z]")) @reference.type
+
+; an enum's variants brought into scope: `use Token::*`, `use crate::cli::FileType::*`
+(use_wildcard
+  (identifier) @name
+  (#match? @name "^[A-Z]")) @reference.type
+
+(use_wildcard
+  (scoped_identifier
+    path: (_) @qualifier
+    name: (identifier) @name)
+  (#match? @name "^[A-Z]")) @reference.type
+
 (impl_item
   trait: (type_identifier) @name
   type: (_) @impl_for) @reference.impl
@@ -110,6 +132,12 @@
 (impl_item
   trait: (generic_type
     type: (type_identifier) @name)
+  type: (_) @impl_for) @reference.impl
+
+(impl_item
+  trait: (generic_type
+    type: (scoped_type_identifier
+      name: (type_identifier) @name))
   type: (_) @impl_for) @reference.impl
 
 ; supertraits (`trait Float: Number + ops::Add`): methods of `Number` are callable on a
@@ -195,7 +223,14 @@
   .
   "<") @reference.call
 
-; functions passed as values (`.map(Self::parse)`, `spawn(worker)`)
+; unit structs and constants used as values, in patterns and in macro arguments:
+; `&NoProgress`, `Ok((v, UnitOnly))`, `vec![CommandTemplate { .. }]`, `fmt_impl!(Debug, Bytes)`
+((identifier) @name
+  (#match? @name "^[A-Z]")) @reference.type
+
+; functions passed as values (`.map(Self::parse)`, `spawn(worker)`, `clone: shared_clone`,
+; `let w = windows_safe`, `[(.., always)]`, `json!({ .. map(snapshot_json) })`). Bare names
+; are kept only when defined or imported in the file (extract.rs).
 (arguments
   (scoped_identifier
     path: (_) @qualifier
@@ -203,6 +238,50 @@
 
 (arguments
   (identifier) @name @reference.value)
+
+(arguments
+  (generic_function
+    function: (identifier) @name) @reference.value)
+
+(field_initializer
+  value: (identifier) @name) @reference.value
+
+(field_initializer
+  value: (generic_function
+    function: (identifier) @name)) @reference.value
+
+(let_declaration
+  value: (identifier) @name) @reference.value
+
+(array_expression
+  (identifier) @name @reference.value)
+
+(tuple_expression
+  (identifier) @name @reference.value)
+
+(token_tree
+  (identifier) @name @reference.value
+  .
+  ["," ")" "]" "}" ";"])
+
+; `tri!(w.flush().map_err(Error::io))`: a path's last segment (extract.rs drops module
+; segments, `a::b::c`)
+(token_tree
+  (identifier) @qualifier
+  .
+  "::"
+  .
+  (identifier) @name
+  (#match? @name "^[a-z_]")) @reference.value
+
+; generic parameters: a capital-letter reference one of these declares in scope is no type
+(type_parameters
+  (type_parameter
+    name: (type_identifier) @name) @generic.param)
+
+(type_parameters
+  (const_parameter
+    name: (identifier) @name) @generic.param)
 
 ; ---- imports --------------------------------------------------------------
 (use_declaration) @import

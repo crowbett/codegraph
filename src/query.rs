@@ -680,6 +680,9 @@ pub struct RefSite {
     /// Repo root (text rendering).
     #[serde(skip)]
     pub root: String,
+    /// Repo name, as `find` and `status` print it (text rendering).
+    #[serde(skip)]
+    pub repo: String,
 }
 
 /// References to a symbol.
@@ -723,7 +726,8 @@ pub fn refs(
     let targets: Vec<Sym> = targets.into_iter().take(10).collect();
     let ids: Vec<String> = targets.iter().map(|t| t.id.to_string()).collect();
     let mut sql = format!(
-        "SELECT r.root, f.path, e.line, e.kind, e.confidence, e.from_symbol, f.hash, f.size
+        "SELECT r.root, f.path, e.line, e.kind, e.confidence, e.from_symbol, f.hash, f.size,
+                r.name
          FROM edges e JOIN files f ON f.id = e.file_id JOIN repos r ON r.id = e.repo_id
          WHERE e.to_symbol IN ({}) AND e.kind != 'import'",
         ids.join(",")
@@ -748,6 +752,7 @@ pub fn refs(
             r.get::<_, Option<i64>>(5)?,
             r.get::<_, String>(6)?,
             r.get::<_, i64>(7)?,
+            r.get::<_, String>(8)?,
         ))
     })?;
     let all: Vec<_> = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -755,7 +760,9 @@ pub fn refs(
     let mut lines = Lines::default();
     let mut qn = conn.prepare_cached("SELECT qname FROM symbols WHERE id = ?1")?;
     let mut out = Vec::new();
-    for (raw_root, path, line, kind, conf, from, hash, size) in all.into_iter().take(limit.max(1)) {
+    for (raw_root, path, line, kind, conf, from, hash, size, repo) in
+        all.into_iter().take(limit.max(1))
+    {
         let text = lines.get(
             &Indexed {
                 root: raw_root.clone(),
@@ -781,6 +788,7 @@ pub fn refs(
             from,
             rel: path,
             root,
+            repo,
         });
     }
     Ok(References {
@@ -920,7 +928,11 @@ fn steps_of(
         Dir::Callees => {
             "SELECT e.to_symbol, e.name, e.qualifier, r.root, f.path, e.line, e.confidence, e.kind
              FROM edges e JOIN files f ON f.id = e.file_id JOIN repos r ON r.id = e.repo_id
-             WHERE e.from_symbol = ?1 AND e.kind IN ('call', 'value') ORDER BY e.line, e.col"
+             LEFT JOIN symbols t ON t.id = e.to_symbol
+             WHERE e.from_symbol = ?1 AND e.kind IN ('call', 'value')
+               -- a constant or variable read is data, not a call
+               AND (e.kind = 'call' OR t.kind IS NULL OR t.kind NOT IN ('const', 'var'))
+             ORDER BY e.line, e.col"
         }
     };
     let mut st = conn.prepare_cached(sql)?;
@@ -1379,7 +1391,9 @@ pub fn path(
     let mut st = conn.prepare_cached(
         "SELECT e.to_symbol, r.root, f.path, e.line FROM edges e
          JOIN files f ON f.id = e.file_id JOIN repos r ON r.id = e.repo_id
-         WHERE e.from_symbol = ?1 AND e.kind IN ('call', 'value') AND e.to_symbol IS NOT NULL
+         JOIN symbols t ON t.id = e.to_symbol
+         WHERE e.from_symbol = ?1 AND e.kind IN ('call', 'value')
+           AND (e.kind = 'call' OR t.kind IS NULL OR t.kind NOT IN ('const', 'var'))
          ORDER BY e.line",
     )?;
     let mut found = src.iter().find(|s| dst.contains(&s.id)).map(|s| s.id);

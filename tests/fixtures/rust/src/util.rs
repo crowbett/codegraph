@@ -19,3 +19,6 @@ getters!(alpha, beta);
 pub fn sum() -> u32 {
     alpha() + beta()
 }
+
+/// Named like a variant of `store::tok::Token`.
+pub struct Ident;

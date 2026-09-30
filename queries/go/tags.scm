@@ -94,5 +94,84 @@
 (argument_list
   (identifier) @name @reference.value)
 
+; ...and elsewhere: `Skipper: DefaultSkipper`, `[]F{a, b}`, `h = f`, `return f`, `x == f`,
+; `e.serveHTTPFunc = e.serveHTTP`. Bare names are kept unless local, selectors only on an
+; imported package or a receiver of known type (extract.rs).
+(keyed_element
+  value: (literal_element
+    (identifier) @name @reference.value))
+
+(keyed_element
+  value: (literal_element
+    (selector_expression
+      operand: (_) @qualifier
+      field: (field_identifier) @name) @reference.value))
+
+(literal_value
+  (literal_element
+    (identifier) @name @reference.value))
+
+(literal_value
+  (literal_element
+    (selector_expression
+      operand: (_) @qualifier
+      field: (field_identifier) @name) @reference.value))
+
+(assignment_statement
+  right: (expression_list
+    (identifier) @name @reference.value))
+
+(assignment_statement
+  right: (expression_list
+    (selector_expression
+      operand: (_) @qualifier
+      field: (field_identifier) @name) @reference.value))
+
+(short_var_declaration
+  right: (expression_list
+    (identifier) @name @reference.value))
+
+(short_var_declaration
+  right: (expression_list
+    (selector_expression
+      operand: (_) @qualifier
+      field: (field_identifier) @name) @reference.value))
+
+(var_spec
+  value: (expression_list
+    (identifier) @name @reference.value))
+
+(var_spec
+  value: (expression_list
+    (selector_expression
+      operand: (_) @qualifier
+      field: (field_identifier) @name) @reference.value))
+
+(return_statement
+  (expression_list
+    (identifier) @name @reference.value))
+
+(return_statement
+  (expression_list
+    (selector_expression
+      operand: (_) @qualifier
+      field: (field_identifier) @name) @reference.value))
+
+(binary_expression
+  left: (identifier) @name @reference.value)
+
+(binary_expression
+  right: (identifier) @name @reference.value)
+
+; `(*ValueSource)(nil)`: a type in expression position
+(parenthesized_expression
+  (unary_expression
+    operator: "*"
+    operand: (identifier) @name) @reference.value)
+
+; generic parameters: a capital-letter reference one of these declares in scope is no type
+(type_parameter_declaration
+  name: (identifier) @name) @generic.param
+
 ; ---- imports --------------------------------------------------------------
 (import_declaration) @import

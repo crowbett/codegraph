@@ -81,3 +81,14 @@ fn ordinary_chains_are_not_limited() {
     let facts = extract(Lang::Rust, chained(Lang::Rust, 20).as_bytes()).unwrap();
     assert!(facts.refs.iter().any(|r| r.name == "b" && r.hint.is_some()));
 }
+
+#[test]
+fn nested_generic_receivers_are_cheap() {
+    // A Go receiver's type parameters are its type's own arguments; the nested `A`s of a
+    // hostile `*A[A[A[..]]]` are types, and looking at them must not recurse or rescan.
+    let depth = 10_000;
+    let recv = format!("{}int{}", "A[".repeat(depth), "]".repeat(depth));
+    let src = format!("package p\n\nfunc (s *{recv}) M(v T) T {{\n\treturn v\n}}\n");
+    let facts = timed(Lang::Go, &src);
+    assert!(facts.symbols.iter().any(|s| s.name == "M"));
+}

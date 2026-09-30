@@ -9,13 +9,19 @@ symbols:
   src/index.ts:21-21 const src.registry  [pub]
   src/index.ts:22-22 function src.isApp  [pub]
   src/index.ts:23-26 function src.pick  [pub]
+  src/index.ts:29-29 function src.noop  [pub]
+  src/index.ts:30-30 function src.isNoop  [pub]
   src/lib/math.ts:2-4 function math.add  [pub, default, doc="Adds two numbers."]
   src/lib/math.ts:6-8 function math.helper  [pub]
+  src/lib/math.ts:10-12 function math.subtract  [pub]
   src/lib/strings.ts:1-3 function strings.helper  [pub]
   src/lib/strings.ts:5-7 interface strings.Named  [pub]
   src/lib/strings.ts:10-18 class strings.Greeter  [pub, doc="Greets people."]
   src/lib/strings.ts:11-13 method strings.Greeter.greet  [pub, in strings.Greeter]
   src/lib/strings.ts:15-17 method strings.Greeter.format  [pub, in strings.Greeter]
+  src/lib/strings.ts:21-31 class strings.Counter  [pub, doc="A counter with an accessor."]
+  src/lib/strings.ts:24-26 method strings.Counter.isEmpty  [pub, in strings.Counter]
+  src/lib/strings.ts:28-30 method strings.Counter.describe  [pub, in strings.Counter]
 edges:
   src/index.ts:1 import <file>: ./lib/math => src/lib/math.ts
   src/index.ts:1 ref <file>: add => math.add (exact)
@@ -37,4 +43,11 @@ edges:
   src/index.ts:22 value src.isApp: App => src.App (exact)
   src/index.ts:24 value src.pick: helper => math.helper (exact)
   src/index.ts:25 value src.pick: App => src.App (exact)
+  src/index.ts:28 import <file>: ./lib/math => src/lib/math.ts
+  src/index.ts:28 ref <file>: minus => math.subtract (exact)
+  src/index.ts:30 value src.isNoop: noop => src.noop (exact)
+  src/index.ts:30 value src.isNoop: noop => src.noop (exact)
+  src/index.ts:30 call src.isNoop: minus => math.subtract (exact)
+  src/lib/math.ts:14 value <file>: subtract => math.subtract (exact)
   src/lib/strings.ts:12 call strings.Greeter.greet: this.format => strings.Greeter.format (exact)
+  src/lib/strings.ts:29 value strings.Counter.describe: this.isEmpty => strings.Counter.isEmpty (exact)

@@ -24,3 +24,7 @@ export const pick = (flag: boolean) => {
   const local = helper;
   return flag ? local : App;
 };
+
+import { minus } from "./lib/math";
+export const noop = (): void => {};
+export const isNoop = (f: () => void = noop): boolean => f === noop && minus(2, 1) === 1;

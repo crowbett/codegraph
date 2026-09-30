@@ -490,7 +490,9 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
             end: scip
                 .on_line(&d.path, d.line)
                 .iter()
-                .find(|o| o.is_def && o.symbol == *sym)
+                .find(|o| {
+                    o.is_def && (o.symbol == *sym || scip.alias_of.get(sym) == Some(&o.symbol))
+                })
                 .map_or(u32::MAX, |o| o.end),
             symbol: sym.clone(),
             is_def: true,
@@ -536,7 +538,11 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
             continue;
         };
         let Some(fam) = fam_of(fid) else { continue };
-        if class_of(sym) == Class::Other || !def_text.contains_key(sym.as_str()) {
+        // An alias names a definition already counted under its own symbol.
+        if class_of(sym) == Class::Other
+            || !def_text.contains_key(sym.as_str())
+            || scip.alias_of.contains_key(sym)
+        {
             continue;
         }
         let c = by_lang.entry(fam.to_string()).or_default();

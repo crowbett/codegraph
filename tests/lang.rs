@@ -89,6 +89,18 @@ fn go_same_name_in_two_packages_and_receivers() {
     assert_edge(&ix, "main.go", 14, "handle", "main.handle", "exact");
     // Stdlib calls stay unresolved rather than guessing.
     assert_eq!(edge(&ix.store, "main.go", 13, "Println"), None);
+    // Package functions and constants as values: composite
+    // literal values, comparisons, assignments; locals and field keys are not references.
+    assert_edge(&ix, "a/a.go", 37, "Helper", "a.Helper", "exact");
+    assert_edge(&ix, "a/a.go", 37, "DefaultName", "a.DefaultName", "exact");
+    assert_eq!(edge(&ix.store, "a/a.go", 37, "Name"), None);
+    assert_edge(&ix, "a/a.go", 38, "DefaultName", "a.DefaultName", "exact");
+    assert_edge(&ix, "a/a.go", 39, "Helper", "a.Helper", "exact");
+    assert_edge(&ix, "a/a.go", 45, "Helper", "a.Helper", "exact");
+    assert_eq!(edge(&ix.store, "a/a.go", 46, "f"), None);
+    // Locals shadow package names: a `select` receive binding, a function-local const.
+    assert_eq!(edge(&ix.store, "a/a.go", 53, "Helper"), None);
+    assert_eq!(edge(&ix.store, "a/a.go", 56, "DefaultName"), None);
 }
 
 #[test]
@@ -137,6 +149,63 @@ fn rust_impl_blocks_traits_and_modules() {
             .collect()
     };
     assert_eq!(fmt_error, [None]);
+    // A one-letter type is a type unless a generic parameter in scope declares the name;
+    // enum paths in `use N::*`, struct patterns and struct literals reference the enum.
+    assert_edge(&ix, "src/store.rs", 50, "N", "store::N", "exact");
+    assert_eq!(edge(&ix.store, "src/store.rs", 50, "T"), None);
+    assert_edge(&ix, "src/store.rs", 51, "N", "store::N", "exact");
+    assert_edge(&ix, "src/store.rs", 54, "N", "store::N", "exact");
+    assert_edge(&ix, "src/store.rs", 55, "N", "store::N", "exact");
+    // Unit structs, constants and functions used as values, also in a macro's tokens.
+    assert_edge(
+        &ix,
+        "src/store.rs",
+        64,
+        "NoProgress",
+        "store::NoProgress",
+        "exact",
+    );
+    assert_edge(&ix, "src/store.rs", 64, "LIMIT", "store::LIMIT", "exact");
+    assert_edge(&ix, "src/store.rs", 65, "values", "store::values", "exact");
+    assert_edge(
+        &ix,
+        "src/store.rs",
+        66,
+        "NoProgress",
+        "store::NoProgress",
+        "exact",
+    );
+    // `use super::x` in an inline `mod tests` of a non-root module names the file's `x`;
+    // `self::f` is a path into the current module, not a receiver.
+    assert_edge(
+        &ix,
+        "src/store.rs",
+        71,
+        "classify",
+        "store::classify",
+        "exact",
+    );
+    assert_edge(
+        &ix,
+        "src/store.rs",
+        75,
+        "classify",
+        "store::classify",
+        "exact",
+    );
+    assert_edge(
+        &ix,
+        "src/store.rs",
+        76,
+        "helper",
+        "store::tests::helper",
+        "exact",
+    );
+    // A glob-imported variant is no symbol and must not land on the same-named struct in
+    // util.rs; a capitalized local (`let N = 3`) is no reference to `enum N`.
+    assert_eq!(edge(&ix.store, "src/store.rs", 92, "Ident"), None);
+    assert_eq!(edge(&ix.store, "src/store.rs", 90, "N"), None);
+    assert_eq!(edge(&ix.store, "src/store.rs", 92, "N"), None);
     // `Result<(), fmt::Error>` in src/fmt.rs is the prelude's, not store.rs's `type Result<T>`.
     assert_eq!(edge(&ix.store, "src/fmt.rs", 7, "Result"), None);
     // `impl Backend for Store` links the struct to the trait.
@@ -191,6 +260,22 @@ fn typescript_default_vs_named_exports() {
         "strings.Greeter.format",
         "exact",
     );
+    // Property reads: a getter through `this`; a plain field (`count`) has no symbol and
+    // no edge.
+    assert_edge(
+        &ix,
+        "src/lib/strings.ts",
+        29,
+        "isEmpty",
+        "strings.Counter.isEmpty",
+        "exact",
+    );
+    assert_eq!(edge(&ix.store, "src/lib/strings.ts", 29, "count"), None);
+    // `export { subtract as minus }`: importers of `minus` reach `subtract`. Bare values in
+    // comparisons and parameter defaults are references.
+    assert_edge(&ix, "src/index.ts", 28, "minus", "math.subtract", "exact");
+    assert_edge(&ix, "src/index.ts", 30, "minus", "math.subtract", "exact");
+    assert_edge(&ix, "src/index.ts", 30, "noop", "src.noop", "exact");
 }
 
 #[test]

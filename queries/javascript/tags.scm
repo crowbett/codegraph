@@ -147,6 +147,16 @@
   operator: "instanceof"
   right: (identifier) @name) @reference.value
 
+; comparisons and default values: `handler !== noop`, `f = noop`
+(binary_expression
+  left: (identifier) @name) @reference.value
+
+(binary_expression
+  right: (identifier) @name) @reference.value
+
+(assignment_pattern
+  right: (identifier) @name) @reference.value
+
 (member_expression
   object: (identifier) @name) @reference.value
 
@@ -191,3 +201,127 @@
 
 (jsx_closing_element
   name: (identifier) @name) @reference.call
+
+; property reads: getters and accessors (`this.isDisposed`, `store.size`); extract.rs keeps
+; them on `this` when the file defines the name, or on a receiver of known type. Listed by
+; context: a member that is a call's callee is not a read, and matching every
+; member_expression doubled the in-progress matches on long call chains.
+(binary_expression
+  left: (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(binary_expression
+  right: (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(unary_expression
+  argument: (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(update_expression
+  argument: (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(assignment_expression
+  left: (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(assignment_expression
+  right: (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(augmented_assignment_expression
+  left: (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(augmented_assignment_expression
+  right: (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(ternary_expression
+  condition: (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(ternary_expression
+  consequence: (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(ternary_expression
+  alternative: (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(variable_declarator
+  value: (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(pair
+  value: (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(arrow_function
+  body: (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(member_expression
+  object: (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(subscript_expression
+  object: (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(return_statement
+  (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(parenthesized_expression
+  (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(template_substitution
+  (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(expression_statement
+  (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(array
+  (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(spread_element
+  (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(await_expression
+  (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)
+
+(jsx_expression
+  (member_expression
+    object: (_) @qualifier
+    property: [(property_identifier) (private_property_identifier)] @name) @reference.value)

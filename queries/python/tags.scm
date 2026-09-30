@@ -153,3 +153,9 @@
 
 (subscript
   subscript: (identifier) @name) @reference.value
+
+; PEP 695 generic parameters (`def f[T](x: T)`): a reference one of these declares in scope
+; is no type
+(type_parameter
+  (type
+    (identifier) @name) @generic.param)

@@ -39,6 +39,8 @@ pub struct Scip {
     pub implements: HashMap<String, HashSet<String>>,
     /// SymbolInformation kind names, when the indexer provides them.
     pub kinds: HashMap<String, String>,
+    /// A symbol given another's definition -> that symbol (see `alias_python_constants`).
+    pub alias_of: HashMap<String, String>,
 }
 
 impl Scip {
@@ -93,7 +95,38 @@ impl Scip {
         for si in &idx.external_symbols {
             record_info(&mut out, si);
         }
+        out.alias_python_constants();
         Ok(out)
+    }
+
+    /// scip-python defines an annotated module constant (`INT: t.Final[IntParamType] = ..`)
+    /// as the term `mod/INT.INT.` (sic) but spells references to it as the type `mod/INT#`,
+    /// which then has no definition and reads as external. Such a type symbol gets the
+    /// term's definition.
+    fn alias_python_constants(&mut self) {
+        let mut add = Vec::new();
+        for occs in self.occs.values() {
+            for o in occs {
+                let s = &o.symbol;
+                if !s.starts_with("scip-python ") || self.defs.contains_key(s) {
+                    continue;
+                }
+                let Some(stem) = s.strip_suffix('#') else {
+                    continue;
+                };
+                let name = stem.rsplit(['/', '#', '.', '`']).next().unwrap_or("");
+                let term = [format!("{stem}.{name}."), format!("{stem}.")]
+                    .into_iter()
+                    .find_map(|t| self.defs.get(&t).map(|d| (t, d)));
+                if let Some((t, d)) = term {
+                    add.push((s.clone(), t, d.clone()));
+                }
+            }
+        }
+        for (s, t, d) in add {
+            self.defs.entry(s.clone()).or_insert(d);
+            self.alias_of.insert(s, t);
+        }
     }
 
     /// Occurrences on one (0-based) line of a file.

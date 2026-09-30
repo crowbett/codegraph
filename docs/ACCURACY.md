@@ -99,6 +99,12 @@ the v0.1.1 baseline was re-scored with the fixed harness so deltas stay comparab
   likewise: `bench/pytruth.py` imports the repo's modules and reads every in-repo class's
   `__mro__` (modules that fail to import, like tests needing pytest, add nothing). A pair
   either source reports is ground truth. Added on 2026-09-29; the baseline was re-scored.
+- scip-python defines an annotated module constant (`INT: t.Final[IntParamType] =
+  IntParamType()`) as the term `click.types/INT.INT.` but spells every reference to it as
+  the type `click.types/INT#`, which has no definition and so read as external: an edge to
+  the constant counted false. A `mod/NAME#` without a definition takes the definition of
+  `mod/NAME.NAME.` (or `mod/NAME.`); definition coverage skips such aliases. Added on
+  2026-09-30; the baseline was re-scored with it (click: 76 more judgeable reference sites).
 - Known ground-truth gaps, still scored as false: generic Go types and interfaces
   (`uintValue[T] -> ValueCreator[T, C]`: `Implements` cannot check uninstantiated generics
   and scip-go records nothing for them), and scip-python's missing subclass pairs in
@@ -112,45 +118,45 @@ the v0.1.1 baseline was re-scored with the fixed harness so deltas stay comparab
 harness on the current corpus; `bench/results/accuracy.json` is the latest recorded run.
 
 <!-- results:start -->
-codegraph `a1a5bcd`
+codegraph `91b3e89`
 
 | language | files | defs found | callers recall | callers precision | false call edges | refs recall | refs precision | impl recall | impl precision |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Go | 364 | 100.0% | 100.0% | 99.8% | 0.2% | 99.2% | 99.9% | 100.0% | 94.4% |
-| Python | 124 | 100.0% | 100.0% | 99.6% | 0.4% | 98.9% | 99.6% | 100.0% | 99.0% |
-| Rust | 195 | 99.6% | 98.5% | 98.7% | 1.3% | 95.9% | 99.2% | – | – |
-| TypeScript/JS | 396 | 100.0% | 99.2% | 99.5% | 0.5% | 95.9% | 99.7% | 100.0% | 100.0% |
-| **all** | 1079 | 99.9% | 99.5% | 99.4% | 0.6% | 97.7% | 99.6% | 100.0% | 96.3% |
+| Go | 364 | 100.0% | 100.0% | 99.8% | 0.2% | 99.8% | 99.9% | 100.0% | 94.4% |
+| Python | 124 | 100.0% | 100.0% | 99.6% | 0.4% | 99.1% | 99.7% | 100.0% | 99.0% |
+| Rust | 195 | 100.0% | 98.5% | 98.7% | 1.3% | 98.8% | 99.3% | – | – |
+| TypeScript/JS | 396 | 100.0% | 99.2% | 99.5% | 0.5% | 98.2% | 99.7% | 100.0% | 100.0% |
+| **all** | 1079 | 100.0% | 99.5% | 99.4% | 0.6% | 99.2% | 99.7% | 100.0% | 96.3% |
 
 Confidence calibration (share of judged edges that are correct):
 
 | language | exact | likely | name_only |
 |---|---:|---:|---:|
-| Go | 100.0% (18859/18859) | 85.2% (23/27) | 76.1% (51/67) |
-| Python | 99.9% (5783/5790) | 99.6% (528/530) | 77.8% (56/72) |
-| Rust | 99.6% (11798/11847) | 95.8% (888/927) | 46.7% (7/15) |
-| TypeScript/JS | 99.8% (6759/6772) | 100.0% (251/251) | 95.7% (264/276) |
-| all | 99.8% (43199/43268) | 97.4% (1690/1735) | 87.9% (378/430) |
+| Go | 100.0% (21422/21422) | 85.2% (23/27) | 76.1% (51/67) |
+| Python | 99.9% (6220/6225) | 99.6% (528/530) | 77.8% (56/72) |
+| Rust | 99.6% (12686/12733) | 95.8% (899/938) | 46.7% (7/15) |
+| TypeScript/JS | 99.8% (6865/6878) | 100.0% (274/274) | 95.7% (264/276) |
+| all | 99.9% (47193/47258) | 97.5% (1724/1769) | 87.9% (378/430) |
 
 Per repo:
 
 | repo | lang | callers recall | callers precision | GT call sites | resolved call edges | refs recall |
 |---|---|---:|---:|---:|---:|---:|
-| bytes | rust | 97.8% | 97.4% | 1277 | 1460 | 96.3% |
-| chi | go | 100.0% | 99.2% | 1283 | 1457 | 98.8% |
-| click | python | 100.0% | 99.5% | 2449 | 3540 | 98.7% |
+| bytes | rust | 97.8% | 97.4% | 1277 | 1460 | 98.1% |
+| chi | go | 100.0% | 99.2% | 1283 | 1457 | 100.0% |
+| click | python | 100.0% | 99.5% | 2449 | 3540 | 98.9% |
 | devkit | typescript | 100.0% | 100.0% | 701 | 989 | 96.5% |
-| echo | go | 100.0% | 99.9% | 4021 | 4055 | 99.3% |
-| fd | rust | 99.0% | 99.4% | 796 | 902 | 95.9% |
-| keep | go | 100.0% | 99.9% | 1351 | 1452 | 99.6% |
+| echo | go | 100.0% | 99.9% | 4021 | 4055 | 99.9% |
+| fd | rust | 99.0% | 99.4% | 796 | 916 | 98.8% |
+| keep | go | 100.0% | 99.9% | 1351 | 1452 | 99.8% |
 | ky | typescript | 100.0% | 100.0% | 138 | 1718 | 99.4% |
-| ledger | python | 100.0% | 99.9% | 913 | 1117 | 99.4% |
-| mobx | typescript | 98.8% | 99.5% | 2291 | 9040 | 94.7% |
-| pulse | go | 99.9% | 99.8% | 1131 | 1149 | 99.4% |
-| recall | rust | 99.3% | 99.9% | 715 | 730 | 98.0% |
-| serde-json | rust | 98.3% | 98.5% | 1892 | 2793 | 94.4% |
-| stash | rust | 98.8% | 99.4% | 1326 | 1339 | 97.0% |
-| urfave-cli | go | 100.0% | 100.0% | 2515 | 2528 | 99.1% |
+| ledger | python | 100.0% | 99.9% | 913 | 1117 | 99.9% |
+| mobx | typescript | 98.8% | 99.5% | 2291 | 9057 | 98.4% |
+| pulse | go | 99.9% | 99.8% | 1131 | 1149 | 99.8% |
+| recall | rust | 99.3% | 99.9% | 715 | 730 | 99.6% |
+| serde-json | rust | 98.3% | 98.5% | 1892 | 2793 | 98.6% |
+| stash | rust | 98.8% | 99.4% | 1326 | 1339 | 99.3% |
+| urfave-cli | go | 100.0% | 100.0% | 2515 | 2528 | 99.8% |
 | zustand | typescript | 100.0% | 98.6% | 276 | 388 | 99.3% |
 
 <!-- results:end -->

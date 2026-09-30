@@ -173,11 +173,7 @@ pub fn refs(r: &References, s: Style) -> String {
     for x in &r.refs {
         if x.root != cur_root {
             cur_root.clone_from(&x.root);
-            out.push_str(&repo_header(
-                s,
-                x.root.rsplit('/').next().unwrap_or(""),
-                &x.root,
-            ));
+            out.push_str(&repo_header(s, &x.repo, &x.root));
             cur_file.clear();
         }
         if x.rel != cur_file {
@@ -776,6 +772,7 @@ mod tests {
                 note: Some(crate::query::STALE_NOTE.into()),
                 rel: sym.rel.clone(),
                 root: sym.root.clone(),
+                repo: evil.into(),
             }],
             total: 1,
         };

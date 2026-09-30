@@ -19,12 +19,24 @@ symbols:
   src/store.rs:30-32 method store::Store::find
   src/store.rs:36-38 method store::Store::load  [pub]
   src/store.rs:42-42 type store::Result  [pub, doc="The crate's own result, as many crates define it."]
+  src/store.rs:45-48 enum store::N  [doc="A one-letter type, as serde_json's `enum N`."]
+  src/store.rs:50-57 function store::classify
+  src/store.rs:60-60 struct store::NoProgress  [pub, doc="A unit struct and a constant, used as values."]
+  src/store.rs:61-61 const store::LIMIT  [pub]
+  src/store.rs:63-67 function store::values
+  src/store.rs:70-80 module store::tests
+  src/store.rs:74-77 function store::tests::t  [in store::tests]
+  src/store.rs:79-79 function store::tests::helper  [in store::tests]
+  src/store.rs:82-86 module store::tok
+  src/store.rs:83-85 enum store::tok::Token  [pub, in store::tok]
+  src/store.rs:88-94 function store::glob_variant
   src/util.rs:2-5 function util::new  [pub, doc="Free function named like `Store::new`."]
   src/util.rs:8-8 function util::helper  [pub, doc="Shared helper."]
   src/util.rs:11-15 macro util::getters  [doc="Generates one getter per name (defined by macro_rules!, expanded by codegraph)."]
   src/util.rs:17-17 function util::alpha  [pub]
   src/util.rs:17-17 function util::beta  [pub]
   src/util.rs:19-21 function util::sum  [pub]
+  src/util.rs:24-24 struct util::Ident  [pub, doc="Named like a variant of `store::tok::Token`."]
 edges:
   src/fmt.rs:2 import <file>: std::fmt => (external)
   src/fmt.rs:2 ref <file>: fmt => ?
@@ -70,6 +82,32 @@ edges:
   src/store.rs:37 call store::Store::load: self.items.len => ?
   src/store.rs:42 ref store::Result: std::result.Result => ?
   src/store.rs:42 ref store::Result: Kind => store::Kind (exact)
+  src/store.rs:50 ref store::classify: Into => ?
+  src/store.rs:50 ref store::classify: N => store::N (exact)
+  src/store.rs:51 import <file>: N => (external)
+  src/store.rs:51 ref store::classify: N => store::N (exact)
+  src/store.rs:52 call store::classify: Pos => ?
+  src/store.rs:52 call store::classify: t.into => ?
+  src/store.rs:54 ref store::classify: N => store::N (exact)
+  src/store.rs:54 ref store::classify: N => store::N (exact)
+  src/store.rs:54 ref store::classify: N.Named => ?
+  src/store.rs:55 ref store::classify: N => store::N (exact)
+  src/store.rs:55 ref store::classify: N.Named => ?
+  src/store.rs:55 ref store::classify: Named => ?
+  src/store.rs:64 ref store::values: NoProgress => store::NoProgress (exact)
+  src/store.rs:64 ref store::values: LIMIT => store::LIMIT (exact)
+  src/store.rs:65 value store::values: values => store::values (exact)
+  src/store.rs:66 ref store::values: NoProgress => store::NoProgress (exact)
+  src/store.rs:66 ref store::values: NoProgress => store::NoProgress (exact)
+  src/store.rs:66 call store::values: vec![NoProgress,NoProgress].len => ?
+  src/store.rs:66 call store::values: f => ?
+  src/store.rs:71 import <file>: self::classify => src/store.rs
+  src/store.rs:71 ref store::tests: classify => store::classify (exact)
+  src/store.rs:75 call store::tests::t: classify => store::classify (exact)
+  src/store.rs:76 call store::tests::t: self.helper => store::tests::helper (exact)
+  src/store.rs:88 ref store::glob_variant: tok.Token => store::tok::Token (exact)
+  src/store.rs:89 import <file>: tok::Token => (external)
+  src/store.rs:89 ref store::glob_variant: tok.Token => store::tok::Token (exact)
   src/util.rs:3 call util::new: helper => util::helper (exact)
   src/util.rs:13 call util::getters: new => util::new (exact)
   src/util.rs:17 call <file>: getters => util::getters (exact)

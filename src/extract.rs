@@ -184,6 +184,8 @@ enum Role {
     Import,
     Export,
     Package,
+    /// A generic type parameter's name (`T` in `fn f<T>`).
+    Generic,
 }
 
 struct DefCand<'t> {
@@ -305,6 +307,9 @@ fn extract_inner(
     let mut defs: Vec<DefCand<'_>> = Vec::new();
     let mut def_seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut refs: HashMap<usize, RefCand<'_>> = HashMap::new();
+    // Names declared as generic type parameters anywhere in the file: a capitalized
+    // reference named otherwise needs no scope walk.
+    let mut generic: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut import_nodes: Vec<Node<'_>> = Vec::new();
     let mut export_nodes: Vec<Node<'_>> = Vec::new();
     let mut package = None;
@@ -344,6 +349,7 @@ fn extract_inner(
                 "package" => role = Some((Role::Package, n)),
                 "definition.value" => role = Some((Role::ValueDef, n)),
                 "reference.binding" => role = Some((Role::Binding, n)),
+                "generic.param" => role = Some((Role::Generic, n)),
                 c => {
                     if let Some(k) = c.strip_prefix("definition.") {
                         role = def_kind(k).map(|k| (Role::Def(k), n));
@@ -355,6 +361,7 @@ fn extract_inner(
         }
         let Some((role, node)) = role else { continue };
         match role {
+            Role::Generic => generic.extend(name.map(|n| text(n, src).to_string())),
             Role::Package => package = name.map(|n| text(n, src).to_string()),
             Role::Import => import_nodes.push(node),
             Role::Export => export_nodes.push(node),
@@ -374,6 +381,10 @@ fn extract_inner(
                     continue;
                 }
                 def_seen.insert(node.id());
+                // Go: `func (s *Set[T])` declares `T`.
+                if let Some(r) = receiver.filter(|_| lang == Lang::Go) {
+                    generic.extend(receiver_type_params(r, src).map(str::to_string));
+                }
                 defs.push(DefCand {
                     kind,
                     node,
@@ -434,6 +445,48 @@ fn extract_inner(
                     continue;
                 }
                 if lang == Lang::Rust && !token_turbofish_ok(&nav, name) {
+                    continue;
+                }
+                // The last segment of a path (`N::Float`, `fmt::Error`) or a field read
+                // (`s.bytes` in a macro's tokens) is taken only with its qualifier: the bare
+                // identifier patterns match it too.
+                if lang == Lang::Rust
+                    && qualifier.is_none()
+                    && (nav.parent(name).is_some_and(|p| {
+                        p.kind() == "scoped_identifier"
+                            && p.child_by_field_name("name") == Some(name)
+                    }) || (kind != EdgeKind::Call
+                        && nav
+                            .prev_sibling(name)
+                            .is_some_and(|p| matches!(p.kind(), "::" | "."))
+                        // ...but a type inside a path is one: `notes::NotesSource::new(..)`
+                        && nav.next_sibling(name).is_none_or(|n| n.kind() != "::")))
+                {
+                    continue;
+                }
+                // Names that declare something codegraph keeps no symbol for: enum variants,
+                // const generics, `let N = 3`, `use a::B as Alias`.
+                if lang == Lang::Rust
+                    && qualifier.is_none()
+                    && nav.parent(name).is_some_and(|p| match p.kind() {
+                        "enum_variant" | "const_parameter" => {
+                            p.child_by_field_name("name") == Some(name)
+                        }
+                        "let_declaration" => p.child_by_field_name("pattern") == Some(name),
+                        "use_as_clause" | "extern_crate_declaration" => {
+                            p.child_by_field_name("alias") == Some(name)
+                        }
+                        _ => false,
+                    })
+                {
+                    continue;
+                }
+                // A module segment of a path in a macro's tokens (`io` in `crate::io::Error`)
+                // is no value.
+                if lang == Lang::Rust
+                    && kind == EdgeKind::Value
+                    && nav.next_sibling(name).is_some_and(|n| n.kind() == "::")
+                {
                     continue;
                 }
                 // `Kp` in a macro's `Kp::default()` is a path segment, not a call.
@@ -526,7 +579,8 @@ fn extract_inner(
         };
         if matches!(sym.kind, SymKind::Function | SymKind::Method) {
             sym.ret = infer.ret_of(node).or_else(|| infer.py_returned(node));
-            sym.fields = infer.generic_fields(node);
+            // Prepended: `apply_exports` may already have recorded an export alias.
+            sym.fields.splice(0..0, infer.generic_fields(node));
             // The trait a Rust impl method implements, for `Trait::m(x)` calls.
             if let Some(tr) = (lang == Lang::Rust)
                 .then(|| rust_impl_trait(&nav, node, src))
@@ -551,7 +605,7 @@ fn extract_inner(
         ) || (lang.is_js_family() && sym.kind == SymKind::Type)
             || (lang == Lang::Rust && sym.kind == SymKind::Enum)
         {
-            sym.fields = infer.fields_of(node);
+            sym.fields.splice(0..0, infer.fields_of(node));
         }
     }
 
@@ -624,21 +678,47 @@ fn extract_inner(
                 && (lang != Lang::Rust
                     || r.kind != EdgeKind::Call
                     || rust_builtin_use(&nav, r.name, &name)))
+            // The prelude's variants as values and in patterns (`None`, `Ok(v) =>`).
+            || (lang == Lang::Rust
+                && r.qualifier.is_none()
+                && matches!(name.as_str(), "Ok" | "Err" | "Some" | "None"))
         {
             continue;
         }
         if r.kind == EdgeKind::Ref
             && r.qualifier.is_none()
-            && name.len() == 1
-            && name.chars().all(|c| c.is_ascii_uppercase())
-            && !imported.contains(&name)
+            && if matches!(lang, Lang::Rust | Lang::Go | Lang::Python) {
+                name.starts_with(|c: char| c.is_ascii_uppercase())
+                    && generic.contains(&name)
+                    && generic_param_in_scope(&nav, r.name, &name, src)
+            } else {
+                name.len() == 1
+                    && name.chars().all(|c| c.is_ascii_uppercase())
+                    && !imported.contains(&name)
+            }
         {
-            // Generic type parameters (`T`, `K`, `V`), unless an import binds the name
-            // (`from .models import User as U`). A same-file `type T` is no evidence: generic
-            // parameters shadow it everywhere else.
+            // Generic type parameters. Rust, Go and Python declare them where they are
+            // visible, so only a declared one is dropped (`T`, `Visitor` in `fn f<Visitor>`)
+            // and `enum N` / `class T` stay types. Elsewhere (TS mapped and `infer` types,
+            // C++ templates) every single capital is taken for one, unless an import binds
+            // the name.
             continue;
         }
-        if r.kind == EdgeKind::Value && r.qualifier.is_none() && !known.contains(&name) {
+        if r.kind == EdgeKind::Value
+            && r.qualifier.is_none()
+            && !known.contains(&name)
+            // Go: another file of the package may define it; a local never does.
+            && !(lang == Lang::Go && infer.hints_enabled() && !infer.bare_is_local(r.name))
+        {
+            continue;
+        }
+        // `let N = 3; N + 1`: a capitalized local is no type.
+        if lang == Lang::Rust
+            && r.kind == EdgeKind::Ref
+            && r.qualifier.is_none()
+            && r.name.kind() == "identifier"
+            && infer.bare_is_local(r.name)
+        {
             continue;
         }
         let pos = r.name.start_position();
@@ -663,6 +743,16 @@ fn extract_inner(
                 ),
                 None => (infer.bare_is_local(r.name).then(|| "L".to_string()), false),
             }
+        } else if lang == Lang::Rust
+            && r.kind == EdgeKind::Ref
+            && r.qualifier.is_none()
+            && r.name.kind() == "identifier"
+            && nav.next_sibling(r.name).is_none_or(|n| n.kind() != "::")
+        {
+            // A capitalized name used as a value or pattern (`&NoProgress`, `Ident =>`):
+            // often a variant a glob import brought in, which is no symbol; resolved through
+            // the file's scope only, never guessed by name.
+            (Some(crate::infer::SCOPED.to_string()), false)
         } else {
             (None, false)
         };
@@ -679,6 +769,36 @@ fn extract_inner(
                 let head = text(q, src).split('.').next().unwrap_or("");
                 let typed = hint.as_deref().is_some_and(|h| h != "L" && h != "S");
                 if !in_args && !typed && !import_heads.contains(head) {
+                    continue;
+                }
+            }
+        }
+        // Go selectors outside argument lists (`Skipper: cfg.Skipper`, `h = e.serve`), the
+        // same way: on an imported package or a receiver of known type.
+        if lang == Lang::Go && r.kind == EdgeKind::Value {
+            if let Some(q) = r.qualifier {
+                let in_args = nav
+                    .parent(r.name)
+                    .and_then(|a| nav.parent(a))
+                    .is_some_and(|p| p.kind() == "argument_list");
+                let typed = hint.as_deref().is_some_and(|h| h != "L" && h != "S");
+                if !in_args && !typed && !import_heads.contains(text(q, src)) {
+                    continue;
+                }
+            }
+        }
+        // TS/JS property reads, the same way: on `this` when this file defines the name (a
+        // getter or method of the class), or on a receiver of known type. Arguments keep
+        // every member (`f(obj.handler)`), as before.
+        if lang.is_js_family() && r.kind == EdgeKind::Value {
+            if let Some(q) = r.qualifier {
+                let in_args = nav
+                    .parent(r.name)
+                    .and_then(|a| nav.parent(a))
+                    .is_some_and(|p| p.kind() == "arguments");
+                let this = hint.as_deref() == Some("S") && known.contains(&name);
+                let typed = hint.as_deref().is_some_and(|h| h != "L" && h != "S");
+                if !in_args && !this && !typed && !import_heads.contains(text(q, src)) {
                     continue;
                 }
             }
@@ -870,6 +990,78 @@ fn in_attribute_or_macro_def<'t>(
         memo.insert(id, found);
     }
     found
+}
+
+/// Whether `name` is a generic type parameter visible at `node`: declared by the
+/// `type_parameters` of an enclosing item (Rust `fn`/`impl`/`struct`/`trait`, Go `func`/
+/// `type`, Python 3.12 `def f[T]`) or, in Go, by a method's receiver (`func (s *Set[T])`).
+fn generic_param_in_scope<'t>(nav: &Nav<'t>, node: Node<'t>, name: &str, src: &[u8]) -> bool {
+    let declares = |tp: Node<'_>| type_param_names(tp).iter().any(|n| text(*n, src) == name);
+    nav.ancestors(node).into_iter().any(|a| {
+        a.child_by_field_name("type_parameters")
+            .is_some_and(declares)
+            || (a.kind() == "method_declaration"
+                && a.child_by_field_name("receiver")
+                    .is_some_and(|r| receiver_type_params(r, src).any(|p| p == name)))
+    })
+}
+
+/// The names a `type_parameters` / `type_parameter_list` node declares.
+fn type_param_names(tp: Node<'_>) -> Vec<Node<'_>> {
+    let mut c = tp.walk();
+    let params: Vec<Node<'_>> = tp.named_children(&mut c).collect();
+    let mut out = Vec::new();
+    for p in params {
+        let mut c = p.walk();
+        let before = out.len();
+        out.extend(p.children_by_field_name("name", &mut c));
+        if out.len() == before {
+            // Rust's bare `T`, Python's `type` wrapper around an identifier.
+            out.extend(
+                Some(p)
+                    .filter(|p| matches!(p.kind(), "type_identifier" | "identifier"))
+                    .or_else(|| p.named_child(0)),
+            );
+        }
+    }
+    out
+}
+
+/// The type parameters a Go receiver declares: `T`, `K` in `(s *Set[T])`, `(m Map[K, V])`.
+/// Only the receiver type's own arguments, which are bare names; nothing nested is walked
+/// (a hostile `*A[A[A[..]]]` is as cheap as any other receiver).
+fn receiver_type_params<'s>(recv: Node<'_>, src: &'s [u8]) -> impl Iterator<Item = &'s str> {
+    let mut ty = recv
+        .named_child(0)
+        .filter(|p| p.kind() == "parameter_declaration")
+        .and_then(|p| p.child_by_field_name("type"));
+    // `*T`, `(*T)`: a receiver has at most a pointer and parentheses around its type.
+    for _ in 0..4 {
+        match ty {
+            Some(t) if matches!(t.kind(), "pointer_type" | "parenthesized_type") => {
+                ty = t.named_child(0);
+            }
+            _ => break,
+        }
+    }
+    let args = ty
+        .filter(|t| t.kind() == "generic_type")
+        .and_then(|t| t.child_by_field_name("type_arguments"));
+    let mut names = Vec::new();
+    if let Some(args) = args {
+        let mut c = args.walk();
+        for a in args.named_children(&mut c) {
+            let a = if a.kind() == "type_elem" {
+                a.named_child(0).unwrap_or(a)
+            } else {
+                a
+            };
+            if a.kind() == "type_identifier" {
+                names.push(text(a, src));
+            }
+        }
+    }
+    names.into_iter()
 }
 
 /// Whether a Rust reference named like a builtin really is one: the std prelude
@@ -1523,6 +1715,8 @@ fn binding_alias<'t>(nav: &Nav<'t>, name: Node<'t>) -> Option<Node<'t>> {
 /// `fields` key of a Rust impl method holding its trait's name (a generic parameter cannot
 /// be named `trait`, so it never collides with the `<T>` entries).
 pub(crate) const IMPL_TRAIT: &str = "<trait>";
+/// `fields` key of a JS/TS symbol exported under another name (`export { a as b }`).
+pub(crate) const EXPORT_AS: &str = "<export-as>";
 
 /// Rust: the trait of the `impl Trait for Type` block a function sits directly in, as its
 /// path is written.
@@ -1795,8 +1989,14 @@ fn apply_exports(
                 for s in symbols.iter_mut() {
                     if s.parent.is_none() && s.name == name {
                         s.exported = true;
-                        if alias == Some("default") {
-                            s.default_export = true;
+                        match alias {
+                            Some("default") => s.default_export = true,
+                            // `export { ObserverComponent as Observer }`: importers name it
+                            // `Observer`.
+                            Some(a) if a != name => {
+                                s.fields.push((EXPORT_AS.to_string(), a.to_string()));
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -1824,7 +2024,22 @@ fn parse_import(lang: Lang, node: Node<'_>, src: &[u8], out: &mut Vec<RawImport>
         Lang::Go => go_imports(node, src, out),
         Lang::Rust => {
             if let Some(arg) = node.child_by_field_name("argument") {
+                let from = out.len();
                 rust_use(arg, "", line_of(node), src, out);
+                let depth = inline_mod_depth(node);
+                if depth > 0 {
+                    for imp in &mut out[from..] {
+                        imp.path = rebase_super(&imp.path, depth);
+                    }
+                    // `use super::*` in `mod tests`: the file's own names, already in scope.
+                    let mut i = 0;
+                    out.retain(|imp| {
+                        i += 1;
+                        i <= from
+                            || !(imp.path == "self"
+                                && imp.bindings.iter().all(|b| b.kind == BindKind::Glob))
+                    });
+                }
             }
         }
         Lang::Python => python_import(node, src, out),
@@ -1842,6 +2057,38 @@ fn parse_import(lang: Lang, node: Node<'_>, src: &[u8], out: &mut Vec<RawImport>
             }
         }
     }
+}
+
+/// Inline modules (`mod tests { .. }`) around a Rust `use`.
+fn inline_mod_depth(node: Node<'_>) -> usize {
+    let mut depth = 0;
+    let mut cur = node.parent();
+    while let Some(p) = cur {
+        if p.kind() == "mod_item" && p.child_by_field_name("body").is_some() {
+            depth += 1;
+        }
+        cur = p.parent();
+    }
+    depth
+}
+
+/// A `use` path written `depth` inline modules deep, relative to the file's module: the
+/// graph binds names per file, so `super::` that leaves only inline modules is the file
+/// itself (`use super::helper` in `mod tests` -> `self::helper`).
+fn rebase_super(path: &str, depth: usize) -> String {
+    let segs: Vec<&str> = path.split("::").collect();
+    let k = segs.iter().take_while(|s| **s == "super").count();
+    if k == 0 {
+        return path.to_string();
+    }
+    let rest = &segs[k..];
+    let mut head: Vec<&str> = if k <= depth {
+        vec!["self"]
+    } else {
+        vec!["super"; k - depth]
+    };
+    head.extend_from_slice(rest);
+    head.join("::")
 }
 
 fn go_imports(node: Node<'_>, src: &[u8], out: &mut Vec<RawImport>) {

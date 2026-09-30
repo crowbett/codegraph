@@ -18,6 +18,7 @@
 //! | `N:<guard>@<hint>` | a variable narrowed by type guard `<guard>` (see JS/TS narrowing), else `<hint>` |
 //! | `O:<a>-<b>` | JS/TS: the object literal / inline object type on lines `a..=b` of the file the hint belongs to (a parameter typed `{ m(): X }`, or the return of an unannotated function returning `{ m() {..} }`): its methods are the method symbols written there (the first on the line when two such types share one) |
 //! | `L` | a local variable or parameter with no known type (never a repo symbol) |
+//! | `X` | ([`SCOPED`]) not a type: a Rust capitalized name in value or pattern position (`&NoProgress`, `Ident =>`); it resolves through the file's own scope (definitions, imports, module, globs), never by a crate-wide name guess — a glob-imported enum variant is no symbol and must not land on a same-named type |
 //! | `I:<n>@<hint>` | Python: element `n` of the tuple `<hint>` (`for a, b in xs`) |
 //! | `P:<n>@<method>` | Python: untyped parameter `n` of `<method>`, typed by the same position in a base class's `<method>` |
 //! | `V:<hint>` | Python: a value of the collection `<hint>` (`d[k]`: `dict[K, V]` -> `V`) |
@@ -98,6 +99,8 @@ use crate::lang::Lang;
 
 /// Hint of a name inside an import statement (see the module table).
 pub const BINDING: &str = "U";
+/// Hint of a reference resolved through the file's scope only (see the module doc).
+pub const SCOPED: &str = "X";
 
 /// The local name a binding hint binds (`U:<local>` -> `<local>`; `U` -> `""`: the name
 /// itself), `None` for any other hint.
@@ -221,6 +224,56 @@ impl<'a> Nav<'a> {
             cur = p.parent();
         }
         None
+    }
+
+    /// Strict ancestors of `n`, root first. Without the table this is one cursor descent
+    /// from the root: `parent()` is O(depth), so walking up with it is O(depth^2).
+    pub(crate) fn ancestors(&self, n: Node<'a>) -> Vec<Node<'a>> {
+        let mut out = Vec::new();
+        if self.table.get().is_none() {
+            let mut c = self.root.walk();
+            loop {
+                let node = c.node();
+                if node.id() == n.id() {
+                    return out;
+                }
+                out.push(node);
+                if c.goto_first_child_for_byte(n.start_byte()).is_none()
+                    || c.node().start_byte() > n.start_byte()
+                {
+                    break;
+                }
+            }
+            // `n` was not reached (zero-width nodes): walk up instead.
+            out.clear();
+        }
+        let mut cur = self.parent(n);
+        while let Some(p) = cur {
+            out.push(p);
+            cur = self.parent(p);
+        }
+        out.reverse();
+        out
+    }
+
+    /// Function-like strict ancestors of `n`, innermost first.
+    fn fn_chain(&self, lang: Lang, n: Node<'a>) -> Vec<Node<'a>> {
+        if self.table.get().is_some() {
+            let mut out = Vec::new();
+            let mut cur = self.enclosing_fn(lang, n);
+            while let Some(f) = cur {
+                out.push(f);
+                cur = self.enclosing_fn(lang, f);
+            }
+            return out;
+        }
+        let mut out: Vec<Node<'a>> = self
+            .ancestors(n)
+            .into_iter()
+            .filter(|&a| is_function(lang, a))
+            .collect();
+        out.reverse();
+        out
     }
 
     /// Deepest nesting level in the tree (root = 0), once the table was built.
@@ -348,11 +401,18 @@ struct Decl<'a> {
     tup: Option<u8>,
 }
 
+/// One function's bindings, indexed by name (a lookup per reference: a linear scan made
+/// big functions quadratic).
+struct Env<'a> {
+    decls: Vec<Decl<'a>>,
+    by_name: HashMap<String, Vec<usize>>,
+}
+
 /// Per-file inference state (function environments are built lazily).
 pub(crate) struct Infer<'a> {
     lang: Lang,
     src: &'a [u8],
-    envs: HashMap<usize, Vec<Decl<'a>>>,
+    envs: HashMap<usize, Env<'a>>,
     globals: Option<Vec<Decl<'a>>>,
     /// Evaluated initializers: (value node id, element-of) -> hint.
     memo: HashMap<(usize, bool), Option<String>>,
@@ -569,18 +629,20 @@ impl<'a> Infer<'a> {
     fn lookup_local(&mut self, name: &str, at: Node<'a>) -> Option<Decl<'a>> {
         let pos = at.start_byte();
         let nav = self.nav;
-        let mut cur = nav.enclosing_fn(self.lang, at);
-        while let Some(n) = cur {
+        for n in nav.fn_chain(self.lang, at) {
             let env = self.env(n);
             if let Some(d) = env
-                .iter()
-                .filter(|d| d.name == name && d.at <= pos)
+                .by_name
+                .get(name)
+                .into_iter()
+                .flatten()
+                .map(|&i| &env.decls[i])
+                .filter(|d| d.at <= pos)
                 .max_by_key(|d| d.at)
                 .cloned()
             {
                 return Some(d);
             }
-            cur = nav.enclosing_fn(self.lang, n);
         }
         None
     }
@@ -603,7 +665,7 @@ impl<'a> Infer<'a> {
         })
     }
 
-    fn env(&mut self, f: Node<'a>) -> &Vec<Decl<'a>> {
+    fn env(&mut self, f: Node<'a>) -> &Env<'a> {
         let id = f.id();
         if !self.envs.contains_key(&id) {
             let mut out = Vec::new();
@@ -614,7 +676,17 @@ impl<'a> Infer<'a> {
             if let Some(b) = body {
                 self.collect(b, &mut out, false);
             }
-            self.envs.insert(id, out);
+            let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
+            for (i, d) in out.iter().enumerate() {
+                by_name.entry(d.name.clone()).or_default().push(i);
+            }
+            self.envs.insert(
+                id,
+                Env {
+                    decls: out,
+                    by_name,
+                },
+            );
         }
         &self.envs[&id]
     }
@@ -1049,6 +1121,25 @@ impl<'a> Infer<'a> {
                     for x in named(a) {
                         Self::decl(out, self.t(x), n.start_byte(), None, false);
                     }
+                }
+            }
+            // `case msg := <-ch:` in a `select`.
+            (Lang::Go, "receive_statement") => {
+                let declares = (0..n.child_count())
+                    .filter_map(|i| n.child(i))
+                    .any(|c| c.kind() == ":=");
+                if let Some(l) = n.child_by_field_name("left").filter(|_| declares) {
+                    for x in named(l) {
+                        Self::decl(out, self.t(x), at, None, false);
+                    }
+                }
+            }
+            // A function-local `const Size = 8`.
+            (Lang::Go, "const_spec") => {
+                let mut c = n.walk();
+                let names: Vec<Node<'_>> = n.children_by_field_name("name", &mut c).collect();
+                for nm in names {
+                    Self::decl(out, self.t(nm), at, None, false);
                 }
             }
             (Lang::Rust, "let_declaration") => {
@@ -2818,6 +2909,7 @@ fn pattern_names(p: Node<'_>) -> Vec<Node<'_>> {
             }
             // Struct/enum paths inside patterns are not bindings.
             "scoped_identifier"
+            | "scoped_type_identifier"
             | "type_identifier"
             | "field_identifier"
             | "property_identifier"

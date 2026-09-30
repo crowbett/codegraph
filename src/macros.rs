@@ -555,7 +555,9 @@ fn frag_len(kind: &str, tts: &[Tt]) -> Option<usize> {
                 Some("|") => closing_pipe(tts, 1),
                 _ => 0,
             };
-            nonzero(skip + until(&tts[skip..], stops, false))
+            let rest = &tts[skip..];
+            let len = until(rest, stops, false);
+            nonzero(skip + len.min(juxtaposed(&rest[..len])))
         }
         "ty" | "path" => nonzero(until(
             tts,
@@ -572,6 +574,30 @@ fn frag_len(kind: &str, tts: &[Tt]) -> Option<usize> {
 
 fn nonzero(n: usize) -> Option<usize> {
     (n > 0).then_some(n)
+}
+
+/// Where an expression ends because the next token starts another operand: `$($n:expr)*`
+/// over `f32::consts::E f32::consts::PI` takes one path each, as rustc's parser does. Two
+/// operands are only ever adjacent through a keyword (`x as u8`, `if c {..} else {..}`,
+/// `return v`).
+fn juxtaposed(tts: &[Tt]) -> usize {
+    const KEYWORDS: &[&str] = &[
+        "as", "async", "await", "box", "break", "const", "continue", "dyn", "else", "enum",
+        "extern", "fn", "for", "gen", "if", "impl", "in", "let", "loop", "match", "mod", "move",
+        "mut", "pub", "ref", "return", "static", "struct", "trait", "try", "type", "union",
+        "unsafe", "use", "where", "while", "yield",
+    ];
+    let operand = |t: &Tt| match t {
+        Tt::Leaf(k) => {
+            let s = k.text.as_str();
+            !KEYWORDS.contains(&s) && (is_ident(s) || is_literal(s) || s.starts_with("r#"))
+        }
+        Tt::Group { .. } => false,
+    };
+    let ends_operand = |t: &Tt| matches!(t, Tt::Group { .. }) || operand(t);
+    tts.windows(2)
+        .position(|w| ends_operand(&w[0]) && operand(&w[1]))
+        .map_or(tts.len(), |i| i + 1)
 }
 
 /// Index just past the `|` closing a closure parameter list that starts at `from`.
@@ -1112,6 +1138,27 @@ mod tests {
              pair!(HashMap<u8, Vec<(u8, u8)>>, |a, b| a + b, both);\n",
         );
         assert_eq!(sym(&f, "both").start_line, 4);
+    }
+
+    #[test]
+    fn unseparated_expressions_end_where_the_next_operand_starts() {
+        // serde_json's `number_partialeq_ok!(0 f32::consts::E f32::consts::PI)`: one path
+        // per `$n`, each qualified by its own `f32::consts`.
+        let f = facts(
+            "macro_rules! each {\n\
+                 ($($n:expr)*) => { $( show($n); )* };\n\
+             }\n\
+             fn t() { each!(0 f32::consts::E f32::consts::PI x as u8); }\n",
+        );
+        let q = |name: &str| {
+            f.refs
+                .iter()
+                .find(|r| r.name == name)
+                .map(|r| r.qualifier.clone())
+        };
+        assert_eq!(q("E"), Some(Some("f32::consts".into())));
+        assert_eq!(q("PI"), Some(Some("f32::consts".into())));
+        assert_eq!(f.refs.iter().filter(|r| r.name == "show").count(), 0);
     }
 
     #[test]

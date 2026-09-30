@@ -93,12 +93,12 @@ What that does and does not show:
 ## Results
 
 <!-- results:start -->
-Run `20260930-022713-5634` · mode **fake** · upstream `fake_llm (scripted, fake-rules.json)` · 31 questions × 2 arms · 2026-09-29 19:27
+Run `20260930-123405-71b1` · mode **fake** · upstream `fake_llm (scripted, fake-rules.json)` · 31 questions × 2 arms · 2026-09-30 05:34
 
 | arm | pass rate | tokens total | tokens / question (median) | tool calls / question (mean) | turns / question (mean) | tool output chars (total) | tokens incl. tool schemas (est.) |
 |---|---|---|---|---|---|---|---|
 | grep | 31/31 (100%) | 46,521 | 1,430 | 2.2 | 2.8 | 85,901 | 94,481 |
-| codegraph | 31/31 (100%) | 25,408 | 708 | 1.2 | 2.2 | 22,161 | 127,315 |
+| codegraph | 31/31 (100%) | 25,384 | 708 | 1.2 | 2.2 | 22,062 | 127,291 |
 
 codegraph / grep total tokens: **0.55×** (tool schemas per turn, est.: grep 545, codegraph 1,521 tokens)
 
@@ -117,7 +117,7 @@ codegraph / grep total tokens: **0.55×** (tool schemas per turn, est.: grep 545
 | Q11 | rust | definition | 492 | 598 | 1.22 | 1 | 1 | yes | yes |
 | Q12 | rust | implementations | 499 | 611 | 1.22 | 1 | 1 | yes | yes |
 | Q13 | rust | callers | 1,427 | 646 | 0.45 | 2 | 1 | yes | yes |
-| Q14 | rust | implementations | 504 | 633 | 1.26 | 1 | 1 | yes | yes |
+| Q14 | rust | implementations | 504 | 609 | 1.21 | 1 | 1 | yes | yes |
 | Q15 | rust | callees | 1,174 | 796 | 0.68 | 2 | 1 | yes | yes |
 | Q16 | rust | implementations | 543 | 707 | 1.30 | 1 | 1 | yes | yes |
 | Q17 | rust | semantic | 2,228 | 1,130 | 0.51 | 3 | 2 | yes | yes |
@@ -144,7 +144,7 @@ Median per-question token ratio codegraph/grep: **0.56** (codegraph cheaper on 2
 | callers | 10 | 0.35 |
 | definition | 4 | 1.21 |
 | impact | 2 | 0.36 |
-| implementations | 6 | 1.24 |
+| implementations | 6 | 1.22 |
 | methods | 1 | 2.38 |
 | semantic | 4 | 0.55 |
 <!-- results:end -->
