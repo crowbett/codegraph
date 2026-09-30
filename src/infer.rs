@@ -540,7 +540,11 @@ impl<'a> Infer<'a> {
             return false;
         }
         let n = self.t(name).to_string();
-        matches!(self.lookup_local(&n, name), Some(d) if !d.func)
+        // A nested `def` / `fn` / JS function is a symbol of its own; a closure, Go func
+        // literal or lambda bound to a local is not, so a call through it is no repo call.
+        let literal_only = matches!(self.lang, Lang::Rust | Lang::Go | Lang::Python);
+        matches!(self.lookup_local(&n, name), Some(d)
+            if !d.func || (literal_only && d.value.is_some_and(Self::is_func_value)))
     }
 
     fn supported(&self) -> bool {

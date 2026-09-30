@@ -31,3 +31,8 @@ pub fn show(c: &Code, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 pub fn build(s: String) -> Code {
     Make::make(s.len() as u8)
 }
+
+pub fn uses_closure() -> u8 {
+    let build = |n: u8| n + 1;
+    build(1)
+}

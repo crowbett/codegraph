@@ -791,6 +791,8 @@ fn rust_trait_methods_called_by_path_with_an_explicit_receiver() {
     assert_eq!(target(28, "fmt"), Some((12, "exact".into())));
     // `Make::make(..)` takes no `self`: its first argument is not a receiver.
     assert_ne!(target(32, "make"), Some((22, "exact".into())));
+    // A closure bound to a local is no repo symbol, even named like one (`fn build` above).
+    assert_eq!(target(37, "build"), None);
 }
 
 #[test]
