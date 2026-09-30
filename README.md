@@ -263,15 +263,15 @@ scored site by site.
 | language | files | defs found | callers recall | false call edges | refs recall | refs precision | impl recall / precision |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Go | 364 | 100% | 100.0% | 0.2% | 99.2% | 99.9% | 100% / 81.6% |
-| Python | 124 | 100% | 100.0% | 0.4% | 94.8% | 99.6% | 100% / 91.4% |
-| TypeScript/JS | 396 | 100% | 99.2% | 0.5% | 95.5% | 99.7% | 100% / 100% |
-| Rust | 195 | 99.6% | 98.3% | 1.4% | 95.7% | 98.3% | – |
-| **all** | 1079 | 99.9% | 99.4% | 0.6% | 97.0% | 99.4% | 100% / 86.2% |
+| Python | 124 | 100% | 100.0% | 0.4% | 98.9% | 99.6% | 100% / 91.4% |
+| TypeScript/JS | 396 | 100% | 99.2% | 0.5% | 95.9% | 99.7% | 100% / 100% |
+| Rust | 195 | 99.6% | 98.5% | 1.4% | 95.8% | 98.3% | – |
+| **all** | 1079 | 99.9% | 99.5% | 0.6% | 97.7% | 99.4% | 100% / 86.2% |
 
 The same harness scores the v0.1.1 resolver at 77.0% callers recall with 13.8% false call
-edges. Where it still falls short, honestly: Rust trait methods called by path with an
-explicit receiver (`Display::fmt(&x, f)`), extension traits on std types (`impl BufMut for
-&mut [u8]`) and impls on reference types (serde-json 97.5%, bytes 97.8% callers recall), TS
+edges. Where it still falls short, honestly: Rust extension traits on std types (`impl
+BufMut for &mut [u8]`), impls on reference types and receivers typed only through closures
+(serde-json 98.3%, bytes 97.8% callers recall), TS member reads (`this.prop`, `a.getter`) and
 object-literal properties that implement an interface member, and the impl pairs scip-go and
 scip-python do not record (the Go/Python impl precision; see the ground-truth gaps in
 [docs/ACCURACY.md](docs/ACCURACY.md), which also has per-repo numbers).
@@ -284,7 +284,7 @@ Confidence calibration (share of judged edges that are actually correct):
 | Python | 99.9% | 99.6% | 78.1% |
 | TypeScript/JS | 99.8% | 100.0% | 95.7% |
 | Rust | 99.6% | 95.4% | 5.3% |
-| **all** | 99.8% (42,884 / 42,954) | 97.1% | 69.3% |
+| **all** | 99.8% (43,192 / 43,262) | 97.2% | 69.2% |
 
 Rust has no `impl`/`inherit` score: rust-analyzer's SCIP output emits no implementation
 relationships to compare against.
@@ -353,10 +353,10 @@ error rates — read them before trusting an edge blindly, especially `likely` a
 - **Interface/trait/base-class dispatch** points `callers`/`impact` at all known
   implementations via `[via ...]` annotations, but a resolved call still targets one
   concrete symbol (or the abstract method) per edge, not a fan-out to every implementer.
-- **Rust is the weakest language: 98.3% callers recall on the corpus** (99% on the author's
-  own Rust tools, 97.5-99% on generic- and macro-heavy libraries like serde-json and bytes).
-  Trait methods called by path with an explicit receiver, extension traits on std types,
-  impls on reference types and `#[cfg]` twins across modules are the main misses. False call
+- **Rust is the weakest language: 98.5% callers recall on the corpus** (99% on the author's
+  own Rust tools, ~98% on generic- and macro-heavy libraries like serde-json and bytes).
+  Extension traits on std types, impls on reference types, receivers typed only through
+  closures and `#[cfg]` twins across modules are the main misses. False call
   edges stay low (1.4%).
 - **`#[cfg]` / build-tag twins**: codegraph picks one variant of a `#[cfg]`-gated or
   build-tag-gated definition; SCIP (and the compiler) pick the host's. This shows up as

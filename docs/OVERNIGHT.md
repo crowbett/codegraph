@@ -370,3 +370,22 @@ Left, by size: Rust UFCS trait calls (`ser::SerializeSeq::end(self)`, `Display::
 needs the trait of each impl method), extension traits on std types, impls on `&T` vs `T`;
 TS object-literal properties implementing interface members and `this.prop` accessor reads;
 Python attribute reads of properties; a `go/types` check of the disputed Go impl pairs.
+
+Later the same night:
+
+| commit | what | effect |
+|---|---|---|
+| b4dcb21 | Rust UFCS: `Display::fmt(&x, f)` / `ser::SerializeSeq::end(self)` resolve as the method of that trait's impl for the first argument's type (impl methods record their trait; the method must take `self`) | Rust callers 98.3 -> 98.5, +14 exact edges, none false |
+| c1ce70c | **determinism**: stored edges resolve in (file, id) order like a cold index | a `--full` re-index of rust-lang/rust drifted on 92 ambiguous sites run to run; now identical to a cold index edge for edge |
+| d4a09c9 | Rust workspaces: a self-call only sees another crate's impl when inherent or its trait is imported | rust-lang/rust: 234 cross-crate guesses dropped, 420 likely -> exact; corpus unchanged |
+| fdb81e7 | more TS/JS value positions (ternary, spread, decorators, class fields, JSX `{x}`) | TS refs 95.5 -> 95.9 |
+| 7fa9bb3 | Python attribute reads on imported modules / typed receivers, `except`, `is`, subscripts; no subclass guess when the base declares the member as a field | Python refs 94.8 -> 98.9 |
+
+Scale check (rust-lang/rust 1.85, 31k files, `--full` cold, interleaved best of 3): 1529eae
+34.8 s vs HEAD 32.9 s, while edges went 1.03 M -> 1.28 M and exact edges 435k -> 588k.
+The A/B is also how the determinism bug showed up: only the old/new re-index runs drifted.
+Dead end: the same import requirement on `receiver_guess`'s "type name mentioned" evidence
+cost 0.3 pp Rust recall (integration-test crates name library types by path without `use`).
+
+Recorded: all languages callers 99.5% / 99.4%, refs 97.7% / 99.4%, defs 99.9%, exact 99.8%,
+likely 97.2%.
