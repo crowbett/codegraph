@@ -405,3 +405,11 @@ pytest to import. Overall impl: recall 100%, precision 76.4 -> 96.3% this sessio
 one real codegraph fix (Go parameter types) and the rest ground truth completed by the
 languages themselves.
 
+Calibration clean-up: f5e953f (a std prelude name the file neither defines nor imports is
+the prelude's: 113 wrong `Result` guesses gone, Rust name_only 5.3% -> 46.7%, refs precision
+98.3 -> 99.2%) and 6e185c2 (a call through a local closure / Go func literal / lambda is no
+repo call; it had resolved exact to a same-named fn in the same file). Dead end: restricting
+external-headed paths (`io::Error::new`) to in-repo trait impls fixed nothing: serde_json's
+`io` is `use crate::io;`, a module that re-exports std's under `#[cfg(feature = "std")]`, so
+it is a cfg twin across modules, not an import issue. Reverted.
+

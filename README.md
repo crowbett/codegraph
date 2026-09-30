@@ -265,8 +265,8 @@ scored site by site.
 | Go | 364 | 100% | 100.0% | 0.2% | 99.2% | 99.9% | 100% / 94.4% |
 | Python | 124 | 100% | 100.0% | 0.4% | 98.9% | 99.6% | 100% / 99.0% |
 | TypeScript/JS | 396 | 100% | 99.2% | 0.5% | 95.9% | 99.7% | 100% / 100% |
-| Rust | 195 | 99.6% | 98.5% | 1.4% | 95.8% | 98.3% | – |
-| **all** | 1079 | 99.9% | 99.5% | 0.6% | 97.7% | 99.4% | 100% / 96.3% |
+| Rust | 195 | 99.6% | 98.5% | 1.3% | 95.8% | 99.2% | – |
+| **all** | 1079 | 99.9% | 99.5% | 0.6% | 97.7% | 99.6% | 100% / 96.3% |
 
 The same harness scores the v0.1.1 resolver at 77.0% callers recall with 13.8% false call
 edges. Where it still falls short, honestly: Rust extension traits on std types (`impl
@@ -284,8 +284,8 @@ Confidence calibration (share of judged edges that are actually correct):
 | Go | 100.0% | 85.2% | 76.1% |
 | Python | 99.9% | 99.6% | 78.1% |
 | TypeScript/JS | 99.8% | 100.0% | 95.7% |
-| Rust | 99.6% | 95.4% | 5.3% |
-| **all** | 99.8% (43,192 / 43,262) | 97.2% | 69.2% |
+| Rust | 99.6% | 95.8% | 46.7% |
+| **all** | 99.8% (43,192 / 43,262) | 97.4% | 87.9% |
 
 Rust has no `impl`/`inherit` score: rust-analyzer's SCIP output emits no implementation
 relationships to compare against.
@@ -358,7 +358,7 @@ error rates — read them before trusting an edge blindly, especially `likely` a
   own Rust tools, ~98% on generic- and macro-heavy libraries like serde-json and bytes).
   Extension traits on std types, impls on reference types, receivers typed only through
   closures and `#[cfg]` twins across modules are the main misses. False call
-  edges stay low (1.4%).
+  edges stay low (1.3%).
 - **`#[cfg]` / build-tag twins**: codegraph picks one variant of a `#[cfg]`-gated or
   build-tag-gated definition; SCIP (and the compiler) pick the host's. This shows up as
   scoring noise on gated code, not as a systematic blind spot.

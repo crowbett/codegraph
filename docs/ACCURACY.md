@@ -108,15 +108,15 @@ the v0.1.1 baseline was re-scored with the fixed harness so deltas stay comparab
 harness on the current corpus; `bench/results/accuracy.json` is the latest recorded run.
 
 <!-- results:start -->
-codegraph `bbe0220`
+codegraph `6e185c2`
 
 | language | files | defs found | callers recall | callers precision | false call edges | refs recall | refs precision | impl recall | impl precision |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | Go | 364 | 100.0% | 100.0% | 99.8% | 0.2% | 99.2% | 99.9% | 100.0% | 94.4% |
 | Python | 124 | 100.0% | 100.0% | 99.6% | 0.4% | 98.9% | 99.6% | 100.0% | 99.0% |
-| Rust | 195 | 99.6% | 98.5% | 98.6% | 1.4% | 95.8% | 98.3% | – | – |
+| Rust | 195 | 99.6% | 98.5% | 98.7% | 1.3% | 95.8% | 99.2% | – | – |
 | TypeScript/JS | 396 | 100.0% | 99.2% | 99.5% | 0.5% | 95.9% | 99.7% | 100.0% | 100.0% |
-| **all** | 1079 | 99.9% | 99.5% | 99.4% | 0.6% | 97.7% | 99.4% | 100.0% | 96.3% |
+| **all** | 1079 | 99.9% | 99.5% | 99.4% | 0.6% | 97.7% | 99.6% | 100.0% | 96.3% |
 
 Confidence calibration (share of judged edges that are correct):
 
@@ -124,9 +124,9 @@ Confidence calibration (share of judged edges that are correct):
 |---|---:|---:|---:|
 | Go | 100.0% (18859/18859) | 85.2% (23/27) | 76.1% (51/67) |
 | Python | 99.9% (5783/5790) | 99.6% (528/530) | 77.8% (56/72) |
-| Rust | 99.6% (11791/11841) | 95.4% (888/931) | 5.3% (7/131) |
+| Rust | 99.6% (11791/11841) | 95.8% (888/927) | 46.7% (7/15) |
 | TypeScript/JS | 99.8% (6759/6772) | 100.0% (251/251) | 95.7% (264/276) |
-| all | 99.8% (43192/43262) | 97.2% (1690/1739) | 69.2% (378/546) |
+| all | 99.8% (43192/43262) | 97.4% (1690/1735) | 87.9% (378/430) |
 
 Per repo:
 
@@ -143,7 +143,7 @@ Per repo:
 | ledger | python | 100.0% | 99.9% | 913 | 1117 | 99.4% |
 | mobx | typescript | 98.8% | 99.5% | 2291 | 9040 | 94.7% |
 | pulse | go | 99.9% | 99.8% | 1131 | 1149 | 99.4% |
-| recall | rust | 99.3% | 99.3% | 715 | 734 | 98.0% |
+| recall | rust | 99.3% | 99.9% | 715 | 730 | 98.0% |
 | serde-json | rust | 98.3% | 98.5% | 1892 | 2793 | 94.4% |
 | stash | rust | 98.8% | 99.4% | 1326 | 1339 | 97.0% |
 | urfave-cli | go | 100.0% | 100.0% | 2515 | 2528 | 99.1% |

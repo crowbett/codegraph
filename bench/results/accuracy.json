@@ -1,5 +1,5 @@
 {
-  "codegraph": "bbe0220",
+  "codegraph": "6e185c2",
   "repos": {
     "bytes": {
       "lang": "rust",
@@ -72,7 +72,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 142
+        "index_ms": 123
       }
     },
     "chi": {
@@ -146,7 +146,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 144
+        "index_ms": 116
       }
     },
     "click": {
@@ -220,7 +220,7 @@
           "dispatch": 0,
           "false_edges": 1
         },
-        "index_ms": 188
+        "index_ms": 196
       }
     },
     "devkit": {
@@ -294,7 +294,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 58
+        "index_ms": 62
       }
     },
     "echo": {
@@ -368,7 +368,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 243
+        "index_ms": 222
       }
     },
     "fd": {
@@ -435,7 +435,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 140
+        "index_ms": 123
       }
     },
     "keep": {
@@ -509,7 +509,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 121
+        "index_ms": 99
       }
     },
     "ky": {
@@ -569,7 +569,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 253
+        "index_ms": 240
       }
     },
     "ledger": {
@@ -636,7 +636,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 78
+        "index_ms": 80
       }
     },
     "mobx": {
@@ -710,7 +710,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 501
+        "index_ms": 457
       }
     },
     "pulse": {
@@ -784,7 +784,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 85
+        "index_ms": 72
       }
     },
     "recall": {
@@ -813,18 +813,18 @@
           "no_def": 0
         },
         "call_edges": {
-          "resolved": 734,
-          "judged": 715,
+          "resolved": 730,
+          "judged": 711,
           "correct": 710,
           "dispatch": 0,
-          "false_edges": 5
+          "false_edges": 1
         },
         "all_edges": {
-          "resolved": 1428,
-          "judged": 1398,
+          "resolved": 1424,
+          "judged": 1394,
           "correct": 1392,
           "dispatch": 0,
-          "false_edges": 6
+          "false_edges": 2
         },
         "conf": {
           "exact": {
@@ -835,11 +835,11 @@
             "false_edges": 1
           },
           "likely": {
-            "resolved": 41,
-            "judged": 41,
+            "resolved": 37,
+            "judged": 37,
             "correct": 37,
             "dispatch": 0,
-            "false_edges": 4
+            "false_edges": 0
           },
           "name_only": {
             "resolved": 1,
@@ -858,7 +858,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 80
+        "index_ms": 74
       }
     },
     "serde-json": {
@@ -894,11 +894,11 @@
           "false_edges": 36
         },
         "all_edges": {
-          "resolved": 5739,
-          "judged": 5064,
+          "resolved": 5573,
+          "judged": 4948,
           "correct": 4902,
           "dispatch": 0,
-          "false_edges": 162
+          "false_edges": 46
         },
         "conf": {
           "exact": {
@@ -916,11 +916,11 @@
             "false_edges": 23
           },
           "name_only": {
-            "resolved": 125,
-            "judged": 125,
+            "resolved": 9,
+            "judged": 9,
             "correct": 4,
             "dispatch": 0,
-            "false_edges": 121
+            "false_edges": 5
           }
         },
         "impl_gt": 0,
@@ -932,7 +932,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 241
+        "index_ms": 197
       }
     },
     "stash": {
@@ -1006,7 +1006,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 100
+        "index_ms": 81
       }
     },
     "urfave-cli": {
@@ -1080,7 +1080,7 @@
           "dispatch": 0,
           "false_edges": 11
         },
-        "index_ms": 212
+        "index_ms": 197
       }
     },
     "zustand": {
@@ -1147,7 +1147,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 150
+        "index_ms": 140
       }
     }
   },
@@ -1220,7 +1220,7 @@
         "dispatch": 0,
         "false_edges": 11
       },
-      "index_ms": 805
+      "index_ms": 706
     },
     "python": {
       "files": 124,
@@ -1290,7 +1290,7 @@
         "dispatch": 0,
         "false_edges": 1
       },
-      "index_ms": 346
+      "index_ms": 350
     },
     "rust": {
       "files": 195,
@@ -1315,18 +1315,18 @@
         "no_def": 0
       },
       "call_edges": {
-        "resolved": 7202,
-        "judged": 6662,
+        "resolved": 7198,
+        "judged": 6658,
         "correct": 6572,
         "dispatch": 0,
-        "false_edges": 90
+        "false_edges": 86
       },
       "all_edges": {
-        "resolved": 13814,
-        "judged": 12903,
+        "resolved": 13644,
+        "judged": 12783,
         "correct": 12686,
         "dispatch": 0,
-        "false_edges": 217
+        "false_edges": 97
       },
       "conf": {
         "exact": {
@@ -1337,18 +1337,18 @@
           "false_edges": 50
         },
         "likely": {
-          "resolved": 931,
-          "judged": 931,
+          "resolved": 927,
+          "judged": 927,
           "correct": 888,
           "dispatch": 0,
-          "false_edges": 43
+          "false_edges": 39
         },
         "name_only": {
-          "resolved": 131,
-          "judged": 131,
+          "resolved": 15,
+          "judged": 15,
           "correct": 7,
           "dispatch": 0,
-          "false_edges": 124
+          "false_edges": 8
         }
       },
       "impl_gt": 0,
@@ -1360,7 +1360,7 @@
         "dispatch": 0,
         "false_edges": 0
       },
-      "index_ms": 623
+      "index_ms": 524
     },
     "ts": {
       "files": 396,
@@ -1430,7 +1430,7 @@
         "dispatch": 0,
         "false_edges": 0
       },
-      "index_ms": 962
+      "index_ms": 899
     }
   }
 }
