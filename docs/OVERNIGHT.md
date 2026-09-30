@@ -389,3 +389,13 @@ cost 0.3 pp Rust recall (integration-test crates name library types by path with
 
 Recorded: all languages callers 99.5% / 99.4%, refs 97.7% / 99.4%, defs 99.9%, exact 99.8%,
 likely 97.2%.
+
+Go impl precision: scip-go misses echo's 22 cross-package `MiddlewareConfigurator` pairs, so
+`bench/gotruth` (go/types `Implements`, per compilation) is a second ground-truth source
+(507b615, baseline re-scored): 81.6 -> 93.9%. First version compared types across package
+variants (`echo` vs `echo [echo.test]`) and found none of the 22: types must be compared
+inside one compilation. The remaining falses included a real codegraph bug, matching methods
+by arity only (`setMultiValueParsingConfig(f Flag)` for `(c multiValueParsingConfig)`);
+12f16b6 compares parameter types too: 94.4%, recall 100%. The last 11 are generic
+(`uintValue[T] -> ValueCreator[T, C]`): nothing can decide them uninstantiated.
+
