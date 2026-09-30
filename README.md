@@ -263,19 +263,19 @@ scored site by site.
 | language | files | defs found | callers recall | false call edges | refs recall | refs precision | impl recall / precision |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Go | 364 | 100% | 100.0% | 0.2% | 99.2% | 99.9% | 100% / 94.4% |
-| Python | 124 | 100% | 100.0% | 0.4% | 98.9% | 99.6% | 100% / 91.4% |
+| Python | 124 | 100% | 100.0% | 0.4% | 98.9% | 99.6% | 100% / 99.0% |
 | TypeScript/JS | 396 | 100% | 99.2% | 0.5% | 95.9% | 99.7% | 100% / 100% |
 | Rust | 195 | 99.6% | 98.5% | 1.4% | 95.8% | 98.3% | – |
-| **all** | 1079 | 99.9% | 99.5% | 0.6% | 97.7% | 99.4% | 100% / 93.8% |
+| **all** | 1079 | 99.9% | 99.5% | 0.6% | 97.7% | 99.4% | 100% / 96.3% |
 
 The same harness scores the v0.1.1 resolver at 77.0% callers recall with 13.8% false call
 edges. Where it still falls short, honestly: Rust extension traits on std types (`impl
 BufMut for &mut [u8]`), impls on reference types and receivers typed only through closures
 (serde-json 98.3%, bytes 97.8% callers recall), TS member reads (`this.prop`, `a.getter`) and
 object-literal properties that implement an interface member, and impl pairs no ground truth
-can decide (generic Go interfaces, subclass pairs scip-python omits; see
-[docs/ACCURACY.md](docs/ACCURACY.md), which also has per-repo numbers). Go implementations
-are checked against go/types as well as scip-go.
+can decide (generic Go interfaces; see [docs/ACCURACY.md](docs/ACCURACY.md), which also has
+per-repo numbers). Go and Python implementations are also checked against the language
+itself (go/types, the runtime MRO), not only the SCIP indexers.
 
 Confidence calibration (share of judged edges that are actually correct):
 

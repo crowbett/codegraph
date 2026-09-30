@@ -399,3 +399,9 @@ by arity only (`setMultiValueParsingConfig(f Flag)` for `(c multiValueParsingCon
 12f16b6 compares parameter types too: 94.4%, recall 100%. The last 11 are generic
 (`uintValue[T] -> ValueCreator[T, C]`): nothing can decide them uninstantiated.
 
+Python impl precision the same way (bbe0220): `bench/pytruth.py` imports the repo and reads
+each class's `__mro__`: 91.4 -> 99.0%, the one pair left sits in a test module that needs
+pytest to import. Overall impl: recall 100%, precision 76.4 -> 96.3% this session, of which
+one real codegraph fix (Go parameter types) and the rest ground truth completed by the
+languages themselves.
+

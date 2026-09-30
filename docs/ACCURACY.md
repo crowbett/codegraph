@@ -108,15 +108,15 @@ the v0.1.1 baseline was re-scored with the fixed harness so deltas stay comparab
 harness on the current corpus; `bench/results/accuracy.json` is the latest recorded run.
 
 <!-- results:start -->
-codegraph `12f16b6`
+codegraph `bbe0220`
 
 | language | files | defs found | callers recall | callers precision | false call edges | refs recall | refs precision | impl recall | impl precision |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | Go | 364 | 100.0% | 100.0% | 99.8% | 0.2% | 99.2% | 99.9% | 100.0% | 94.4% |
-| Python | 124 | 100.0% | 100.0% | 99.6% | 0.4% | 98.9% | 99.6% | 100.0% | 91.4% |
+| Python | 124 | 100.0% | 100.0% | 99.6% | 0.4% | 98.9% | 99.6% | 100.0% | 99.0% |
 | Rust | 195 | 99.6% | 98.5% | 98.6% | 1.4% | 95.8% | 98.3% | – | – |
 | TypeScript/JS | 396 | 100.0% | 99.2% | 99.5% | 0.5% | 95.9% | 99.7% | 100.0% | 100.0% |
-| **all** | 1079 | 99.9% | 99.5% | 99.4% | 0.6% | 97.7% | 99.4% | 100.0% | 93.8% |
+| **all** | 1079 | 99.9% | 99.5% | 99.4% | 0.6% | 97.7% | 99.4% | 100.0% | 96.3% |
 
 Confidence calibration (share of judged edges that are correct):
 
