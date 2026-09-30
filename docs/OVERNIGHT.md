@@ -309,3 +309,29 @@ Calibration: exact 99.7%, likely 96.5%. Harness changes (each re-scored the froz
 baseline at 8d20102): definition-less SCIP locals are unjudged; platform twins
 (`#[cfg]`, Go build constraints, Python module-level `if`) count as correct. Cost: ~5-10%
 slower indexing (16-repo corpus 2.4 -> 2.5-2.6 s; ~/dev --full 4.8-5.0 -> 5.1-5.5 s).
+
+## Round 7 — refs recall (2026-09-29)
+
+The harness only reported missed *call* sites; `--report` now also writes
+`<repo>.refmisses.tsv` (class, outcome, site) for every other missed reference. Clustering
+them: nearly all ref misses are `NoEdge` (never extracted). Rust: 2,207 of ~3,200 were a
+type in path-qualifier position (`Store::open(..)`, `ErrorCode::Eof`, `N::Float(_)`),
+633 `use` items, the rest struct-field fn values and macro bodies.
+
+- `queries/rust/tags.scm`: capitalised `scoped_identifier` paths (plain, nested with a
+  qualifier, and `Type::` tokens inside macro token trees) are type refs. Schema v9.
+- First run: Rust `likely` calibration 94.3 -> 88.6 (60 new wrong edges). Most were
+  serde-json's `de::Error` (`use serde::de::{self, ..}`) resolving to the associated type
+  `type Error = Error;` in the crate's own `src/de.rs`: the lowercase "module of this
+  crate" guess ran before the external `use` binding. Now a single-segment lowercase
+  qualifier bound outside the repo resolves to nothing. First version also blocked longer
+  paths and cost 18 serde-json calls (`de::Error::invalid_type(..)`, `ser::SerializeSeq::
+  end(self)` legitimately reach the in-repo impl), so it is limited to `q == head`.
+
+Rust, before -> after: refs recall 73.5 -> **89.8%**, refs precision 97.6 -> 98.2%, exact
+99.2 -> 99.6%, likely 94.3 -> 95.3%; callers recall/precision unchanged (97.5 / 98.6). Other
+languages unchanged (same tables; only the Rust fixture snapshot moved). ~/dev cold index 5.2 s (was 5.1-5.5), 380k edges.
+
+Next by size (not yet clustered by syntactic position): TS/JS refs (76%: ~1,000 callables,
+~550 types never extracted) and Python refs (78.5%: ~640 types, ~640 callables); Rust `use`
+items (633).

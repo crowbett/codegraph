@@ -6,6 +6,11 @@ pub struct Store {
     items: Vec<String>,
 }
 
+/// What went wrong.
+pub enum Kind {
+    Missing,
+}
+
 /// Storage backends.
 pub trait Backend {
     /// Load everything.

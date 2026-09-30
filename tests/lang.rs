@@ -95,17 +95,38 @@ fn go_same_name_in_two_packages_and_receivers() {
 fn rust_impl_blocks_traits_and_modules() {
     let ix = index_fixture("rust");
     // `Store::new` (type-qualified, type imported by `use`) vs free fn `util::new`.
-    assert_edge(&ix, "src/main.rs", 7, "new", "store::Store::new", "exact");
-    assert_edge(&ix, "src/main.rs", 10, "new", "util::new", "exact");
-    assert_edge(&ix, "src/main.rs", 9, "helper", "util::helper", "exact");
+    assert_edge(&ix, "src/main.rs", 8, "new", "store::Store::new", "exact");
+    assert_edge(&ix, "src/main.rs", 11, "new", "util::new", "exact");
+    assert_edge(&ix, "src/main.rs", 10, "helper", "util::helper", "exact");
     assert_edge(
         &ix,
         "src/store.rs",
-        22,
+        27,
         "find",
         "store::Store::find",
         "exact",
     );
+    // Types in path-qualifier position are references: `Store::new()`, `store::Kind::Missing`,
+    // and the same inside a macro's token tree.
+    assert_edge(&ix, "src/main.rs", 8, "Store", "store::Store", "exact");
+    assert_edge(&ix, "src/main.rs", 13, "Kind", "store::Kind", "exact");
+    assert_edge(&ix, "src/main.rs", 14, "Kind", "store::Kind", "exact");
+    // `use std::fmt;` in src/fmt.rs: `fmt::Error` is std's, not this crate's `fmt::Error`.
+    let fmt_error: Vec<Option<i64>> = {
+        let mut st = ix
+            .store
+            .conn()
+            .prepare(
+                "SELECT e.to_symbol FROM edges e JOIN files f ON f.id = e.file_id
+                 WHERE f.path = 'src/fmt.rs' AND e.name = 'Error' AND e.line = 7",
+            )
+            .unwrap();
+        st.query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(fmt_error, [None]);
     // `impl Backend for Store` links the struct to the trait.
     let (from, to): (String, String) = ix
         .store

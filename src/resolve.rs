@@ -2942,6 +2942,20 @@ impl Ctx {
             let m = self.lookup_in(&files, &e.name, e.kind, 2);
             return self.pick(fi, &m, Confidence::Exact, Confidence::Likely);
         }
+        // `use serde::de;` ... `de::Error`: the module is bound outside the repo, even when
+        // a module of this crate (or this very file) has the same name. Longer paths
+        // (`de::Error::custom(..)`, a trait method called by path) still go on to find the
+        // in-repo impl.
+        if lang == Lang::Rust
+            && q == head
+            && head.starts_with(|c: char| c.is_lowercase() || c == '_')
+            && scope
+                .names
+                .get(head)
+                .is_some_and(|(_, targets)| targets.is_empty())
+        {
+            return None;
+        }
         // Python dotted module qualifier bound as `import a.b`.
         if lang == Lang::Python && q.contains('.') {
             if let Some(targets) = scope.modules.get(head) {

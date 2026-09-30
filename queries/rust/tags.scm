@@ -77,6 +77,27 @@
 
 (type_identifier) @name @reference.type
 
+; types in path-qualifier position: `Store::open(..)`, `ErrorCode::Eof`, `N::Float(_)`,
+; `crate::error::Error::Locked(..)`. Paths are plain identifiers there; the capital
+; letter tells a type from a module (`fs::read`).
+(scoped_identifier
+  path: (identifier) @name
+  (#match? @name "^[A-Z]")) @reference.type
+
+(scoped_identifier
+  path: (scoped_identifier
+    path: (_) @qualifier
+    name: (identifier) @name)
+  (#match? @name "^[A-Z]")) @reference.type
+
+(token_tree
+  (identifier) @name
+  .
+  "::"
+  .
+  (identifier)
+  (#match? @name "^[A-Z]")) @reference.type
+
 (impl_item
   trait: (type_identifier) @name
   type: (_) @impl_for) @reference.impl

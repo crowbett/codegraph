@@ -84,15 +84,15 @@ the v0.1.1 baseline was re-scored with the fixed harness so deltas stay comparab
 harness on the current corpus; `bench/results/accuracy.json` is the latest recorded run.
 
 <!-- results:start -->
-codegraph `51be970`
+codegraph `1529eae`
 
 | language | files | defs found | callers recall | callers precision | false call edges | refs recall | refs precision | impl recall | impl precision |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | Go | 364 | 100.0% | 100.0% | 99.8% | 0.2% | 99.2% | 99.9% | 100.0% | 81.6% |
 | Python | 124 | 100.0% | 100.0% | 99.6% | 0.4% | 78.5% | 99.6% | 100.0% | 91.4% |
-| Rust | 195 | 94.7% | 97.5% | 98.6% | 1.4% | 73.5% | 97.6% | – | – |
+| Rust | 195 | 94.7% | 97.5% | 98.6% | 1.4% | 89.8% | 98.2% | – | – |
 | TypeScript/JS | 396 | 100.0% | 99.2% | 99.5% | 0.5% | 76.3% | 99.6% | 78.1% | 37.3% |
-| **all** | 1079 | 98.4% | 99.2% | 99.4% | 0.6% | 85.5% | 99.2% | 97.6% | 76.4% |
+| **all** | 1079 | 98.4% | 99.2% | 99.4% | 0.6% | 90.1% | 99.3% | 97.6% | 76.4% |
 
 Confidence calibration (share of judged edges that are correct):
 
@@ -100,28 +100,28 @@ Confidence calibration (share of judged edges that are correct):
 |---|---:|---:|---:|
 | Go | 100.0% (18859/18859) | 85.2% (23/27) | 76.1% (51/67) |
 | Python | 99.9% (4428/4432) | 99.8% (515/516) | 77.1% (54/70) |
-| Rust | 99.2% (8932/9000) | 94.3% (873/926) | 5.3% (7/131) |
+| Rust | 99.6% (10999/11047) | 95.3% (881/924) | 5.3% (7/131) |
 | TypeScript/JS | 99.8% (5137/5149) | 100.0% (199/199) | 95.7% (264/276) |
-| all | 99.8% (37356/37440) | 96.5% (1610/1668) | 69.1% (376/544) |
+| all | 99.8% (39423/39487) | 97.1% (1618/1666) | 69.1% (376/544) |
 
 Per repo:
 
 | repo | lang | callers recall | callers precision | GT call sites | resolved call edges | refs recall |
 |---|---|---:|---:|---:|---:|---:|
-| bytes | rust | 97.9% | 97.4% | 1277 | 1441 | 78.2% |
+| bytes | rust | 97.9% | 97.4% | 1277 | 1441 | 91.5% |
 | chi | go | 100.0% | 99.2% | 1283 | 1457 | 98.8% |
 | click | python | 100.0% | 99.5% | 2449 | 3540 | 78.1% |
 | devkit | typescript | 100.0% | 100.0% | 701 | 989 | 86.0% |
 | echo | go | 100.0% | 99.9% | 4021 | 4055 | 99.3% |
-| fd | rust | 99.0% | 99.4% | 796 | 902 | 65.9% |
+| fd | rust | 99.0% | 99.4% | 796 | 902 | 92.3% |
 | keep | go | 100.0% | 99.9% | 1351 | 1452 | 99.6% |
 | ky | typescript | 100.0% | 100.0% | 138 | 1718 | 70.0% |
 | ledger | python | 100.0% | 99.9% | 913 | 1117 | 79.8% |
 | mobx | typescript | 98.8% | 99.5% | 2291 | 9037 | 72.8% |
 | pulse | go | 99.9% | 99.8% | 1131 | 1149 | 99.4% |
-| recall | rust | 99.3% | 99.3% | 715 | 734 | 74.8% |
-| serde-json | rust | 94.9% | 98.4% | 1892 | 2625 | 75.8% |
-| stash | rust | 98.8% | 99.4% | 1326 | 1339 | 69.2% |
+| recall | rust | 99.3% | 99.3% | 715 | 734 | 86.3% |
+| serde-json | rust | 94.9% | 98.4% | 1892 | 2625 | 89.7% |
+| stash | rust | 98.8% | 99.4% | 1326 | 1339 | 89.2% |
 | urfave-cli | go | 100.0% | 100.0% | 2515 | 2528 | 99.1% |
 | zustand | typescript | 100.0% | 98.6% | 276 | 385 | 84.1% |
 

@@ -1,5 +1,5 @@
 {
-  "codegraph": "51be970",
+  "codegraph": "1529eae",
   "repos": {
     "bytes": {
       "lang": "rust",
@@ -19,11 +19,11 @@
         },
         "refs": {
           "gt": 2223,
-          "hit": 1739,
+          "hit": 2034,
           "dispatch": 0,
           "wrong": 0,
           "unresolved": 34,
-          "no_edge": 450,
+          "no_edge": 155,
           "no_def": 0
         },
         "call_edges": {
@@ -34,17 +34,17 @@
           "false_edges": 36
         },
         "all_edges": {
-          "resolved": 1915,
-          "judged": 1837,
-          "correct": 1801,
+          "resolved": 2236,
+          "judged": 2132,
+          "correct": 2096,
           "dispatch": 0,
           "false_edges": 36
         },
         "conf": {
           "exact": {
-            "resolved": 1757,
-            "judged": 1757,
-            "correct": 1726,
+            "resolved": 2052,
+            "judged": 2052,
+            "correct": 2021,
             "dispatch": 0,
             "false_edges": 31
           },
@@ -72,7 +72,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 138
+        "index_ms": 92
       }
     },
     "chi": {
@@ -146,7 +146,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 163
+        "index_ms": 127
       }
     },
     "click": {
@@ -220,7 +220,7 @@
           "dispatch": 0,
           "false_edges": 9
         },
-        "index_ms": 239
+        "index_ms": 176
       }
     },
     "devkit": {
@@ -294,7 +294,7 @@
           "dispatch": 0,
           "false_edges": 1
         },
-        "index_ms": 125
+        "index_ms": 62
       }
     },
     "echo": {
@@ -368,7 +368,7 @@
           "dispatch": 0,
           "false_edges": 22
         },
-        "index_ms": 275
+        "index_ms": 229
       }
     },
     "fd": {
@@ -389,11 +389,11 @@
         },
         "refs": {
           "gt": 1470,
-          "hit": 968,
+          "hit": 1357,
           "dispatch": 0,
           "wrong": 0,
           "unresolved": 8,
-          "no_edge": 494,
+          "no_edge": 105,
           "no_def": 0
         },
         "call_edges": {
@@ -404,17 +404,17 @@
           "false_edges": 5
         },
         "all_edges": {
-          "resolved": 1084,
-          "judged": 990,
-          "correct": 985,
+          "resolved": 1489,
+          "judged": 1379,
+          "correct": 1374,
           "dispatch": 0,
           "false_edges": 5
         },
         "conf": {
           "exact": {
-            "resolved": 891,
-            "judged": 891,
-            "correct": 891,
+            "resolved": 1280,
+            "judged": 1280,
+            "correct": 1280,
             "dispatch": 0,
             "false_edges": 0
           },
@@ -435,7 +435,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 167
+        "index_ms": 122
       }
     },
     "keep": {
@@ -509,7 +509,7 @@
           "dispatch": 0,
           "false_edges": 1
         },
-        "index_ms": 166
+        "index_ms": 101
       }
     },
     "ky": {
@@ -569,7 +569,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 369
+        "index_ms": 229
       }
     },
     "ledger": {
@@ -636,7 +636,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 113
+        "index_ms": 76
       }
     },
     "mobx": {
@@ -710,7 +710,7 @@
           "dispatch": 0,
           "false_edges": 41
         },
-        "index_ms": 1017
+        "index_ms": 513
       }
     },
     "pulse": {
@@ -784,7 +784,7 @@
           "dispatch": 0,
           "false_edges": 1
         },
-        "index_ms": 127
+        "index_ms": 75
       }
     },
     "recall": {
@@ -805,11 +805,11 @@
         },
         "refs": {
           "gt": 1428,
-          "hit": 1068,
+          "hit": 1233,
           "dispatch": 0,
           "wrong": 0,
           "unresolved": 5,
-          "no_edge": 355,
+          "no_edge": 190,
           "no_def": 0
         },
         "call_edges": {
@@ -820,24 +820,24 @@
           "false_edges": 5
         },
         "all_edges": {
-          "resolved": 1090,
-          "judged": 1066,
-          "correct": 1061,
+          "resolved": 1254,
+          "judged": 1230,
+          "correct": 1225,
           "dispatch": 0,
           "false_edges": 5
         },
         "conf": {
           "exact": {
-            "resolved": 1029,
-            "judged": 1029,
-            "correct": 1029,
+            "resolved": 1188,
+            "judged": 1188,
+            "correct": 1188,
             "dispatch": 0,
             "false_edges": 0
           },
           "likely": {
-            "resolved": 36,
-            "judged": 36,
-            "correct": 32,
+            "resolved": 41,
+            "judged": 41,
+            "correct": 37,
             "dispatch": 0,
             "false_edges": 4
           },
@@ -858,7 +858,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 122
+        "index_ms": 74
       }
     },
     "serde-json": {
@@ -879,11 +879,11 @@
         },
         "refs": {
           "gt": 4673,
-          "hit": 3541,
+          "hit": 4193,
           "dispatch": 0,
           "wrong": 11,
-          "unresolved": 106,
-          "no_edge": 1013,
+          "unresolved": 103,
+          "no_edge": 364,
           "no_def": 2
         },
         "call_edges": {
@@ -894,26 +894,26 @@
           "false_edges": 36
         },
         "all_edges": {
-          "resolved": 4729,
-          "judged": 4179,
-          "correct": 3988,
+          "resolved": 5413,
+          "judged": 4804,
+          "correct": 4643,
           "dispatch": 0,
-          "false_edges": 191
+          "false_edges": 161
         },
         "conf": {
           "exact": {
-            "resolved": 3424,
-            "judged": 3424,
-            "correct": 3387,
+            "resolved": 4056,
+            "judged": 4056,
+            "correct": 4039,
             "dispatch": 0,
-            "false_edges": 37
+            "false_edges": 17
           },
           "likely": {
-            "resolved": 630,
-            "judged": 630,
-            "correct": 597,
+            "resolved": 623,
+            "judged": 623,
+            "correct": 600,
             "dispatch": 0,
-            "false_edges": 33
+            "false_edges": 23
           },
           "name_only": {
             "resolved": 125,
@@ -932,7 +932,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 284
+        "index_ms": 158
       }
     },
     "stash": {
@@ -953,11 +953,11 @@
         },
         "refs": {
           "gt": 2860,
-          "hit": 1980,
+          "hit": 2552,
           "dispatch": 0,
           "wrong": 5,
-          "unresolved": 14,
-          "no_edge": 861,
+          "unresolved": 13,
+          "no_edge": 290,
           "no_def": 0
         },
         "call_edges": {
@@ -968,17 +968,17 @@
           "false_edges": 8
         },
         "all_edges": {
-          "resolved": 1985,
-          "judged": 1985,
-          "correct": 1977,
+          "resolved": 2557,
+          "judged": 2557,
+          "correct": 2549,
           "dispatch": 0,
           "false_edges": 8
         },
         "conf": {
           "exact": {
-            "resolved": 1899,
-            "judged": 1899,
-            "correct": 1899,
+            "resolved": 2471,
+            "judged": 2471,
+            "correct": 2471,
             "dispatch": 0,
             "false_edges": 0
           },
@@ -1006,7 +1006,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 123
+        "index_ms": 81
       }
     },
     "urfave-cli": {
@@ -1080,7 +1080,7 @@
           "dispatch": 0,
           "false_edges": 12
         },
-        "index_ms": 254
+        "index_ms": 194
       }
     },
     "zustand": {
@@ -1147,7 +1147,7 @@
           "dispatch": 0,
           "false_edges": 0
         },
-        "index_ms": 181
+        "index_ms": 147
       }
     }
   },
@@ -1220,7 +1220,7 @@
         "dispatch": 0,
         "false_edges": 36
       },
-      "index_ms": 985
+      "index_ms": 726
     },
     "python": {
       "files": 124,
@@ -1290,7 +1290,7 @@
         "dispatch": 0,
         "false_edges": 9
       },
-      "index_ms": 474
+      "index_ms": 326
     },
     "rust": {
       "files": 195,
@@ -1307,11 +1307,11 @@
       },
       "refs": {
         "gt": 12654,
-        "hit": 9296,
+        "hit": 11369,
         "dispatch": 0,
         "wrong": 16,
-        "unresolved": 167,
-        "no_edge": 3173,
+        "unresolved": 163,
+        "no_edge": 1104,
         "no_def": 2
       },
       "call_edges": {
@@ -1322,26 +1322,26 @@
         "false_edges": 90
       },
       "all_edges": {
-        "resolved": 10779,
-        "judged": 10057,
-        "correct": 9812,
+        "resolved": 12925,
+        "judged": 12102,
+        "correct": 11887,
         "dispatch": 0,
-        "false_edges": 245
+        "false_edges": 215
       },
       "conf": {
         "exact": {
-          "resolved": 9000,
-          "judged": 9000,
-          "correct": 8932,
+          "resolved": 11047,
+          "judged": 11047,
+          "correct": 10999,
           "dispatch": 0,
-          "false_edges": 68
+          "false_edges": 48
         },
         "likely": {
-          "resolved": 926,
-          "judged": 926,
-          "correct": 873,
+          "resolved": 924,
+          "judged": 924,
+          "correct": 881,
           "dispatch": 0,
-          "false_edges": 53
+          "false_edges": 43
         },
         "name_only": {
           "resolved": 131,
@@ -1360,7 +1360,7 @@
         "dispatch": 0,
         "false_edges": 0
       },
-      "index_ms": 712
+      "index_ms": 453
     },
     "ts": {
       "files": 396,
@@ -1430,7 +1430,7 @@
         "dispatch": 0,
         "false_edges": 42
       },
-      "index_ms": 1692
+      "index_ms": 951
     }
   }
 }
