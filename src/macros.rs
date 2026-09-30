@@ -15,7 +15,9 @@
 //! dropped. A transcriber invoking a macro expands again, up to [`MAX_DEPTH`] levels.
 //!
 //! Not covered: macros defined in another file (`#[macro_use]`, `$crate::m!`), procedural
-//! macros, and hygiene (a macro-body local shadowing a caller's name is not modeled).
+//! macros, hygiene (a macro-body local shadowing a caller's name is not modeled), and
+//! textual scope (a macro redefined further down expands with its last definition
+//! everywhere in the file).
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
