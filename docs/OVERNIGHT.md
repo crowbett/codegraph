@@ -332,6 +332,41 @@ Rust, before -> after: refs recall 73.5 -> **89.8%**, refs precision 97.6 -> 98.
 99.2 -> 99.6%, likely 94.3 -> 95.3%; callers recall/precision unchanged (97.5 / 98.6). Other
 languages unchanged (same tables; only the Rust fixture snapshot moved). ~/dev cold index 5.2 s (was 5.1-5.5), 380k edges.
 
-Next by size (not yet clustered by syntactic position): TS/JS refs (76%: ~1,000 callables,
-~550 types never extracted) and Python refs (78.5%: ~640 types, ~640 callables); Rust `use`
-items (633).
+Then, same session (each measured, kept only at equal-or-better precision/calibration):
+
+| commit | what | effect |
+|---|---|---|
+| bafc36a | names in import statements are refs (`I` hint: resolve only through that file's binding, never by name) | refs recall TS 76.3 -> 91.6, Python 78.5 -> 84.2, Rust 89.8 -> 94.8 |
+| 97ff2e7 | Python names used as values / in `X \| None`, `X[T]` annotations; value refs may target classes | Python refs 84.2 -> 94.8 |
+| 62d7146 (harness: 1512fc0) | TS/JS names used as values (shorthand, `instanceof`, `Enum.X` objects, initializers, `typeof`, closing JSX tags) | TS refs 91.9 -> 95.5 |
+| 8baed85, ea5ac0d | **same-file `macro_rules!` expansion** (src/macros.rs) | Rust defs found 94.7 -> 99.6, callers recall 97.5 -> 98.3 |
+
+Harness fixes (baseline re-scored each time with the new `task bench:rebaseline`):
+- scip-typescript records only the contextual member at a shorthand property (`{ make_ }`
+  -> `Annotation.make_`), never the binding: a shorthand-shaped site resolved to the
+  same-named same-file definition counts as correct.
+- Implementations: SCIP lists supertypes transitively, so a pair is found through a chain
+  of codegraph edges; scip-typescript has no truth for an interface's own `extends` or for
+  local symbols (mobx's tests), so those edges are unjudged. TS impl 78.1/37.3 -> 100/100.
+  Checked before encoding it: the first hypothesis ("scip-typescript skips class `extends`")
+  was wrong; the dumped ground truth showed class extends present and interface sources and
+  mobx test files absent.
+- Not encoded, documented instead: scip-go misses echo's 22 cross-package value-receiver
+  `MiddlewareConfigurator` implementations (but records other cross-package pairs), and
+  scip-python drops some direct subclass pairs. No principled rule, so they stay false.
+
+Macro expansion notes: the repetition separator is an unnamed regex token in
+tree-sitter-rust (no node), read from the bytes between `)` and the operator; `ident!(..)`
+inside another macro's arguments is plain tokens to tree-sitter, so those are found as token
+triples. Guards: 64 levels of nesting, 4 expansion levels, 4096 expansions per file (shared
+by all levels: a macro invoking itself eight times per level stays bounded), 256 KiB per
+expansion. A duplicate-free graph dropped Rust exact edges 12037 -> 11827 (test_stream!
+repeats its body three times) and callers precision 98.7 -> 98.6: the honest number.
+
+Recorded (docs/ACCURACY.md): all languages callers 99.4% / precision 99.4%, refs 97.0% /
+99.4%, defs 99.9%, exact 99.8%, likely 97.1%.
+
+Left, by size: Rust UFCS trait calls (`ser::SerializeSeq::end(self)`, `Display::fmt(&x, f)`:
+needs the trait of each impl method), extension traits on std types, impls on `&T` vs `T`;
+TS object-literal properties implementing interface members and `this.prop` accessor reads;
+Python attribute reads of properties; a `go/types` check of the disputed Go impl pairs.

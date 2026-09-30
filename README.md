@@ -260,29 +260,31 @@ on 16 real repos (10 public: go-chi/chi, urfave/cli, labstack/echo, sharkdp/fd, 
 serde-rs/json, sindresorhus/ky, mobx, zustand, pallets/click; 6 of the author's own tools),
 scored site by site.
 
-| language | files | callers recall | false call edges | refs recall | refs precision | impl recall / precision |
-|---|---:|---:|---:|---:|---:|---:|
-| Go | 364 | 98.9% | 1.1% | 98.6% | 99.4% | 87.5% / 79.5% |
-| Python | 124 | 96.0% | 1.9% | 76.4% | 98.3% | 100% / 91.4% |
-| TypeScript/JS | 396 | 94.3% | 1.6% | 72.9% | 98.2% | 50.0% / 28.6% |
-| Rust | 195 | 85.1% | 2.7% | 64.6% | 92.7% | – |
-| **all** | 1079 | 94.2% | 1.7% | 81.9% | 97.5% | 87.5% / 74.8% |
+| language | files | defs found | callers recall | false call edges | refs recall | refs precision | impl recall / precision |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Go | 364 | 100% | 100.0% | 0.2% | 99.2% | 99.9% | 100% / 81.6% |
+| Python | 124 | 100% | 100.0% | 0.4% | 94.8% | 99.6% | 100% / 91.4% |
+| TypeScript/JS | 396 | 100% | 99.2% | 0.5% | 95.5% | 99.7% | 100% / 100% |
+| Rust | 195 | 99.6% | 98.3% | 1.4% | 95.7% | 98.3% | – |
+| **all** | 1079 | 99.9% | 99.4% | 0.6% | 97.0% | 99.4% | 100% / 86.2% |
 
-The same harness scores the v0.1.1 resolver at 78.7% callers recall with 14.0% false call edges.
-Where it still falls short, honestly: Rust generic- and macro-heavy code (serde-json 71%,
-bytes 82% callers recall; the author's own Rust tools are 94–97%), and TS narrowing through
-exported factory objects (mobx 86%, zustand 97%). Per-repo numbers are in
-[docs/ACCURACY.md](docs/ACCURACY.md).
+The same harness scores the v0.1.1 resolver at 77.0% callers recall with 13.8% false call
+edges. Where it still falls short, honestly: Rust trait methods called by path with an
+explicit receiver (`Display::fmt(&x, f)`), extension traits on std types (`impl BufMut for
+&mut [u8]`) and impls on reference types (serde-json 97.5%, bytes 97.8% callers recall), TS
+object-literal properties that implement an interface member, and the impl pairs scip-go and
+scip-python do not record (the Go/Python impl precision; see the ground-truth gaps in
+[docs/ACCURACY.md](docs/ACCURACY.md), which also has per-repo numbers).
 
 Confidence calibration (share of judged edges that are actually correct):
 
 | language | exact | likely | name_only |
 |---|---:|---:|---:|
-| Go | 100.0% | 67.7% | 49.1% |
-| Python | 99.7% | 97.9% | 69.8% |
-| TypeScript/JS | 98.9% | 96.1% | 87.6% |
-| Rust | 94.9% | 89.4% | 7.7% |
-| **all** | 98.7% (35,515 / 35,998) | 91.5% | 60.0% |
+| Go | 100.0% | 85.2% | 76.1% |
+| Python | 99.9% | 99.6% | 78.1% |
+| TypeScript/JS | 99.8% | 100.0% | 95.7% |
+| Rust | 99.6% | 95.4% | 5.3% |
+| **all** | 99.8% (42,884 / 42,954) | 97.1% | 69.3% |
 
 Rust has no `impl`/`inherit` score: rust-analyzer's SCIP output emits no implementation
 relationships to compare against.
@@ -331,10 +333,10 @@ task eval:agent
 
 ## Performance
 
-Cold index of `~/dev` (2,634 files across every repo below it): **5.3 s** on a release
-build, Windows 11, 16 cores (down from 7.0 s on v0.1.1). Full scale numbers (per-language
-breakdown, no-op re-index, `--full` re-index, database size) are being written up in
-`docs/SCALE.md`.
+Full index of `~/dev` (3,117 files in 42 repos, ~394k edges): **4.7 s** on a release build,
+Windows 11, 16 cores (7.0 s for 2,634 files on v0.1.1). Kernel-sized repos (Linux, rust-lang/
+rust, Kubernetes: cold index, no-op and one-file re-index, the resident resolver of `watch`)
+are measured in [docs/SCALE.md](docs/SCALE.md).
 
 ## Limitations (honest)
 
@@ -351,19 +353,19 @@ error rates — read them before trusting an edge blindly, especially `likely` a
 - **Interface/trait/base-class dispatch** points `callers`/`impact` at all known
   implementations via `[via ...]` annotations, but a resolved call still targets one
   concrete symbol (or the abstract method) per edge, not a fan-out to every implementer.
-- **Rust is the weakest language: 97.5% callers recall on the corpus** (99% on the author's
-  own Rust tools, 95–98% on generic- and macro-heavy libraries like serde-json and bytes).
-  Names bound by `macro_rules!` expansions, trait paths with explicit receivers, closure
-  parameters and `#[cfg]` twins across modules are the main misses. Rust refs recall is ~90%;
-  most of the rest are `use` items and functions passed as struct-field values. False call
+- **Rust is the weakest language: 98.3% callers recall on the corpus** (99% on the author's
+  own Rust tools, 97.5-99% on generic- and macro-heavy libraries like serde-json and bytes).
+  Trait methods called by path with an explicit receiver, extension traits on std types,
+  impls on reference types and `#[cfg]` twins across modules are the main misses. False call
   edges stay low (1.4%).
 - **`#[cfg]` / build-tag twins**: codegraph picks one variant of a `#[cfg]`-gated or
   build-tag-gated definition; SCIP (and the compiler) pick the host's. This shows up as
   scoring noise on gated code, not as a systematic blind spot.
-- **Macro-generated code** (Rust proc macros, decorators that synthesize methods, code
-  generators) is invisible beyond what tree-sitter can see in the source; calls written
-  *inside* a macro invocation (`assert_eq!(f(x))`) are extracted, but a macro that
-  *generates* a new function or call from nothing is not.
+- **Macro-generated code**: a Rust `macro_rules!` macro is expanded where the file that
+  defines it invokes it (what it defines and the calls in the tokens handed to it land at
+  the invocation), but macros from other files (`#[macro_use]`, `$crate::m!`), procedural
+  macros, and decorators or generators that synthesize code are invisible beyond what
+  tree-sitter sees in the source.
 - **C/C++ are not in the accuracy benchmark.** They're extracted and resolved with the same
   engine and rules as everything else (imports via `#include`, header/source companions),
   but no SCIP-equivalent ground truth was scored for them — treat their confidence tiers
@@ -375,8 +377,8 @@ error rates — read them before trusting an edge blindly, especially `likely` a
 - **Cross-repo edges are not linked**: a qualifier bound to an import outside the repo
   (stdlib, a dependency, another kit repo) resolves to nothing, by design, instead of
   guessing a same-named symbol elsewhere.
-- **Rust module paths come from file layout** (`src/a/b.rs` is `a::b`); `#[path]`
-  attributes and `include!` are ignored.
+- **Rust module paths come from file layout** (`src/a/b.rs` is `a::b`) plus file-level
+  `#[path = ".."] mod x;` declarations; `include!` is ignored.
 - **`hotspots` orphans are candidates, not verdicts**: entry points, callbacks registered
   indirectly, and exported API are excluded or invisible, so review before deleting
   anything.
