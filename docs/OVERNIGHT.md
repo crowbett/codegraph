@@ -5,19 +5,19 @@ last. Started 2026-09-25 ~21:45 local.
 
 ## Needs Corbett
 
+Checked 2026-09-29 (done since: evalrig worktree gone, `wip/sec1-extract-dos` deleted,
+`overnight/1.0` merged into `main`).
+
 - Decide public vs token-only installs: while the repo is private every install path needs
   auth (`GH_TOKEN` for the scripts, SSH for `cargo install --git`); scoop/winget/brew/curl 404.
 - Real agent-eval run (bar 2): needs `ANTHROPIC_API_KEY`; commands in docs/AGENT-EVAL.md.
-- Delete the stray evalrig worktree (see M4): `git -C ~/dev/py/evalrig worktree remove --force
-  .claude/worktrees/agent-abd2e738dc32c6eda` and `git -C ~/dev/py/evalrig branch -D
-  worktree-agent-abd2e738dc32c6eda`.
-- Delete the superseded remote branch `wip/sec1-extract-dos` (its work landed as 9f5bf03):
-  `git push origin --delete wip/sec1-extract-dos ; git branch -D wip/sec1-extract-dos`.
-- Merge `overnight/1.0` into `main` when you're happy with it (schema is now v4: the first
-  `index` after upgrading rebuilds the graph).
-- Cut the first multi-platform release (tag → draft release → publish), then fill the
-  scoop/winget/brew hashes from its SHA256SUMS. npm publishing needs your npm login; brew needs
-  a `homebrew-tap` repo.
+- Delete the remote branches already merged into `main`: `git push origin --delete
+  overnight/1.0 overnight/m5-ci overnight/sec-supply`.
+- Cut the first multi-platform release: `Cargo.toml` is still 0.1.1 and the only release
+  (v0.1.1) ships just the Windows zip. Bump the version, tag, let the release workflow build
+  the 5 targets, publish, then fill the scoop/winget/brew hashes from its SHA256SUMS. npm
+  publishing needs your npm login; brew needs a `homebrew-tap` repo. Schema is v14: the first
+  `index` after upgrading rebuilds the graph.
 
 ## M1 — accuracy benchmark
 
