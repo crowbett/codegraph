@@ -2908,6 +2908,12 @@ impl Ctx {
             if let types::Typed::Resolved(r) = self.rust_generic_path(e, q) {
                 return r;
             }
+            // `Display::fmt(&x, f)`: the impl of that trait for `x`'s type.
+            if e.kind == EdgeKind::Call {
+                if let Some(r) = self.rust_ufcs(e, q) {
+                    return Some(r);
+                }
+            }
             // `f64::exponent_limit()`: a method of an in-repo trait impl for a primitive,
             // or nothing (std's own).
             if RUST_PRIMITIVES.contains(&q) {

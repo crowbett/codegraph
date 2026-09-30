@@ -767,3 +767,27 @@ fn python_typed_flow() {
     // A function-local import shadows the module-level def of the same name.
     assert_edge(&ix, f, 56, "helper", "pkg.utils.helper", "exact");
 }
+
+#[test]
+fn rust_trait_methods_called_by_path_with_an_explicit_receiver() {
+    let ix = index_fixture("rust_infer");
+    // (target line, confidence) of the call edge named `name` on `line` of ufcs.rs.
+    let target = |line: u32, name: &str| -> Option<(u32, String)> {
+        ix.store
+            .conn()
+            .query_row(
+                "SELECT ts.start_line, e.confidence FROM edges e JOIN files f ON f.id = e.file_id
+                 JOIN symbols ts ON ts.id = e.to_symbol
+                 WHERE f.path = 'src/ufcs.rs' AND e.line = ?1 AND e.name = ?2 AND e.kind = 'call'",
+                rusqlite::params![line, name],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok()
+    };
+    // `fmt::Display::fmt(self, f)`: Code's Display impl, not its Debug impl it sits in.
+    assert_eq!(target(13, "fmt"), Some((6, "exact".into())));
+    // `fmt::Debug::fmt(c, f)` with `c: &Code`: the Debug impl.
+    assert_eq!(target(28, "fmt"), Some((12, "exact".into())));
+    // `Make::make(..)` takes no `self`: its first argument is not a receiver.
+    assert_ne!(target(32, "make"), Some((22, "exact".into())));
+}

@@ -63,3 +63,4 @@ pub mod arr;
 pub mod tmacro;
 pub mod sup;
 pub mod selfdef;
+pub mod ufcs;

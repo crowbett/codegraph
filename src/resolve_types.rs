@@ -3009,6 +3009,50 @@ impl Ctx {
         }
     }
 
+    /// `Trait::m(x, ..)` / `a::Trait::m(x, ..)`: `x.m(..)` among the impls of `Trait` for
+    /// `x`'s type (`Display::fmt(&self.code, f)`, `ser::SerializeSeq::end(self)`). Only
+    /// when the qualifier is no in-repo type with a method `m`, `x`'s type is known and
+    /// exactly one of its methods named `m` implements `Trait`.
+    pub(super) fn rust_ufcs(&self, e: &E, q: &str) -> Option<(usize, Confidence)> {
+        let tr = q.rsplit("::").next()?;
+        if tr == "Self" || !tr.starts_with(|c: char| c.is_ascii_uppercase()) {
+            return None;
+        }
+        if self
+            .by_member
+            .contains_key(&(tr.to_string(), e.name.clone()))
+        {
+            return None;
+        }
+        let h = e.arg.as_deref()?;
+        let Ty::Known(t) = self.bind_val(&self.eval_val(e.file, e.from_symbol, e.line, h, 0), 0)
+        else {
+            return None;
+        };
+        let ts = &self.syms[t];
+        let pkg = &self.files[ts.file].package;
+        let m: Vec<usize> = self
+            .by_member
+            .get(&(ts.name.clone(), e.name.clone()))
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|&m| {
+                let ms = &self.syms[m];
+                self.files[ms.file].package == *pkg
+                    && ms
+                        .fields
+                        .iter()
+                        .any(|(k, v)| k == crate::extract::IMPL_TRAIT && v == tr)
+                    && takes_self(&ms.sig, &ms.name)
+            })
+            .collect();
+        match m[..] {
+            [one] => Some((one, Confidence::Exact)),
+            _ => None,
+        }
+    }
+
     /// Resolve a receiver call through its type hint.
     pub(super) fn resolve_typed(&self, e: &E) -> Typed {
         let Some(hint) = e.hint.as_deref() else {
@@ -3094,9 +3138,55 @@ impl Ctx {
     }
 }
 
+/// Whether a Rust fn's first parameter is `self` (`&self`, `mut self`, `self: Box<Self>`),
+/// read from its one-line signature. A signature whose parameters start on the next line
+/// is taken as a method: rustfmt only breaks long parameter lists, and there `self` leads.
+fn takes_self(sig: &str, name: &str) -> bool {
+    let Some(at) = sig.find(&format!("fn {name}")) else {
+        return false;
+    };
+    let rest = &sig[at..];
+    let Some(open) = rest.find('(') else {
+        return false;
+    };
+    let params = rest[open + 1..].trim_start();
+    if params.is_empty() {
+        return true;
+    }
+    let first = params.split([',', ')']).next().unwrap_or("").trim();
+    let mut t = first.strip_prefix('&').unwrap_or(first).trim_start();
+    if let Some(lt) = t.strip_prefix('\'') {
+        t = lt
+            .trim_start_matches(|c: char| c.is_alphanumeric() || c == '_')
+            .trim_start();
+    }
+    let t = t.strip_prefix("mut ").unwrap_or(t).trim_start();
+    t == "self" || t.starts_with("self:") || t.starts_with("self ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn takes_self_reads_the_first_parameter() {
+        assert!(takes_self(
+            "fn fmt(&self, f: &mut Formatter) -> Result {",
+            "fmt"
+        ));
+        assert!(takes_self("fn end(self) -> Result<Value> {", "end"));
+        assert!(takes_self("pub fn set(&'a mut self, v: u8) {", "set"));
+        assert!(takes_self("fn put_u8(&mut self, n: u8) {", "put_u8"));
+        assert!(takes_self("fn long(", "long"));
+        assert!(!takes_self(
+            "fn deserialize<D>(deserializer: D) -> Result<Value, D::Error>",
+            "deserialize"
+        ));
+        assert!(!takes_self("fn new() -> Self {", "new"));
+        assert!(!takes_self("fn from(n: i32) -> Self {", "from"));
+        assert!(!takes_self("fn f(self_x: u8) {", "f"));
+        assert!(takes_self("fn boxed(self: Box<Self>) {", "boxed"));
+    }
 
     fn name(n: Norm) -> String {
         match n {

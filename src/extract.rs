@@ -523,6 +523,13 @@ fn extract_inner(
         if matches!(sym.kind, SymKind::Function | SymKind::Method) {
             sym.ret = infer.ret_of(node).or_else(|| infer.py_returned(node));
             sym.fields = infer.generic_fields(node);
+            // The trait a Rust impl method implements, for `Trait::m(x)` calls.
+            if let Some(tr) = (lang == Lang::Rust)
+                .then(|| rust_impl_trait(&nav, node, src))
+                .flatten()
+            {
+                sym.fields.push((IMPL_TRAIT.to_string(), tr));
+            }
         } else if lang.is_js_family() && matches!(sym.kind, SymKind::Const | SymKind::Var) {
             // Module-level value: its declared type, else its initializer's.
             let decl = if node.kind() == "variable_declarator" {
@@ -636,9 +643,17 @@ fn extract_inner(
         } else {
             (None, false)
         };
+        // First-argument type: picks among trait-overload impls (`Bytes::from(x)`) and
+        // types a trait method called by path (`Display::fmt(&x, f)`, `ser::Trait::m(self)`).
+        let ufcs = r.qualifier.is_some_and(|q| {
+            !is_dot_receiver(&nav, q)
+                && text(q, src).rsplit("::").next().is_some_and(|last| {
+                    last != "Self" && last.starts_with(|c: char| c.is_ascii_uppercase())
+                })
+        });
         let arg = if lang == Lang::Rust
             && r.kind == EdgeKind::Call
-            && crate::resolve::TRAIT_OVERLOADS.contains(&name.as_str())
+            && (ufcs || crate::resolve::TRAIT_OVERLOADS.contains(&name.as_str()))
         {
             infer.arg_hint(r.name)
         } else {
@@ -1446,6 +1461,20 @@ fn rust_impl_of<'t>(nav: &Nav<'t>, node: Node<'t>, src: &[u8]) -> Option<(String
         base_type_name(text(ty, src)),
         imp.child_by_field_name("trait").is_some(),
     ))
+}
+
+/// `fields` key of a Rust impl method holding its trait's name (a generic parameter cannot
+/// be named `trait`, so it never collides with the `<T>` entries).
+pub(crate) const IMPL_TRAIT: &str = "<trait>";
+
+/// Rust: the trait of the `impl Trait for Type` block a function sits directly in.
+fn rust_impl_trait<'t>(nav: &Nav<'t>, node: Node<'t>, src: &[u8]) -> Option<String> {
+    let list = nav
+        .parent(node)
+        .filter(|l| l.kind() == "declaration_list")?;
+    let imp = nav.parent(list).filter(|i| i.kind() == "impl_item")?;
+    let tr = imp.child_by_field_name("trait")?;
+    Some(base_type_name(text(tr, src))).filter(|t| !t.is_empty())
 }
 
 fn join(prefix: &str, sep: &str, name: &str) -> String {
