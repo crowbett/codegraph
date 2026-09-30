@@ -93,60 +93,60 @@ What that does and does not show:
 ## Results
 
 <!-- results:start -->
-Run `20260926-065449-30ee` · mode **fake** · upstream `fake_llm (scripted, fake-rules.json)` · 31 questions × 2 arms · 2026-09-25 23:54
+Run `20260930-022713-5634` · mode **fake** · upstream `fake_llm (scripted, fake-rules.json)` · 31 questions × 2 arms · 2026-09-29 19:27
 
 | arm | pass rate | tokens total | tokens / question (median) | tool calls / question (mean) | turns / question (mean) | tool output chars (total) | tokens incl. tool schemas (est.) |
 |---|---|---|---|---|---|---|---|
-| grep | 31/31 (100%) | 45,226 | 1,385 | 2.2 | 2.8 | 85,901 | 91,866 |
-| codegraph | 31/31 (100%) | 24,400 | 678 | 1.2 | 2.2 | 22,101 | 125,369 |
+| grep | 31/31 (100%) | 46,521 | 1,430 | 2.2 | 2.8 | 85,901 | 94,481 |
+| codegraph | 31/31 (100%) | 25,408 | 708 | 1.2 | 2.2 | 22,161 | 127,315 |
 
-codegraph / grep total tokens: **0.54×** (tool schemas per turn, est.: grep 530, codegraph 1,507 tokens)
+codegraph / grep total tokens: **0.55×** (tool schemas per turn, est.: grep 545, codegraph 1,521 tokens)
 
 | Q | lang | kind | grep tokens | codegraph tokens | cg/grep | grep calls | cg calls | grep pass | cg pass |
 |---|---|---|---|---|---|---|---|---|---|
-| Q01 | go | callers | 2,042 | 593 | 0.29 | 3 | 1 | yes | yes |
-| Q02 | go | implementations | 2,467 | 703 | 0.28 | 2 | 1 | yes | yes |
-| Q03 | go | methods | 515 | 1,252 | 2.43 | 1 | 2 | yes | yes |
-| Q04 | go | callers | 1,638 | 619 | 0.38 | 3 | 1 | yes | yes |
-| Q05 | go | callees | 1,277 | 823 | 0.64 | 2 | 1 | yes | yes |
-| Q06 | go | impact | 1,412 | 680 | 0.48 | 4 | 1 | yes | yes |
-| Q07 | go | callers | 1,385 | 638 | 0.46 | 3 | 1 | yes | yes |
-| Q08 | go | semantic | 2,521 | 1,742 | 0.69 | 4 | 2 | yes | yes |
-| Q09 | go | definition | 468 | 571 | 1.22 | 1 | 1 | yes | yes |
-| Q10 | rust | callers | 1,796 | 612 | 0.34 | 2 | 1 | yes | yes |
-| Q11 | rust | definition | 462 | 569 | 1.23 | 1 | 1 | yes | yes |
-| Q12 | rust | implementations | 469 | 582 | 1.24 | 1 | 1 | yes | yes |
-| Q13 | rust | callers | 1,382 | 601 | 0.43 | 2 | 1 | yes | yes |
-| Q14 | rust | implementations | 475 | 604 | 1.27 | 1 | 1 | yes | yes |
-| Q15 | rust | callees | 1,129 | 767 | 0.68 | 2 | 1 | yes | yes |
-| Q16 | rust | implementations | 515 | 677 | 1.31 | 1 | 1 | yes | yes |
-| Q17 | rust | semantic | 2,170 | 1,085 | 0.50 | 3 | 2 | yes | yes |
-| Q18 | rust | callers | 2,015 | 630 | 0.31 | 3 | 1 | yes | yes |
-| Q19 | typescript | implementations | 552 | 747 | 1.35 | 1 | 1 | yes | yes |
-| Q20 | typescript | callers | 1,803 | 593 | 0.33 | 3 | 1 | yes | yes |
-| Q21 | typescript | callees | 1,323 | 855 | 0.65 | 2 | 1 | yes | yes |
-| Q22 | typescript | definition | 631 | 678 | 1.07 | 1 | 1 | yes | yes |
-| Q23 | typescript | callers | 1,786 | 614 | 0.34 | 2 | 1 | yes | yes |
-| Q24 | typescript | callers | 1,900 | 612 | 0.32 | 2 | 1 | yes | yes |
-| Q25 | typescript | semantic | 1,834 | 1,080 | 0.59 | 2 | 2 | yes | yes |
-| Q26 | python | impact | 3,477 | 760 | 0.22 | 5 | 1 | yes | yes |
-| Q27 | python | callers | 1,264 | 592 | 0.47 | 3 | 1 | yes | yes |
-| Q28 | python | implementations | 1,219 | 948 | 0.78 | 2 | 1 | yes | yes |
-| Q29 | python | callees | 1,570 | 872 | 0.56 | 2 | 1 | yes | yes |
-| Q30 | python | definition | 471 | 737 | 1.56 | 1 | 1 | yes | yes |
-| Q31 | python | semantic | 3,258 | 1,564 | 0.48 | 4 | 2 | yes | yes |
+| Q01 | go | callers | 2,086 | 623 | 0.30 | 3 | 1 | yes | yes |
+| Q02 | go | implementations | 2,511 | 732 | 0.29 | 2 | 1 | yes | yes |
+| Q03 | go | methods | 544 | 1,296 | 2.38 | 1 | 2 | yes | yes |
+| Q04 | go | callers | 1,681 | 649 | 0.39 | 3 | 1 | yes | yes |
+| Q05 | go | callees | 1,322 | 853 | 0.65 | 2 | 1 | yes | yes |
+| Q06 | go | impact | 1,457 | 710 | 0.49 | 4 | 1 | yes | yes |
+| Q07 | go | callers | 1,430 | 668 | 0.47 | 3 | 1 | yes | yes |
+| Q08 | go | semantic | 2,580 | 1,786 | 0.69 | 4 | 2 | yes | yes |
+| Q09 | go | definition | 497 | 600 | 1.21 | 1 | 1 | yes | yes |
+| Q10 | rust | callers | 1,840 | 642 | 0.35 | 2 | 1 | yes | yes |
+| Q11 | rust | definition | 492 | 598 | 1.22 | 1 | 1 | yes | yes |
+| Q12 | rust | implementations | 499 | 611 | 1.22 | 1 | 1 | yes | yes |
+| Q13 | rust | callers | 1,427 | 646 | 0.45 | 2 | 1 | yes | yes |
+| Q14 | rust | implementations | 504 | 633 | 1.26 | 1 | 1 | yes | yes |
+| Q15 | rust | callees | 1,174 | 796 | 0.68 | 2 | 1 | yes | yes |
+| Q16 | rust | implementations | 543 | 707 | 1.30 | 1 | 1 | yes | yes |
+| Q17 | rust | semantic | 2,228 | 1,130 | 0.51 | 3 | 2 | yes | yes |
+| Q18 | rust | callers | 2,060 | 660 | 0.32 | 3 | 1 | yes | yes |
+| Q19 | typescript | implementations | 582 | 777 | 1.34 | 1 | 1 | yes | yes |
+| Q20 | typescript | callers | 1,846 | 623 | 0.34 | 3 | 1 | yes | yes |
+| Q21 | typescript | callees | 1,368 | 885 | 0.65 | 2 | 1 | yes | yes |
+| Q22 | typescript | definition | 661 | 708 | 1.07 | 1 | 1 | yes | yes |
+| Q23 | typescript | callers | 1,830 | 644 | 0.35 | 2 | 1 | yes | yes |
+| Q24 | typescript | callers | 1,944 | 641 | 0.33 | 2 | 1 | yes | yes |
+| Q25 | typescript | semantic | 1,877 | 1,124 | 0.60 | 2 | 2 | yes | yes |
+| Q26 | python | impact | 3,537 | 790 | 0.22 | 5 | 1 | yes | yes |
+| Q27 | python | callers | 1,308 | 622 | 0.48 | 3 | 1 | yes | yes |
+| Q28 | python | implementations | 1,263 | 977 | 0.77 | 2 | 1 | yes | yes |
+| Q29 | python | callees | 1,614 | 901 | 0.56 | 2 | 1 | yes | yes |
+| Q30 | python | definition | 500 | 767 | 1.53 | 1 | 1 | yes | yes |
+| Q31 | python | semantic | 3,316 | 1,609 | 0.49 | 4 | 2 | yes | yes |
 
 Median per-question token ratio codegraph/grep: **0.56** (codegraph cheaper on 22/31 questions).
 
 | question kind | n | median cg/grep token ratio |
 |---|---|---|
 | callees | 4 | 0.65 |
-| callers | 10 | 0.34 |
-| definition | 4 | 1.23 |
-| impact | 2 | 0.35 |
-| implementations | 6 | 1.26 |
-| methods | 1 | 2.43 |
-| semantic | 4 | 0.54 |
+| callers | 10 | 0.35 |
+| definition | 4 | 1.21 |
+| impact | 2 | 0.36 |
+| implementations | 6 | 1.24 |
+| methods | 1 | 2.38 |
+| semantic | 4 | 0.55 |
 <!-- results:end -->
 
 ## Run it

@@ -308,18 +308,18 @@ token spend. **Read the numbers honestly:**
 
 | arm | pass rate | tokens total (messages) | tokens / question (median) | tokens incl. tool schemas (est.) |
 |---|---|---:|---:|---:|
-| grep | 31/31 (100%) | 45,226 | 1,385 | 91,866 |
-| codegraph | 31/31 (100%) | 24,400 | 678 | 125,369 |
+| grep | 31/31 (100%) | 46,521 | 1,430 | 94,481 |
+| codegraph | 31/31 (100%) | 25,408 | 708 | 127,315 |
 
 - **This run used a scripted fake LLM, not a real model.** The 100%/100% pass rate proves
   the harness and grading work, not that a real agent is equally correct on both arms — the
   fake cannot get anything wrong. A real-model run is written but not yet executed (needs
   `ANTHROPIC_API_KEY`; see the doc for the estimate-then-run commands and a proxy-enforced
   $5 cap).
-- **Content tokens favor codegraph, 0.54× of grep's**, on these scripted, well-aimed tool
+- **Content tokens favor codegraph, 0.55× of grep's**, on these scripted, well-aimed tool
   paths. But the codegraph MCP server ships 10 tool schemas resent on every turn (~1.5k
-  tokens) against grep's 3 (~530), so **including schema overhead the codegraph arm's raw
-  total is 1.36× grep's** for this question set — prompt caching would offset most of
+  tokens) against grep's 3 (~545), so **including schema overhead the codegraph arm's raw
+  total is 1.35× grep's** for this question set — prompt caching would offset most of
   that in practice, but it isn't measured here.
 - Tokens reflect real tool output sizes along realistic tool-call paths (the proxy actually
   executes every call against the real `codegraph mcp` server and the corpus); they do not
