@@ -795,9 +795,9 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
             }
         }
     }
-    // Go: go/types' own pairs (bench/gotruth) complete scip-go's, which misses some
-    // cross-package implementations. Either source is ground truth.
-    if let Ok(text) = std::fs::read_to_string(dirs.goimpl(&r.name)) {
+    // The language's own pairs (Go: go/types via bench/gotruth; Python: the runtime MRO via
+    // bench/pytruth.py) complete the SCIP indexers', which miss some. Either is ground truth.
+    if let Ok(text) = std::fs::read_to_string(dirs.impl_truth(&r.name)) {
         let at = |path: &str, line: &str, name: &str| -> Option<i64> {
             let fid = *cg.by_path.get(path)?;
             let line: u32 = line.parse().ok()?;
@@ -818,7 +818,9 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
             };
             if let (Some(ca), Some(cb)) = (at(tp, tl, tn), at(ip, il, iname)) {
                 if gt_pairs.insert((ca, cb)) {
-                    gt_fam.insert((ca, cb), "go");
+                    if let Some(f) = fam_of(cg.syms[&ca].file) {
+                        gt_fam.insert((ca, cb), f);
+                    }
                 }
             }
         }

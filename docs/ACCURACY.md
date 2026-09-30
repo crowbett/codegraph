@@ -13,7 +13,7 @@ language's semantic indexer, which resolves every reference the way the compiler
 | Go | scip-go 0.2.7 + go/types (`bench/gotruth`) | implementations from either (scip-go misses some cross-package ones) |
 | Rust | `rust-analyzer scip` (toolchain's) | emits no implementation relationships, so Rust impl edges are unscored |
 | TypeScript/JS | scip-typescript 0.4.0 | `npm install` runs in the clone first so types resolve |
-| Python | scip-python 0.6.6 | patched locally for a Windows `path.sep` regex crash; `src/` layout passed via `pyrightconfig.json` `extraPaths` |
+| Python | scip-python 0.6.6 + runtime MRO (`bench/pytruth.py`) | patched locally for a Windows `path.sep` regex crash; `src/` layout passed via `pyrightconfig.json` `extraPaths` |
 
 **Corpus** (`bench/corpus.toml`): 16 repos pinned to commits, cloned into the gitignored
 `.cache/bench/` so the originals are never touched. Ten public and six of the author's kit
@@ -91,13 +91,14 @@ the v0.1.1 baseline was re-scored with the fixed harness so deltas stay comparab
 - Go implementations: scip-go misses some (echo's 22 cross-package value-receiver
   `XConfig -> MiddlewareConfigurator` pairs), so `prepare` also runs `bench/gotruth`, which
   asks go/types (`types.Implements`, on `T` and `*T`, inside each package's own
-  compilation, test variants included) for every in-module type/interface pair. A pair
+  compilation, test variants included) for every in-module type/interface pair. Python
+  likewise: `bench/pytruth.py` imports the repo's modules and reads every in-repo class's
+  `__mro__` (modules that fail to import, like tests needing pytest, add nothing). A pair
   either source reports is ground truth. Added on 2026-09-29; the baseline was re-scored.
 - Known ground-truth gaps, still scored as false: generic Go types and interfaces
   (`uintValue[T] -> ValueCreator[T, C]`: `Implements` cannot check uninstantiated generics
-  and scip-go records nothing for them), and scip-python drops some direct subclass pairs it
-  records one level down (`BadParameter(UsageError)` is missing while
-  `MissingParameter -> BadParameter` is present).
+  and scip-go records nothing for them), and scip-python's missing subclass pairs in
+  modules the runtime check cannot import (click's tests need pytest).
 - Fields and Rust enum variants are not codegraph symbols and are excluded; rust-analyzer emits
   no implementation relationships, so Rust impl edges are unscored.
 

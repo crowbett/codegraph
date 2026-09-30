@@ -67,9 +67,10 @@ impl Dirs {
     pub fn scip(&self, name: &str) -> PathBuf {
         self.cache.join("scip").join(format!("{name}.scip"))
     }
-    /// go/types implementation pairs of a Go repo (bench/gotruth), next to its SCIP index.
-    pub fn goimpl(&self, name: &str) -> PathBuf {
-        self.cache.join("scip").join(format!("{name}.goimpl.tsv"))
+    /// Implementation pairs from the language itself (Go: go/types via bench/gotruth,
+    /// Python: the runtime MRO via bench/pytruth.py), next to the repo's SCIP index.
+    pub fn impl_truth(&self, name: &str) -> PathBuf {
+        self.cache.join("scip").join(format!("{name}.impl.tsv"))
     }
     fn tools(&self) -> PathBuf {
         self.cache.join("tools")
@@ -331,20 +332,32 @@ pub fn prepare(dirs: &Dirs, only: &[String], force: bool) -> Result<()> {
             scip_index(dirs, r)?;
             std::fs::write(&stamp, &r.rev)?;
         }
-        let goimpl = dirs.goimpl(&r.name);
-        if r.lang == "go" && (!fresh || !goimpl.is_file()) {
-            eprintln!("{}: go/types implementations", r.name);
-            let mut c = Command::new(dirs.tools().join("go").join(exe("gotruth")));
-            c.arg(dirs.corpus(&r.name));
-            let o = c.output().context("run gotruth")?;
+        let truth = dirs.impl_truth(&r.name);
+        if matches!(r.lang.as_str(), "go" | "python") && (!fresh || !truth.is_file()) {
+            eprintln!("{}: implementations from {}", r.name, r.lang);
+            let repo = dirs.corpus(&r.name);
+            let mut c = if r.lang == "go" {
+                let mut c = Command::new(dirs.tools().join("go").join(exe("gotruth")));
+                c.arg(&repo);
+                c
+            } else {
+                let mut c = Command::new("python");
+                c.arg(dirs.bench.join("pytruth.py")).arg(&repo);
+                c.args(&r.py_extra_paths);
+                if repo.join("tests").is_dir() {
+                    c.arg("tests");
+                }
+                c
+            };
+            let o = c.output().context("run implementation truth")?;
             if !o.status.success() {
                 bail!(
-                    "gotruth {}: {}",
+                    "implementation truth {}: {}",
                     r.name,
                     String::from_utf8_lossy(&o.stderr).trim()
                 );
             }
-            std::fs::write(&goimpl, &o.stdout)?;
+            std::fs::write(&truth, &o.stdout)?;
         }
     }
     Ok(())
