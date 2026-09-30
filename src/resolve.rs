@@ -191,6 +191,8 @@ struct Scope {
     any_import: bool,
     /// Python: (line, local name) of every import, to spot function-local imports.
     import_lines: Vec<(u32, String)>,
+    /// Original names of `names` (`use a::Tr as _` binds `Tr`), filled after pass 1.
+    originals: HashSet<String>,
 }
 
 struct Ctx {
@@ -1360,10 +1362,11 @@ fn resolve_edges(
         .map(|(i, n)| (n.clone(), i as u32))
         .collect();
     ctx.ext_names = ext;
-    for (fi, scope) in scopes.iter().enumerate() {
+    for (fi, scope) in scopes.iter_mut().enumerate() {
         for (orig, _) in scope.names.values() {
             ctx.mentioned[fi].insert(orig.clone());
         }
+        scope.originals = scope.names.values().map(|(o, _)| o.clone()).collect();
     }
     ctx.scopes = scopes;
     let ctx: &Ctx = ctx;
@@ -2899,9 +2902,7 @@ impl Ctx {
             });
         tr.is_none_or(|t| {
             let t = t.rsplit("::").next().unwrap_or(t);
-            scope.names.contains_key(t)
-                || scope.names.values().any(|(orig, _)| orig == t)
-                || !scope.globs.is_empty()
+            scope.names.contains_key(t) || scope.originals.contains(t) || !scope.globs.is_empty()
         })
     }
 

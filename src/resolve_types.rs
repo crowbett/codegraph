@@ -1785,19 +1785,30 @@ impl Ctx {
 
     /// Whether type `t` or one of its bases declares a field (a class attribute, not a
     /// symbol) named `name`: the member is there, just not as a method.
-    fn declares_field(&self, t: usize, name: &str, d: u8) -> bool {
-        let s = &self.syms[t];
-        if s.fields.iter().any(|(k, _)| k == name) {
-            return true;
+    fn declares_field(&self, t: usize, name: &str) -> bool {
+        // Breadth-first over base names, each type visited once and at most 64 of them:
+        // bases are keyed by name, so a big repo's same-named classes branch widely (a
+        // depth-limited recursion without a visited set was exponential on rust-lang/rust's
+        // Python).
+        let mut seen: HashSet<usize> = HashSet::from([t]);
+        let mut queue = std::collections::VecDeque::from([t]);
+        while let Some(x) = queue.pop_front() {
+            let s = &self.syms[x];
+            if s.fields.iter().any(|(k, _)| k == name) {
+                return true;
+            }
+            for b in self.bases.get(&s.name).into_iter().flatten() {
+                for &bt in self.by_name.get(b).into_iter().flatten() {
+                    if self.syms[bt].kind.is_type_like() && seen.insert(bt) {
+                        if seen.len() > 64 {
+                            return false;
+                        }
+                        queue.push_back(bt);
+                    }
+                }
+            }
         }
-        d < 4
-            && self.bases.get(&s.name).into_iter().flatten().any(|b| {
-                self.by_name.get(b).into_iter().flatten().any(|&bt| {
-                    bt != t
-                        && self.syms[bt].kind.is_type_like()
-                        && self.declares_field(bt, name, d + 1)
-                })
-            })
+        false
     }
 
     fn field_of(&self, t: usize, name: &str, seen: &mut HashSet<usize>, d: u8) -> Val {
@@ -3250,7 +3261,7 @@ impl Ctx {
                         });
                 if found.is_none()
                     && self.files[e.file].lang == Lang::Python
-                    && !self.declares_field(t, &e.name, 0)
+                    && !self.declares_field(t, &e.name)
                 {
                     // Not on the static type: an `isinstance` narrowing to a subclass.
                     return Typed::Resolved(

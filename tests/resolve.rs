@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{edge, index_fixture};
+use common::{edge, index_dir, index_fixture};
 
 fn assert_edge(ix: &common::Indexed, file: &str, line: u32, name: &str, qname: &str, conf: &str) {
     let got = edge(&ix.store, file, line, name);
@@ -803,4 +803,39 @@ fn rust_trait_impls_of_another_workspace_crate_do_not_apply() {
     assert_eq!(edge(&ix.store, "a/src/lib.rs", 7, "len"), None);
     // Inside `b` the trait is its own.
     assert!(edge(&ix.store, "b/src/lib.rs", 17, "len").is_some());
+}
+
+#[test]
+fn many_same_named_base_classes_resolve_in_bounded_time() {
+    // 80 classes all named `Node`, each deriving from `Node`, and typed calls of a method
+    // none has: the field check behind Python's subclass fallback walks bases by name.
+    // Unbounded, that walk branched 80-fold per level (minutes; rust-lang/rust's Python hung).
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join(".git")).unwrap();
+    let mut src = String::new();
+    for i in 0..80 {
+        src.push_str(&format!(
+            "class Node(Node):
+    x{i} = 0
+
+"
+        ));
+    }
+    for i in 0..40 {
+        src.push_str(&format!(
+            "def f{i}(n: Node):
+    return n.missing()
+
+"
+        ));
+    }
+    std::fs::write(dir.path().join("nodes.py"), src).unwrap();
+    let t = std::time::Instant::now();
+    let ix = index_dir(dir.path());
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(20),
+        "{:?}",
+        t.elapsed()
+    );
+    assert_eq!(edge(&ix.store, "nodes.py", 162, "missing"), None);
 }
