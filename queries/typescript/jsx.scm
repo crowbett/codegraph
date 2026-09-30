@@ -8,3 +8,7 @@
 
 (jsx_closing_element
   name: (identifier) @name) @reference.call
+
+; `onClick={handler}`
+(jsx_expression
+  (identifier) @name) @reference.value

@@ -165,3 +165,29 @@
 (export_clause
   (export_specifier
     name: (identifier) @name)) @reference.value
+
+; more value positions: `cond ? A : B`, `(f)`, `...rest`, class field initializers
+; (`handler = onClick`), bare decorators (`@observer`)
+(ternary_expression
+  consequence: (identifier) @name) @reference.value
+
+(ternary_expression
+  alternative: (identifier) @name) @reference.value
+
+(parenthesized_expression
+  (identifier) @name) @reference.value
+
+(spread_element
+  (identifier) @name) @reference.value
+
+(decorator
+  (identifier) @name) @reference.value
+
+(field_definition
+  value: (identifier) @name) @reference.value
+
+(jsx_expression
+  (identifier) @name) @reference.value
+
+(jsx_closing_element
+  name: (identifier) @name) @reference.call

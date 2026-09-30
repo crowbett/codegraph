@@ -36,4 +36,5 @@ edges:
   src/index.ts:21 value src.registry: add => math.add (exact)
   src/index.ts:22 value src.isApp: App => src.App (exact)
   src/index.ts:24 value src.pick: helper => math.helper (exact)
+  src/index.ts:25 value src.pick: App => src.App (exact)
   src/lib/strings.ts:12 call strings.Greeter.greet: this.format => strings.Greeter.format (exact)
