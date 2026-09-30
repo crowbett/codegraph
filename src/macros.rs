@@ -44,6 +44,9 @@ struct Tok {
     text: String,
     /// Directly after the previous token of its source (no whitespace between).
     glued: bool,
+    /// A line break precedes it in its source (kept in expansions, so a definition's
+    /// signature is its own line).
+    newline: bool,
     /// Byte offset in the source being expanded, when the token comes from there.
     origin: Option<usize>,
 }
@@ -131,6 +134,17 @@ fn is_delim(s: &str) -> bool {
     matches!(s, "(" | ")" | "[" | "]" | "{" | "}")
 }
 
+/// Comments come through as tokens of a token tree; an expansion is one text, so a `//`
+/// kept in it would comment out the rest.
+fn is_comment(n: Node<'_>) -> bool {
+    matches!(n.kind(), "line_comment" | "block_comment")
+}
+
+/// Whether `src[from..to]` holds a line break.
+fn breaks(src: &[u8], from: usize, to: usize) -> bool {
+    src.get(from..to).is_some_and(|b| b.contains(&b'\n'))
+}
+
 // ---- reading the tree ----------------------------------------------------------------
 
 /// Tokens between the delimiters of a `token_tree`.
@@ -143,34 +157,42 @@ fn tts_of(group: Node<'_>, src: &[u8]) -> Vec<Tt> {
     };
     let mut prev_end = ch.first().map_or(group.start_byte(), Node::end_byte);
     let mut out = Vec::with_capacity(inner.len());
-    for &c in inner {
+    for &c in inner.iter().filter(|c| !is_comment(**c)) {
         let glued = c.start_byte() == prev_end;
+        let newline = breaks(src, prev_end, c.start_byte());
         prev_end = c.end_byte();
-        out.push(tt_of(c, glued, src));
+        out.push(tt_of(c, glued, newline, src));
     }
     out
 }
 
-fn tt_of(n: Node<'_>, glued: bool, src: &[u8]) -> Tt {
+fn tt_of(n: Node<'_>, glued: bool, newline: bool, src: &[u8]) -> Tt {
     if n.kind() == "token_tree" {
         let ch = children(n);
         if let (Some(first), Some(last)) = (ch.first(), ch.last()) {
             if is_delim(first.kind()) && ch.len() >= 2 {
+                let before_close = ch[ch.len() - 2].end_byte();
                 return Tt::Group {
-                    open: leaf(*first, glued, src),
-                    close: leaf(*last, false, src),
+                    open: leaf(*first, glued, newline, src),
+                    close: leaf(
+                        *last,
+                        false,
+                        breaks(src, before_close, last.start_byte()),
+                        src,
+                    ),
                     inner: tts_of(n, src),
                 };
             }
         }
     }
-    Tt::Leaf(leaf(n, glued, src))
+    Tt::Leaf(leaf(n, glued, newline, src))
 }
 
-fn leaf(n: Node<'_>, glued: bool, src: &[u8]) -> Tok {
+fn leaf(n: Node<'_>, glued: bool, newline: bool, src: &[u8]) -> Tok {
     Tok {
         text: text(n, src).to_string(),
         glued,
+        newline,
         origin: Some(n.start_byte()),
     }
 }
@@ -178,7 +200,7 @@ fn leaf(n: Node<'_>, glued: bool, src: &[u8]) -> Tok {
 /// Matcher of a `token_tree_pattern` / the inside of a `token_repetition_pattern`.
 fn pats_of(nodes: &[Node<'_>], src: &[u8]) -> Vec<Pat> {
     let mut out = Vec::new();
-    for &c in nodes {
+    for &c in nodes.iter().filter(|c| !is_comment(**c)) {
         match c.kind() {
             "token_binding_pattern" => {
                 let name = c
@@ -246,12 +268,14 @@ fn repetition<'t>(n: Node<'t>, src: &[u8]) -> (Vec<Node<'t>>, Option<String>, St
 /// Transcriber tokens of a `token_tree` / the inside of a `token_repetition`.
 fn trs_of(nodes: &[Node<'_>], mut prev_end: usize, src: &[u8]) -> Vec<Tr> {
     let mut out = Vec::new();
-    for &c in nodes {
+    for &c in nodes.iter().filter(|c| !is_comment(**c)) {
         let glued = c.start_byte() == prev_end;
+        let newline = breaks(src, prev_end, c.start_byte());
         prev_end = c.end_byte();
         let tok = |n: Node<'_>, glued: bool| Tok {
             text: text(n, src).to_string(),
             glued,
+            newline: newline && !glued,
             origin: None,
         };
         match c.kind() {
@@ -267,6 +291,7 @@ fn trs_of(nodes: &[Node<'_>], mut prev_end: usize, src: &[u8]) -> Vec<Tr> {
                     sep: sep.map(|text| Tok {
                         text,
                         glued: true,
+                        newline: false,
                         origin: None,
                     }),
                 });
@@ -276,7 +301,10 @@ fn trs_of(nodes: &[Node<'_>], mut prev_end: usize, src: &[u8]) -> Vec<Tr> {
                 if ch.len() >= 2 && is_delim(ch[0].kind()) {
                     out.push(Tr::Group {
                         open: tok(ch[0], glued),
-                        close: tok(ch[ch.len() - 1], false),
+                        close: tok(
+                            ch[ch.len() - 1],
+                            ch[ch.len() - 1].start_byte() == ch[ch.len() - 2].end_byte(),
+                        ),
                         inner: trs_of(&ch[1..ch.len() - 1], ch[0].end_byte(), src),
                     });
                 } else {
@@ -477,12 +505,15 @@ fn is_ident(s: &str) -> bool {
 }
 
 fn is_literal(s: &str) -> bool {
-    s.starts_with(|c: char| c.is_ascii_digit() || c == '"' || c == '\'')
-        || s.starts_with("b\"")
-        || s.starts_with("b'")
-        || s.starts_with("r\"")
-        || s.starts_with("r#")
-        || s.starts_with("br")
+    // `'a'` is a char, `'a` a lifetime; `r#"` a raw string, `r#type` a raw identifier.
+    let char_lit = s.len() >= 3 && s.starts_with('\'') && s.ends_with('\'');
+    s.starts_with(|c: char| c.is_ascii_digit() || c == '"')
+        || char_lit
+        || [
+            "b\"", "b'", "r\"", "r#\"", "r##", "br\"", "br#", "c\"", "cr\"", "cr#",
+        ]
+        .iter()
+        .any(|p| s.starts_with(p))
         || matches!(s, "true" | "false")
 }
 
@@ -585,8 +616,12 @@ struct Out {
 
 impl Out {
     fn tok(&mut self, t: &Tok, glued: bool) {
+        self.put(t, glued, t.newline);
+    }
+
+    fn put(&mut self, t: &Tok, glued: bool, newline: bool) {
         if !glued && !self.text.is_empty() {
-            self.text.push(' ');
+            self.text.push(if newline { '\n' } else { ' ' });
         }
         if let Some(o) = t.origin {
             self.map.push((self.text.len(), o));
@@ -594,14 +629,24 @@ impl Out {
         self.text.push_str(&t.text);
     }
 
-    fn tts(&mut self, tts: &[Tt], first_glued: bool) {
+    /// A fragment's tokens; the first is spaced like `lead` (the `$var` it replaces), or
+    /// glued when there is none (the inside of a group).
+    fn tts(&mut self, tts: &[Tt], lead: Option<&Tok>) {
         for (i, t) in tts.iter().enumerate() {
-            let g = |k: &Tok| if i == 0 { first_glued } else { k.glued };
+            let space = |k: &Tok| match (i, lead) {
+                (0, Some(l)) => (l.glued, l.newline),
+                (0, None) => (true, false),
+                _ => (k.glued, k.newline),
+            };
             match t {
-                Tt::Leaf(k) => self.tok(k, g(k)),
+                Tt::Leaf(k) => {
+                    let (g, n) = space(k);
+                    self.put(k, g, n);
+                }
                 Tt::Group { open, close, inner } => {
-                    self.tok(open, g(open));
-                    self.tts(inner, true);
+                    let (g, n) = space(open);
+                    self.put(open, g, n);
+                    self.tts(inner, None);
                     self.tok(close, close.glued || inner.is_empty());
                 }
             }
@@ -646,13 +691,14 @@ fn transcribe(trs: &[Tr], binds: &Binds, idx: &mut Vec<usize>, out: &mut Out) ->
         match t {
             Tr::Tok(k) => out.tok(k, k.glued),
             Tr::Var(name, k) => match lookup(binds, name, idx) {
-                Some(Bind::One(tts)) => out.tts(tts, k.glued),
+                Some(Bind::One(tts)) => out.tts(tts, Some(k)),
                 Some(Bind::Seq(_)) => return None,
                 // `$crate` and unbound names stay as written (`$crate` -> `crate`).
                 None if name == "crate" => out.tok(
                     &Tok {
                         text: "crate".into(),
                         glued: k.glued,
+                        newline: k.newline,
                         origin: None,
                     },
                     k.glued,
@@ -756,15 +802,25 @@ pub(crate) fn expand_file(
     if depth >= MAX_DEPTH {
         return;
     }
-    let mut table = outer.map(|c| c.macros.clone()).unwrap_or_default();
-    if memchr_str(src, b"macro_rules") {
-        definitions(root, src, &mut table);
-    }
+    // The enclosing file's macros, plus this source's own when it defines any (only then
+    // is the table copied: an expansion rarely defines macros).
+    let owned: Macros;
+    let table: &Macros = if memchr_str(src, b"macro_rules") {
+        let mut t = outer.map(|c| c.macros.clone()).unwrap_or_default();
+        definitions(root, src, &mut t);
+        owned = t;
+        &owned
+    } else {
+        match outer {
+            Some(c) => c.macros,
+            None => return,
+        }
+    };
     if table.rules.is_empty() {
         return;
     }
     let mut invocations: Vec<Inv<'_>> = Vec::new();
-    known_invocations(root, src, &table, &mut invocations);
+    known_invocations(root, src, table, &mut invocations);
     if invocations.is_empty() {
         return;
     }
@@ -772,7 +828,7 @@ pub(crate) fn expand_file(
     let own_budget = Cell::new(MAX_EXPANSIONS);
     let budget = outer.map_or(&own_budget, |c| c.budget);
     let ctx = Ctx {
-        macros: &table,
+        macros: table,
         depth: depth + 1,
         budget,
     };
@@ -786,6 +842,8 @@ pub(crate) fn expand_file(
     while let Some(&inv) = invocations.get(next) {
         next += 1;
         if start.elapsed() > crate::extract::HINT_BUDGET || budget.get() == 0 {
+            // Some invocations stay unexpanded: the graph depends on timing.
+            facts.limited = true;
             break;
         }
         budget.set(budget.get() - 1);
@@ -801,7 +859,7 @@ pub(crate) fn expand_file(
             Some(out)
         }) else {
             // Not expandable: invocations among its arguments still are, on their own.
-            known_invocations(args, src, &table, &mut invocations);
+            known_invocations(args, src, table, &mut invocations);
             continue;
         };
         if out.map.is_empty() {
@@ -812,6 +870,7 @@ pub(crate) fn expand_file(
         let Ok(sub) = crate::extract::extract_expansion(synthetic.as_bytes(), start, &ctx) else {
             continue;
         };
+        facts.limited |= sub.limited;
         let map = |at: usize| at.checked_sub(head.len()).and_then(|x| out.origin(x));
         splice(
             facts,
@@ -925,11 +984,14 @@ fn splice(
             kept.insert(i, g);
             continue;
         }
-        // The definition is its name token at the invocation.
+        // The definition is its name token at the invocation. Its byte span is the whole
+        // invocation: symbols are ordered by span, and an expansion may name a child before
+        // its parent (`m!(inner, outer)` -> `mod outer { fn inner() {} }`); sharing one
+        // span keeps them in the expansion's own (parent-first) order.
         let end = o + s.name.len();
         (s.start_line, s.start_col) = line_col(starts, o);
         (s.end_line, s.end_col) = line_col(starts, end);
-        (s.start_byte, s.end_byte, s.name_byte) = (o, end, o);
+        (s.start_byte, s.end_byte, s.name_byte) = (inv.start_byte(), inv.end_byte(), o);
         let own_q = std::mem::take(&mut s.local_qname);
         if let Some((p, g)) = s.parent.and_then(|p| kept.get(&p).map(|&g| (p, g))) {
             s.parent = Some(g);
@@ -1111,6 +1173,68 @@ m!({deep}, shallow_fn);
 ",
         );
         assert_eq!(sym(&f, "inner_fn").start_line, 3);
+    }
+
+    #[test]
+    fn comments_inside_macros_do_not_swallow_the_expansion() {
+        let f = facts(
+            "struct De;
+             macro_rules! num {
+                 // one method per call
+                 ($m:ident) => {
+                     /// Deserialize a number.
+                     fn $m(&self) -> u8 { 0 } // the default
+                 };
+             }
+             impl De {
+                 num!(/* signed */ deserialize_i8);
+             }
+",
+        );
+        assert_eq!(sym(&f, "deserialize_i8").start_line, 10);
+    }
+
+    #[test]
+    fn a_child_named_before_its_parent_keeps_its_parent() {
+        let f = facts(
+            "macro_rules! m { ($f:ident, $m:ident) => { pub mod $m { pub fn $f() {} } }; }
+             m!(inner_fn, outer_mod);
+",
+        );
+        let inner = sym(&f, "inner_fn");
+        let parent = inner.parent.map(|p| f.symbols[p].name.as_str());
+        assert_eq!(parent, Some("outer_mod"));
+        assert!(inner.parent.is_some_and(|p| {
+            f.symbols
+                .iter()
+                .position(|s| s.name == "inner_fn")
+                .is_some_and(|i| p < i)
+        }));
+    }
+
+    #[test]
+    fn expanded_definitions_have_their_own_signature_line() {
+        let f = facts(
+            "macro_rules! two {
+                 ($a:ident, $b:ident) => {
+                     fn $a() {}
+                     fn $b(x: u8) -> u8 { x }
+                 };
+             }
+             two!(first, second);
+",
+        );
+        assert_eq!(sym(&f, "second").signature, "fn second(x: u8) -> u8 { x }");
+    }
+
+    #[test]
+    fn literal_fragments_are_literals() {
+        assert!(
+            super::is_literal("1u8") && super::is_literal("'a'") && super::is_literal("r#\"x\"#")
+        );
+        assert!(
+            !super::is_literal("'a") && !super::is_literal("break") && !super::is_literal("r#type")
+        );
     }
 
     #[test]

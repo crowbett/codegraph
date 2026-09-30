@@ -204,6 +204,8 @@ struct RefCand<'t> {
     impl_for: Option<Node<'t>>,
     /// The name as bound by an import statement: resolved only through that binding.
     binding: bool,
+    /// The local name an aliased import binds it to (`use a::B as C` -> `C`).
+    alias: Option<Node<'t>>,
 }
 
 fn text<'a>(node: Node<'_>, src: &'a [u8]) -> &'a str {
@@ -458,6 +460,7 @@ fn extract_inner(
                     qualifier,
                     impl_for,
                     binding: false,
+                    alias: None,
                 };
                 let key = name.start_byte();
                 let better = match refs.get(&key) {
@@ -479,6 +482,7 @@ fn extract_inner(
                         qualifier: None,
                         impl_for: None,
                         binding: true,
+                        alias: binding_alias(&nav, name),
                     },
                 );
             }
@@ -641,7 +645,11 @@ fn extract_inner(
         let from = enclosing(&facts.symbols, r.name.start_byte());
         let from_name = r.impl_for.map(|n| base_type_name(text(n, src)));
         let (hint, dot) = if r.binding {
-            (Some(crate::infer::BINDING.to_string()), false)
+            let hint = match r.alias {
+                Some(a) => format!("{}:{}", crate::infer::BINDING, text(a, src)),
+                None => crate::infer::BINDING.to_string(),
+            };
+            (Some(hint), false)
         } else if matches!(r.kind, EdgeKind::Call | EdgeKind::Value) {
             match r.qualifier {
                 // A Rust path qualifier (`m::f`, `Type::f`) is never a value.
@@ -1495,18 +1503,39 @@ fn rust_impl_of<'t>(nav: &Nav<'t>, node: Node<'t>, src: &[u8]) -> Option<(String
     ))
 }
 
+/// The alias of the import clause holding binding name `name` (`use a::B as C`,
+/// `import { b as c }`, `from m import d as e`, `export { f as g } from`).
+fn binding_alias<'t>(nav: &Nav<'t>, name: Node<'t>) -> Option<Node<'t>> {
+    let mut cur = nav.parent(name);
+    for _ in 0..3 {
+        let n = cur?;
+        if matches!(
+            n.kind(),
+            "use_as_clause" | "import_specifier" | "aliased_import" | "export_specifier"
+        ) {
+            return n.child_by_field_name("alias");
+        }
+        cur = nav.parent(n);
+    }
+    None
+}
+
 /// `fields` key of a Rust impl method holding its trait's name (a generic parameter cannot
 /// be named `trait`, so it never collides with the `<T>` entries).
 pub(crate) const IMPL_TRAIT: &str = "<trait>";
 
-/// Rust: the trait of the `impl Trait for Type` block a function sits directly in.
+/// Rust: the trait of the `impl Trait for Type` block a function sits directly in, as its
+/// path is written.
 fn rust_impl_trait<'t>(nav: &Nav<'t>, node: Node<'t>, src: &[u8]) -> Option<String> {
     let list = nav
         .parent(node)
         .filter(|l| l.kind() == "declaration_list")?;
     let imp = nav.parent(list).filter(|i| i.kind() == "impl_item")?;
-    let tr = imp.child_by_field_name("trait")?;
-    Some(base_type_name(text(tr, src))).filter(|t| !t.is_empty())
+    // The path as written, generics dropped (`de::Deserializer<'de>` -> `de::Deserializer`):
+    // `fmt::Write` and `io::Write` must stay apart.
+    let tr = text(imp.child_by_field_name("trait")?, src);
+    let tr = tr[..tr.find('<').unwrap_or(tr.len())].trim();
+    Some(tr.to_string()).filter(|t| !t.is_empty())
 }
 
 fn join(prefix: &str, sep: &str, name: &str) -> String {

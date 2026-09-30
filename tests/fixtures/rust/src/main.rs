@@ -19,3 +19,5 @@ use store::Kind;
 fn run<B: Backend>(b: &B) -> usize {
     b.load()
 }
+use fmt::Error as FmtError;
+use store::Kind as Error;

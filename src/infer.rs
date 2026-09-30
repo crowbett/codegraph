@@ -18,7 +18,11 @@
 //! | `N:<guard>@<hint>` | a variable narrowed by type guard `<guard>` (see JS/TS narrowing), else `<hint>` |
 //! | `O:<a>-<b>` | JS/TS: the object literal / inline object type on lines `a..=b` of the file the hint belongs to (a parameter typed `{ m(): X }`, or the return of an unannotated function returning `{ m() {..} }`): its methods are the method symbols written there (the first on the line when two such types share one) |
 //! | `L` | a local variable or parameter with no known type (never a repo symbol) |
-//! | `I` | ([`BINDING`]) not a type: the reference is the name inside an import statement (`use a::B`, `import { b }`, `from m import c`); it resolves only through that import's binding, never by name |
+//! | `I:<n>@<hint>` | Python: element `n` of the tuple `<hint>` (`for a, b in xs`) |
+//! | `P:<n>@<method>` | Python: untyped parameter `n` of `<method>`, typed by the same position in a base class's `<method>` |
+//! | `V:<hint>` | Python: a value of the collection `<hint>` (`d[k]`: `dict[K, V]` -> `V`) |
+//! | `D:<hint>` | Python: a decorated `def`, as the decorator's result |
+//! | `U` / `U:<local>` | ([`BINDING`]) not a type: the reference is the name inside an import statement (`use a::B`, `import { b }`, `from m import c`); it resolves only through the binding that import makes, under `<local>` when aliased (`use a::B as C` -> `U:C`), never by name |
 //!
 //! Go package-level vars and consts store their type hint as the symbol's `ret` (the
 //! written type, else the initializer's hint). A var bound to a function
@@ -92,10 +96,19 @@ use tree_sitter::Node;
 
 use crate::lang::Lang;
 
-/// Deepest hint nesting kept (longer chains are dropped).
 /// Hint of a name inside an import statement (see the module table).
-pub const BINDING: &str = "I";
+pub const BINDING: &str = "U";
 
+/// The local name a binding hint binds (`U:<local>` -> `<local>`; `U` -> `""`: the name
+/// itself), `None` for any other hint.
+pub(crate) fn binding_local(hint: &str) -> Option<&str> {
+    match hint.strip_prefix(BINDING)? {
+        "" => Some(""),
+        rest => rest.strip_prefix(':'),
+    }
+}
+
+/// Deepest hint nesting kept (longer chains are dropped).
 const MAX_DEPTH: u8 = 6;
 /// Longest hint kept.
 const MAX_HINT: usize = 200;

@@ -115,6 +115,10 @@ fn rust_impl_blocks_traits_and_modules() {
     // `use store::{Backend, Store};` references both items.
     assert_edge(&ix, "src/main.rs", 5, "Store", "store::Store", "exact");
     assert_edge(&ix, "src/main.rs", 5, "Backend", "store::Backend", "exact");
+    // Aliased imports bind their alias: `Error` in `use fmt::Error as FmtError` is fmt's, even
+    // though the next line binds the local name `Error` to something else.
+    assert_edge(&ix, "src/main.rs", 22, "Error", "fmt::Error", "exact");
+    assert_edge(&ix, "src/main.rs", 23, "Kind", "store::Kind", "exact");
     assert_edge(&ix, "src/main.rs", 13, "Kind", "store::Kind", "exact");
     assert_edge(&ix, "src/main.rs", 14, "Kind", "store::Kind", "exact");
     // `use std::fmt;` in src/fmt.rs: `fmt::Error` is std's, not this crate's `fmt::Error`.

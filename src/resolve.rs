@@ -2821,8 +2821,11 @@ impl Ctx {
     }
 
     fn resolve_edge(&self, e: &E, scope: &Scope) -> Option<(usize, Confidence)> {
-        if e.hint.as_deref() == Some(crate::infer::BINDING) {
-            return self.resolve_binding(e, scope);
+        if let Some(h) = e.hint.as_deref() {
+            if let Some(local) = crate::infer::binding_local(h) {
+                let local = if local.is_empty() { &e.name } else { local };
+                return self.resolve_binding(e, local, scope);
+            }
         }
         let fi = e.file;
         let lang = self.files[fi].lang;
@@ -2854,27 +2857,21 @@ impl Ctx {
     }
 
     /// A name inside an import statement (`use a::B`, `import { b as c }`, `from m import
-    /// d`): the item that import binds, or nothing (an external or unresolved import, a
-    /// module binding). Never a name guess.
-    fn resolve_binding(&self, e: &E, scope: &Scope) -> Option<(usize, Confidence)> {
+    /// d`): the item that import binds under `local` (the alias, else the name itself), or
+    /// nothing (an external or unresolved import, a module binding). Never a name guess.
+    fn resolve_binding(&self, e: &E, local: &str, scope: &Scope) -> Option<(usize, Confidence)> {
         let any = |k: SymKind, _: Lang| k != SymKind::Module;
-        // Keyed by local name; an aliased binding is found by its original name.
-        let bound = scope.names.get(&e.name).or_else(|| {
-            let mut v: Vec<_> = scope.names.values().filter(|(o, _)| o == &e.name).collect();
-            v.dedup();
-            match v[..] {
-                [one] => Some(one),
-                _ => None,
-            }
-        });
-        if let Some((orig, targets)) = bound {
+        // The entry for `local` must be this import's: a file may bind one local name in
+        // several imports (`from m import a as f` / `from m import b as f` in two branches),
+        // and the scope keeps one of them.
+        if let Some((orig, targets)) = scope.names.get(local).filter(|(o, _)| *o == e.name) {
             if targets.is_empty() {
                 return None;
             }
             let m = self.lookup_in_by(targets, orig, &any, 2);
             return self.pick(e.file, &m, Confidence::Exact, Confidence::Likely);
         }
-        if let Some(targets) = scope.defaults.get(&e.name) {
+        if let Some(targets) = scope.defaults.get(local) {
             return self.default_export(targets).map(|s| (s, Confidence::Exact));
         }
         None
@@ -2882,7 +2879,8 @@ impl Ctx {
 
     /// Rust: whether method `s` can be called from a file of package `pkg` with import
     /// scope `scope`: same crate, an inherent method, or its trait (the impl's, or the
-    /// trait declaring it) is imported.
+    /// trait declaring it) is in scope: imported by name, under an alias or `as _`, or
+    /// possibly through a glob import.
     fn rust_visible(&self, s: usize, pkg: &str, scope: &Scope) -> bool {
         let sym = &self.syms[s];
         if self.files[sym.file].package == pkg {
@@ -2899,7 +2897,12 @@ impl Ctx {
                     .filter(|&&pi| self.syms[pi].kind == SymKind::Trait)
                     .map(|&pi| self.syms[pi].name.as_str())
             });
-        tr.is_none_or(|t| scope.names.contains_key(t))
+        tr.is_none_or(|t| {
+            let t = t.rsplit("::").next().unwrap_or(t);
+            scope.names.contains_key(t)
+                || scope.names.values().any(|(orig, _)| orig == t)
+                || !scope.globs.is_empty()
+        })
     }
 
     fn resolve_qualified(

@@ -47,6 +47,10 @@ edges:
   src/main.rs:17 ref <file>: Kind => store::Kind (exact)
   src/main.rs:19 ref run: Backend => store::Backend (exact)
   src/main.rs:20 call run: b.load => store::Backend::load (exact)
+  src/main.rs:22 import <file>: fmt::Error => src/fmt.rs
+  src/main.rs:22 ref <file>: Error => fmt::Error (exact)
+  src/main.rs:23 import <file>: store::Kind => src/store.rs
+  src/main.rs:23 ref <file>: Kind => store::Kind (exact)
   src/store.rs:6 ref store::Store: Vec => ?
   src/store.rs:6 ref store::Store: String => ?
   src/store.rs:20 ref <file>: Store => store::Store (exact)

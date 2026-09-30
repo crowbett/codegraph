@@ -268,6 +268,11 @@ fn go_param_types(list: &str) -> Vec<Option<String>> {
 /// A Go type written in a signature, comparable across packages: no spaces, no package
 /// qualifiers, `interface{}` as `any`. `None` when it may involve a type parameter.
 fn go_norm_type(t: &str) -> Option<String> {
+    // A func type may name its parameters or not (`func(ctx context.Context) error` is
+    // `func(context.Context) error`): not compared.
+    if t.contains("func(") {
+        return None;
+    }
     let t: String = t.chars().filter(|c| !c.is_whitespace()).collect();
     let t = t.replace("interface{}", "any");
     let b: Vec<char> = t.chars().collect();
@@ -3161,7 +3166,7 @@ impl Ctx {
                     && ms
                         .fields
                         .iter()
-                        .any(|(k, v)| k == crate::extract::IMPL_TRAIT && v == tr)
+                        .any(|(k, v)| k == crate::extract::IMPL_TRAIT && same_trait(v, q))
                     && takes_self(&ms.sig, &ms.name)
             })
             .collect();
@@ -3259,6 +3264,21 @@ impl Ctx {
     }
 }
 
+/// Whether trait path `a` (an impl's, as written) and `b` (a call's qualifier) can name the
+/// same trait: same last segment and, when both are qualified, the same module before it
+/// (`fmt::Write` is no `io::Write`; a bare `Write` may be either).
+fn same_trait(a: &str, b: &str) -> bool {
+    let mut x = a.rsplit("::");
+    let mut y = b.rsplit("::");
+    if x.next() != y.next() {
+        return false;
+    }
+    match (x.next(), y.next()) {
+        (Some(p), Some(q)) => p == q,
+        _ => true,
+    }
+}
+
 /// Whether a Rust fn's first parameter is `self` (`&self`, `mut self`, `self: Box<Self>`),
 /// read from its one-line signature. A signature whose parameters start on the next line
 /// is taken as a method: rustfmt only breaks long parameter lists, and there `self` leads.
@@ -3288,6 +3308,15 @@ fn takes_self(sig: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trait_paths_must_agree_on_their_module() {
+        assert!(same_trait("fmt::Display", "Display"));
+        assert!(same_trait("Display", "fmt::Display"));
+        assert!(same_trait("fmt::Write", "std::fmt::Write"));
+        assert!(!same_trait("fmt::Write", "io::Write"));
+        assert!(!same_trait("Display", "Debug"));
+    }
 
     #[test]
     fn takes_self_reads_the_first_parameter() {
@@ -3380,7 +3409,7 @@ mod tests {
                 "Watch"
             )
             .types,
-            t(&[Some("chanint"), Some("func(int)error")])
+            t(&[Some("chanint"), None])
         );
         // `setMultiValueParsingConfig(f Flag)` is no `setMultiValueParsingConfig(c multiValueParsingConfig)`.
         let iface = shape(
