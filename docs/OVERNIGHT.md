@@ -413,3 +413,15 @@ external-headed paths (`io::Error::new`) to in-repo trait impls fixed nothing: s
 `io` is `use crate::io;`, a module that re-exports std's under `#[cfg(feature = "std")]`, so
 it is a cfg twin across modules, not an import issue. Reverted.
 
+Review round (a read-only rust-reviewer over 1529eae..HEAD, findings reproduced before
+fixing; b8aad7b, 0d57c89): an aliased import (`use b::Error as BError`) had bound its name
+through another import's `Error` at exact; comments inside `macro_rules!` commented out the
+one-line expansion; an expanded child named before its parent lost `parent_id`; trait paths
+matched on the last segment only (`fmt::Write` = `io::Write`); workspace visibility ignored
+`as _`/aliased/glob trait imports; Go func-typed parameters compared text with parameter
+names; `is_literal` took `break` / `r#type` / lifetimes; the bench shorthand rule accepted
+argument lists and impl chains could step through a wrong edge. Own mistake caught by the
+bench while fixing: the new alias hint `I:<local>` collided with the (undocumented) Python
+tuple hint `I:<n>@..` and broke typed calls, so bindings use `U` and the grammar table now
+lists `I:`, `P:`, `V:`, `D:` too. Not fixed, documented: textual macro scope.
+
