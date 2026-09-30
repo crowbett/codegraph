@@ -35,3 +35,8 @@ func (Wrong) Get() string { return "" }
 
 // Parse is a generic function called with explicit type arguments.
 func Parse[T any](s string) *Store { return New() }
+
+// Mistyped has Get with the right counts but an int key: not a Getter.
+type Mistyped struct{}
+
+func (Mistyped) Get(k int) (string, error) { return "", nil }

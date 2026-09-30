@@ -198,7 +198,103 @@ fn looks_generic(name: &str) -> bool {
 }
 
 /// Method name -> (parameter count, result count) when known.
-type MethodSet<'s> = HashMap<&'s str, Option<(usize, usize)>>;
+type MethodSet<'s> = HashMap<&'s str, Option<GoShape>>;
+
+/// A Go method's shape: parameter and result counts, and each parameter's type when it is
+/// readable (package qualifiers dropped; `None` for what may be a type parameter).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GoShape {
+    params: usize,
+    results: usize,
+    types: Vec<Option<String>>,
+}
+
+impl GoShape {
+    fn counts((params, results): (usize, usize)) -> Self {
+        Self {
+            params,
+            results,
+            types: Vec::new(),
+        }
+    }
+
+    /// Whether a method of this shape can implement an interface method of shape `iface`:
+    /// same counts, and no parameter whose type is known on both sides differs.
+    fn fits(&self, iface: &GoShape) -> bool {
+        self.params == iface.params
+            && self.results == iface.results
+            && self
+                .types
+                .iter()
+                .zip(&iface.types)
+                .all(|(a, b)| match (a, b) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => true,
+                })
+    }
+}
+
+/// Parameter types of a Go parameter list (`a, b int, c *pkg.T` -> `int, int, *T`).
+fn go_param_types(list: &str) -> Vec<Option<String>> {
+    let items: Vec<&str> = split_top(list, ',')
+        .into_iter()
+        .map(str::trim)
+        .filter(|i| !i.is_empty())
+        .collect();
+    // Named when any item is `name Type`: then a bare item shares the next item's type.
+    let named_item = |i: &str| -> Option<String> {
+        let (name, ty) = i.split_once(char::is_whitespace)?;
+        let ident = name.chars().all(|c| c.is_alphanumeric() || c == '_')
+            && !matches!(name, "chan" | "func" | "map" | "struct" | "interface");
+        ident.then(|| ty.trim().to_string())
+    };
+    let named = items.iter().any(|i| named_item(i).is_some());
+    let mut out = vec![None; items.len()];
+    let mut cur: Option<String> = None;
+    for (k, i) in items.iter().enumerate().rev() {
+        let ty = if named {
+            if let Some(t) = named_item(i) {
+                cur = Some(t);
+            }
+            cur.clone()
+        } else {
+            Some((*i).to_string())
+        };
+        out[k] = ty.and_then(|t| go_norm_type(&t));
+    }
+    out
+}
+
+/// A Go type written in a signature, comparable across packages: no spaces, no package
+/// qualifiers, `interface{}` as `any`. `None` when it may involve a type parameter.
+fn go_norm_type(t: &str) -> Option<String> {
+    let t: String = t.chars().filter(|c| !c.is_whitespace()).collect();
+    let t = t.replace("interface{}", "any");
+    let b: Vec<char> = t.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i].is_alphabetic() || b[i] == '_' {
+            let start = i;
+            while i < b.len() && (b[i].is_alphanumeric() || b[i] == '_') {
+                i += 1;
+            }
+            let ident: String = b[start..i].iter().collect();
+            if b.get(i) == Some(&'.') && b.get(i + 1) != Some(&'.') {
+                i += 1; // package qualifier
+                continue;
+            }
+            if ident.len() <= 2 && ident.chars().all(|c| c.is_ascii_uppercase()) {
+                return None; // `T`, `K`, `TT`: a type parameter, most likely
+            }
+            out.push_str(&ident);
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    Some(out)
+}
 
 /// Method sets of stdlib interfaces commonly embedded in repo interfaces.
 fn std_iface(qualified: &str) -> Option<&'static [(&'static str, (usize, usize))]> {
@@ -330,7 +426,7 @@ fn arity(s: &str) -> usize {
 
 /// (parameters, results) of a one-line Go method signature: `func (r *T) Name(a, b int)
 /// (int, error) {` or an interface element `Name(ctx context.Context) error`.
-fn go_shape(sig: &str, name: &str) -> Option<(usize, usize)> {
+fn go_shape(sig: &str, name: &str) -> Option<GoShape> {
     let at = sig.find(&format!("{name}("))? + name.len();
     let rest = &sig[at..];
     let mut depth = 0i32;
@@ -350,6 +446,7 @@ fn go_shape(sig: &str, name: &str) -> Option<(usize, usize)> {
     }
     let close = close?;
     let params = arity(&rest[1..close]);
+    let types = go_param_types(&rest[1..close]);
     let tail = rest[close + 1..].trim();
     // Cut the body (`{`, `{}`, `{ return x }`): a brace at depth 0 after a space or at
     // the start (`interface{}` in a result type has none).
@@ -376,7 +473,11 @@ fn go_shape(sig: &str, name: &str) -> Option<(usize, usize)> {
     } else {
         1
     };
-    Some((params, results))
+    Some(GoShape {
+        params,
+        results,
+        types,
+    })
 }
 
 /// Rust iterator adaptors whose items are the receiver's items.
@@ -2570,7 +2671,7 @@ impl Ctx {
                 let (t, mset) = &tsets[k];
                 let covers = iset.iter().all(|(name, ishape)| {
                     mset.get(name).is_some_and(|tshape| match (ishape, tshape) {
-                        (Some(a), Some(b)) => a == b,
+                        (Some(i), Some(t)) => t.fits(i),
                         _ => true,
                     })
                 });
@@ -2608,7 +2709,7 @@ impl Ctx {
                 }
                 _ => {
                     let std = h.strip_prefix("T:").and_then(std_iface)?;
-                    set.extend(std.iter().map(|(n, sh)| (*n, Some(*sh))));
+                    set.extend(std.iter().map(|(n, sh)| (*n, Some(GoShape::counts(*sh)))));
                 }
             }
         }
@@ -2629,7 +2730,7 @@ impl Ctx {
         let pkg = self.files[s.file].package.as_str();
         if let Some(m) = methods.get(&(pkg, s.name.as_str())) {
             for (k, v) in m {
-                out.entry(k).or_insert(*v);
+                out.entry(k).or_insert_with(|| v.clone());
             }
         }
         for (k, h) in &s.fields {
@@ -2642,7 +2743,7 @@ impl Ctx {
                     // Embedding a stdlib interface promotes its methods.
                     let t = h.strip_prefix("T:").map(|t| t.trim_start_matches('*'));
                     for (n, sh) in t.and_then(std_iface).into_iter().flatten() {
-                        out.entry(n).or_insert(Some(*sh));
+                        out.entry(n).or_insert(Some(GoShape::counts(*sh)));
                     }
                 }
             }
@@ -3232,32 +3333,75 @@ mod tests {
 
     #[test]
     fn go_shapes() {
+        let counts = |sig: &str, name: &str| go_shape(sig, name).map(|s| (s.params, s.results));
         assert_eq!(
-            go_shape(
+            counts(
                 "func (n *Notifier) Send(ctx context.Context, m Message, sinks []string) error {",
                 "Send"
             ),
             Some((3, 1))
         );
-        assert_eq!(go_shape("Flush() error", "Flush"), Some((0, 1)));
+        assert_eq!(counts("Flush() error", "Flush"), Some((0, 1)));
         assert_eq!(
-            go_shape("func (f *flushWriter) Flush() {", "Flush"),
+            counts("func (f *flushWriter) Flush() {", "Flush"),
             Some((0, 0))
         );
-        assert_eq!(go_shape("Get(a, b int) (int, error)", "Get"), Some((2, 2)));
-        assert_eq!(go_shape("func (s *S) Run(", "Run"), None);
+        assert_eq!(counts("Get(a, b int) (int, error)", "Get"), Some((2, 2)));
+        assert_eq!(counts("func (s *S) Run(", "Run"), None);
         assert_eq!(
-            go_shape("func (testPrintLogger) Print(v ...any) {}", "Print"),
+            counts("func (testPrintLogger) Print(v ...any) {}", "Print"),
             Some((1, 0))
         );
         assert_eq!(
-            go_shape("func f() (map[string]interface{}, error) {", "f"),
+            counts("func f() (map[string]interface{}, error) {", "f"),
             Some((0, 2))
         );
         assert_eq!(
-            go_shape("func (x T) Get() interface{} { return nil }", "Get"),
+            counts("func (x T) Get() interface{} { return nil }", "Get"),
             Some((0, 1))
         );
+    }
+
+    #[test]
+    fn go_parameter_types_decide_implementation() {
+        let shape = |sig: &str, name: &str| go_shape(sig, name).unwrap();
+        let t = |v: &[Option<&str>]| v.iter().map(|x| x.map(str::to_string)).collect::<Vec<_>>();
+        assert_eq!(
+            shape("Get(a, b int, c *pkg.Conf) error", "Get").types,
+            t(&[Some("int"), Some("int"), Some("*Conf")])
+        );
+        assert_eq!(
+            shape("Create(T, *T, C) Value", "Create").types,
+            t(&[None, None, None])
+        );
+        assert_eq!(
+            shape(
+                "func (c *Cfg) Watch(ch chan int, f func(int) error) {",
+                "Watch"
+            )
+            .types,
+            t(&[Some("chanint"), Some("func(int)error")])
+        );
+        // `setMultiValueParsingConfig(f Flag)` is no `setMultiValueParsingConfig(c multiValueParsingConfig)`.
+        let iface = shape(
+            "setMultiValueParsingConfig(c multiValueParsingConfig)",
+            "setMultiValueParsingConfig",
+        );
+        let other = shape(
+            "func (cmd *Command) setMultiValueParsingConfig(f Flag) {",
+            "setMultiValueParsingConfig",
+        );
+        assert!(!other.fits(&iface));
+        // Qualified in one package, bare in the other: the same type.
+        let iface = shape("ToMiddleware() (MiddlewareFunc, error)", "ToMiddleware");
+        let imp = shape(
+            "func (c RecoverConfig) ToMiddleware() (echo.MiddlewareFunc, error) {",
+            "ToMiddleware",
+        );
+        assert!(imp.fits(&iface));
+        let iface = shape("Handle(ctx context.Context, v interface{})", "Handle");
+        let imp = shape("func (h H) Handle(c context.Context, v any) {", "Handle");
+        assert!(imp.fits(&iface));
     }
 
     #[test]

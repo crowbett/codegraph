@@ -483,7 +483,8 @@ fn edges_to(ix: &common::Indexed, kind: &str, name: &str) -> Vec<String> {
 #[test]
 fn go_implicit_interfaces_and_typed_receivers() {
     let ix = index_fixture("go_infer");
-    // Store has Get with the right shape; Cache and api.wrapped get it by embedding; Wrong's Get differs.
+    // Store has Get with the right shape; Cache and api.wrapped get it by embedding; Wrong's Get
+    // has other counts and Mistyped's another parameter type.
     assert_eq!(
         impls(&ix, "Getter"),
         ["api.wrapped", "store.Cache", "store.Store"]
