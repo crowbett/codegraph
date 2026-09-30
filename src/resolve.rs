@@ -1030,9 +1030,9 @@ fn resolve_changed(
             }
         }
     }
-    // New rows get the highest ids, so this is normally already sorted.
-    if !r.edges.is_sorted_by_key(|e| e.id) {
-        r.edges.par_sort_unstable_by_key(|e| e.id);
+    // Same order as a whole-repo load (`load_edges`): path, then extraction order.
+    if !r.edges.is_sorted_by_key(|e| (e.file, e.id)) {
+        r.edges.par_sort_unstable_by_key(|e| (e.file, e.id));
     }
     r.ctx.replace_file_syms(&changed_fi, new_syms);
     r.ctx.reset_derived();
@@ -1825,7 +1825,11 @@ fn load_edges(store: &Store, repo_id: i64, ctx: &Ctx) -> Result<(Vec<E>, Vec<i64
             Err(id) => implicit.push(id),
         }
     }
-    edges.par_sort_unstable_by_key(|e| e.id);
+    // Path order, then extraction order within a file: the order the cold path resolves
+    // in. Row ids alone follow the order parallel parsers finished in on a re-index, and
+    // pass 1 is order-sensitive across files (the first file declaring a `#[path]` module
+    // becomes its parent).
+    edges.par_sort_unstable_by_key(|e| (e.file, e.id));
     crate::util::trace("resolve.load.edges", t0);
     Ok((edges, implicit))
 }
