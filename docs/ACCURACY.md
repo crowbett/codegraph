@@ -78,13 +78,17 @@ the v0.1.1 baseline was re-scored with the fixed harness so deltas stay comparab
 - TS/JS shorthand properties (`{ make_, extend_ }`): `{ make_ }` means `{ make_: make_ }`,
   but scip-typescript records only the contextual type's member (`Annotation.make_`) when
   the object has one, never the binding the value comes from. A target counts as correct
-  when the site is shaped like a shorthand property (after `{` or `,`, before `,`, `}` or
-  the end of the line) and the target is the same-named definition in the same file. Any
+  when the site is shaped like a shorthand property (inside an object literal: the nearest
+  unclosed bracket to its left is `{`, or it is alone on its line; after `{` or `,`, before
+  `,`, `}` or the end of the line) and the target is the same-named definition in the same
+  file. Any
   other symbol SCIP records on the exact same range is also accepted. Added on 2026-09-29;
   the baseline was re-scored with it (TS refs hits +23).
-- Implementations: SCIP lists every supertype of a type transitively (`Atom -> IObservable`
-  through `IAtom`), codegraph stores direct `impl`/`inherit` edges, so a ground-truth pair
-  is found when a chain of codegraph edges reaches it. scip-typescript records nothing for
+- Implementations: the truth lists every supertype of a type transitively (`Atom ->
+  IObservable` through `IAtom`), codegraph stores direct `impl`/`inherit` edges, so a
+  ground-truth pair is found when a chain of codegraph edges reaches it, stepping only
+  through links that are ground truth themselves or have none (a TS interface's `extends`),
+  so a wrong edge never completes a chain. scip-typescript records nothing for
   an interface's own `extends` or for local symbols (classes in files outside the tsconfig,
   such as mobx's tests), so codegraph edges from those are unjudged. Added on 2026-09-29;
   the baseline was re-scored with it.

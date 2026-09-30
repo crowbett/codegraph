@@ -283,7 +283,23 @@ fn shorthand_local(cg: &Cg, fid: i64, line: &str, o: &Occ, to: i64, name: &str) 
         return false;
     };
     let (before, after) = (line[..bs].trim_end(), line[be..].trim_start());
-    let open = before.is_empty() || before.ends_with('{') || before.ends_with(',');
+    // Inside an object literal: the nearest unclosed bracket to the left is `{` (a line of
+    // its own continues one); `f(a, handler, b)` is an argument list.
+    let mut depth = 0i32;
+    let mut opener = None;
+    for c in before.chars().rev() {
+        match c {
+            ')' | ']' | '}' => depth += 1,
+            '(' | '[' | '{' if depth > 0 => depth -= 1,
+            '(' | '[' | '{' => {
+                opener = Some(c);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let in_object = opener == Some('{') || (opener.is_none() && before.is_empty());
+    let open = in_object && (before.is_empty() || before.ends_with('{') || before.ends_with(','));
     let close = after.is_empty() || after.starts_with(',') || after.starts_with('}');
     open && close
         && cg
@@ -841,18 +857,32 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
             cg_pairs.insert((f, t));
         }
     }
-    // SCIP lists every supertype, transitively (`Atom -> IObservable` through `IAtom`);
-    // codegraph stores direct edges, so a chain of them answers the pair.
+    // The truth lists every supertype, transitively (`Atom -> IObservable` through `IAtom`,
+    // `BadParameter -> ClickException` through `UsageError`); codegraph stores direct edges,
+    // so a chain of them answers the pair, stepping only through links that are ground truth
+    // themselves or have none (a TS interface's `extends`): a wrong edge never completes one.
     let mut supers: HashMap<i64, Vec<i64>> = HashMap::new();
     for &(a, b) in &cg_pairs {
         supers.entry(a).or_default().push(b);
     }
+    // scip-typescript records no relationships for an interface's own `extends` or for
+    // local symbols (classes in files outside the tsconfig, like mobx's tests): no truth.
+    let no_truth = |a: i64| {
+        fam_of(cg.syms[&a].file) == Some("ts")
+            && (cg.syms[&a].kind == "interface"
+                || cg_to_scip
+                    .get(&a)
+                    .is_some_and(|v| v.iter().all(|s| is_local(s))))
+    };
     let reaches = |from: i64, to: i64| {
         let (mut frontier, mut seen) = (vec![from], HashSet::new());
         for _ in 0..6 {
             let mut next = Vec::new();
             for x in frontier {
                 for &y in supers.get(&x).into_iter().flatten() {
+                    if !gt_pairs.contains(&(x, y)) && !no_truth(x) {
+                        continue;
+                    }
                     if y == to {
                         return true;
                     }
@@ -864,15 +894,6 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
             frontier = next;
         }
         false
-    };
-    // scip-typescript records no relationships for an interface's own `extends` or for
-    // local symbols (classes in files outside the tsconfig, like mobx's tests): no truth.
-    let no_truth = |a: i64| {
-        fam_of(cg.syms[&a].file) == Some("ts")
-            && (cg.syms[&a].kind == "interface"
-                || cg_to_scip
-                    .get(&a)
-                    .is_some_and(|v| v.iter().all(|s| is_local(s))))
     };
     for p in &gt_pairs {
         let Some(f) = gt_fam.get(p) else { continue };
