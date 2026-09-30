@@ -12,6 +12,7 @@ symbols:
 edges:
   lib/util.js:2 call util.slugify: s.toLowerCase => ?
   src/main.js:1 import <file>: ./widget.js => src/widget.js
+  src/main.js:1 ref <file>: Widget => widget.Widget (exact)
   src/main.js:2 import <file>: ../lib/util => lib/util.js
   src/main.js:5 call main.start: Widget => widget.Widget (exact)
   src/main.js:6 call main.start: w.render => widget.Widget.render (exact)

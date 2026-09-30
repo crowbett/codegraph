@@ -59,3 +59,11 @@
 ; ---- imports --------------------------------------------------------------
 (import_statement) @import
 (import_from_statement) @import
+
+; names `from m import a, b as c` binds are references to the imported item
+(import_from_statement
+  name: (dotted_name . (identifier) @name .)) @reference.binding
+
+(import_from_statement
+  name: (aliased_import
+    name: (dotted_name . (identifier) @name .))) @reference.binding

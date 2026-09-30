@@ -206,3 +206,25 @@
 
 ; ---- imports --------------------------------------------------------------
 (use_declaration) @import
+
+; names a `use` binds are references to the imported item
+(use_declaration
+  argument: (identifier) @name) @reference.binding
+
+(use_declaration
+  argument: (scoped_identifier
+    name: (identifier) @name)) @reference.binding
+
+(use_list
+  (identifier) @name) @reference.binding
+
+(use_list
+  (scoped_identifier
+    name: (identifier) @name)) @reference.binding
+
+(use_as_clause
+  path: (identifier) @name) @reference.binding
+
+(use_as_clause
+  path: (scoped_identifier
+    name: (identifier) @name)) @reference.binding

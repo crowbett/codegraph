@@ -177,6 +177,8 @@ enum Role {
     /// JS/TS module-level `const`/`let`/`var` holding a non-literal, non-function value.
     ValueDef,
     Ref(EdgeKind),
+    /// A name bound by an import (`use a::B`, `import { b }`, `from m import c`).
+    Binding,
     Import,
     Export,
     Package,
@@ -198,6 +200,8 @@ struct RefCand<'t> {
     name: Node<'t>,
     qualifier: Option<Node<'t>>,
     impl_for: Option<Node<'t>>,
+    /// The name as bound by an import statement: resolved only through that binding.
+    binding: bool,
 }
 
 fn text<'a>(node: Node<'_>, src: &'a [u8]) -> &'a str {
@@ -320,6 +324,7 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
                 "export" => role = Some((Role::Export, n)),
                 "package" => role = Some((Role::Package, n)),
                 "definition.value" => role = Some((Role::ValueDef, n)),
+                "reference.binding" => role = Some((Role::Binding, n)),
                 c => {
                     if let Some(k) = c.strip_prefix("definition.") {
                         role = def_kind(k).map(|k| (Role::Def(k), n));
@@ -435,6 +440,7 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
                     name,
                     qualifier,
                     impl_for,
+                    binding: false,
                 };
                 let key = name.start_byte();
                 let better = match refs.get(&key) {
@@ -444,6 +450,20 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
                 if better {
                     refs.insert(key, cand);
                 }
+            }
+            Role::Binding => {
+                // An import statement's name: nothing else it could be.
+                let Some(name) = name else { continue };
+                refs.insert(
+                    name.start_byte(),
+                    RefCand {
+                        kind: EdgeKind::Ref,
+                        name,
+                        qualifier: None,
+                        impl_for: None,
+                        binding: true,
+                    },
+                );
             }
         }
     }
@@ -578,7 +598,9 @@ fn extract_inner(lang: Lang, src: &[u8], start: Instant) -> Result<FileFacts> {
         let pos = r.name.start_position();
         let from = enclosing(&facts.symbols, r.name.start_byte());
         let from_name = r.impl_for.map(|n| base_type_name(text(n, src)));
-        let (hint, dot) = if matches!(r.kind, EdgeKind::Call | EdgeKind::Value) {
+        let (hint, dot) = if r.binding {
+            (Some(crate::infer::BINDING.to_string()), false)
+        } else if matches!(r.kind, EdgeKind::Call | EdgeKind::Value) {
             match r.qualifier {
                 // A Rust path qualifier (`m::f`, `Type::f`) is never a value.
                 Some(q) if lang == Lang::Rust && !is_dot_receiver(&nav, q) => (None, false),
@@ -1063,6 +1085,9 @@ fn ref_kind(s: &str) -> Option<EdgeKind> {
 }
 
 fn ref_priority(r: &RefCand<'_>) -> u8 {
+    if r.binding {
+        return u8::MAX;
+    }
     let base = match r.kind {
         EdgeKind::Impl | EdgeKind::Inherit => 6,
         EdgeKind::Call => 4,

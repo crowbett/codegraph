@@ -2777,6 +2777,9 @@ impl Ctx {
     }
 
     fn resolve_edge(&self, e: &E, scope: &Scope) -> Option<(usize, Confidence)> {
+        if e.hint.as_deref() == Some(crate::infer::BINDING) {
+            return self.resolve_binding(e, scope);
+        }
         let fi = e.file;
         let lang = self.files[fi].lang;
         let cands: Vec<usize> = self
@@ -2804,6 +2807,33 @@ impl Ctx {
             Some(q) if !q.is_empty() => self.resolve_qualified(e, q, &cands, scope, lang),
             _ => self.resolve_bare(e, &cands, scope, lang),
         }
+    }
+
+    /// A name inside an import statement (`use a::B`, `import { b as c }`, `from m import
+    /// d`): the item that import binds, or nothing (an external or unresolved import, a
+    /// module binding). Never a name guess.
+    fn resolve_binding(&self, e: &E, scope: &Scope) -> Option<(usize, Confidence)> {
+        let any = |k: SymKind, _: Lang| k != SymKind::Module;
+        // Keyed by local name; an aliased binding is found by its original name.
+        let bound = scope.names.get(&e.name).or_else(|| {
+            let mut v: Vec<_> = scope.names.values().filter(|(o, _)| o == &e.name).collect();
+            v.dedup();
+            match v[..] {
+                [one] => Some(one),
+                _ => None,
+            }
+        });
+        if let Some((orig, targets)) = bound {
+            if targets.is_empty() {
+                return None;
+            }
+            let m = self.lookup_in_by(targets, orig, &any, 2);
+            return self.pick(e.file, &m, Confidence::Exact, Confidence::Likely);
+        }
+        if let Some(targets) = scope.defaults.get(&e.name) {
+            return self.default_export(targets).map(|s| (s, Confidence::Exact));
+        }
+        None
     }
 
     fn resolve_qualified(

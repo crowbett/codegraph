@@ -107,7 +107,7 @@ $env:KIT_DATA_DIR = "$env:TEMP\cg" ; .\target\release\codegraph.exe index C:\Use
 - Adding a language: grammar crate in Cargo.toml, `Lang` variant + extension, a
   `queries/<lang>/tags.scm`, binding parser in `extract::parse_import`, a unit rule in
   `layout.rs`, a fixture + snapshot + resolution assertions in `tests/lang.rs`.
-- Changing extraction output or the schema: bump `store::SCHEMA_VERSION` (currently **9**;
+- Changing extraction output or the schema: bump `store::SCHEMA_VERSION` (currently **10**;
   old graphs are wiped and rebuilt on next `index`) and re-record snapshots.
 - **Any resolver change (`src/resolve.rs`, `src/resolve_types.rs`, `src/infer.rs`) must be
   measured with `task bench:accuracy` before it's kept.** Compare against
@@ -116,7 +116,7 @@ $env:KIT_DATA_DIR = "$env:TEMP\cg" ; .\target\release\codegraph.exe index C:\Use
   `name_only`), gets reverted or fixed, not shipped on vibes. Read the miss reports in
   `.cache/bench/report/*.tsv` before assuming a regression is a harness bug.
 - Adding or changing a type hint: the grammar lives in `src/infer.rs`'s module doc (`S`,
-  `T:`, `C:`, `M:`, `F:`, `Q:`/`A:`, `E:`, `L`) — read it, keep new hints inside `MAX_DEPTH`/
+  `T:`, `C:`, `M:`, `F:`, `Q:`/`A:`, `E:`, `L`, `I`) — read it, keep new hints inside `MAX_DEPTH`/
   `MAX_HINT`, and add fixture coverage under `tests/fixtures/{go,rust,ts}_infer/` plus an
   assertion in `tests/resolve.rs`.
 - Resolution must stay honest: when a qualifier is bound to an import that points outside

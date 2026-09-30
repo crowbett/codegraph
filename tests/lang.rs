@@ -109,6 +109,9 @@ fn rust_impl_blocks_traits_and_modules() {
     // Types in path-qualifier position are references: `Store::new()`, `store::Kind::Missing`,
     // and the same inside a macro's token tree.
     assert_edge(&ix, "src/main.rs", 8, "Store", "store::Store", "exact");
+    // `use store::{Backend, Store};` references both items.
+    assert_edge(&ix, "src/main.rs", 5, "Store", "store::Store", "exact");
+    assert_edge(&ix, "src/main.rs", 5, "Backend", "store::Backend", "exact");
     assert_edge(&ix, "src/main.rs", 13, "Kind", "store::Kind", "exact");
     assert_edge(&ix, "src/main.rs", 14, "Kind", "store::Kind", "exact");
     // `use std::fmt;` in src/fmt.rs: `fmt::Error` is std's, not this crate's `fmt::Error`.
@@ -147,6 +150,17 @@ fn rust_impl_blocks_traits_and_modules() {
 #[test]
 fn typescript_default_vs_named_exports() {
     let ix = index_fixture("typescript");
+    // Names inside import statements reference what they import (default, named, aliased).
+    assert_edge(&ix, "src/index.ts", 1, "add", "math.add", "exact");
+    assert_edge(&ix, "src/index.ts", 1, "helper", "math.helper", "exact");
+    assert_edge(
+        &ix,
+        "src/index.ts",
+        3,
+        "Greeter",
+        "strings.Greeter",
+        "exact",
+    );
     assert_edge(&ix, "src/index.ts", 11, "add", "math.add", "exact");
     assert_edge(&ix, "src/index.ts", 9, "helper", "math.helper", "exact");
     // Namespace import through a tsconfig `paths` alias.
@@ -166,6 +180,7 @@ fn typescript_default_vs_named_exports() {
 #[test]
 fn javascript_default_import_and_require() {
     let ix = index_fixture("javascript");
+    assert_edge(&ix, "src/main.js", 1, "Widget", "widget.Widget", "exact");
     assert_edge(&ix, "src/main.js", 5, "Widget", "widget.Widget", "exact");
     assert_edge(&ix, "src/main.js", 7, "slugify", "util.slugify", "exact");
     assert_edge(
@@ -181,6 +196,25 @@ fn javascript_default_import_and_require() {
 #[test]
 fn python_relative_imports_and_inheritance() {
     let ix = index_fixture("python");
+    // `from ..util import helper` / `from ..models import User as U` reference the items;
+    // `from .. import models` binds a module, which is no symbol edge.
+    assert_edge(
+        &ix,
+        "pkg/sub/tasks.py",
+        1,
+        "helper",
+        "pkg.util.helper",
+        "exact",
+    );
+    assert_edge(
+        &ix,
+        "pkg/sub/tasks.py",
+        3,
+        "User",
+        "pkg.models.User",
+        "exact",
+    );
+    assert_eq!(edge(&ix.store, "pkg/sub/tasks.py", 2, "models"), None);
     assert_edge(
         &ix,
         "pkg/sub/tasks.py",

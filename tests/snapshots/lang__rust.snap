@@ -22,10 +22,13 @@ symbols:
   src/util.rs:8-8 function util::helper  [pub, doc="Shared helper."]
 edges:
   src/fmt.rs:2 import <file>: std::fmt => (external)
+  src/fmt.rs:2 ref <file>: fmt => ?
   src/fmt.rs:7 ref fmt::show: Result => ?
   src/fmt.rs:7 ref fmt::show: fmt.Error => ?
   src/main.rs:5 import <file>: store::Backend => src/store.rs
   src/main.rs:5 import <file>: store::Store => src/store.rs
+  src/main.rs:5 ref <file>: Backend => store::Backend (exact)
+  src/main.rs:5 ref <file>: Store => store::Store (exact)
   src/main.rs:8 ref main: Store => store::Store (exact)
   src/main.rs:8 call main: Store.new => store::Store::new (exact)
   src/main.rs:9 call main: s.get => store::Store::get (exact)
@@ -36,6 +39,7 @@ edges:
   src/main.rs:14 ref main: Kind => store::Kind (exact)
   src/main.rs:14 ref main: Kind => store::Kind (exact)
   src/main.rs:17 import <file>: store::Kind => src/store.rs
+  src/main.rs:17 ref <file>: Kind => store::Kind (exact)
   src/main.rs:19 ref run: Backend => store::Backend (exact)
   src/main.rs:20 call run: b.load => store::Backend::load (exact)
   src/store.rs:6 ref store::Store: Vec => ?

@@ -15,8 +15,12 @@ symbols:
   src/lib/strings.ts:15-17 method strings.Greeter.format  [pub, in strings.Greeter]
 edges:
   src/index.ts:1 import <file>: ./lib/math => src/lib/math.ts
+  src/index.ts:1 ref <file>: add => math.add (exact)
+  src/index.ts:1 ref <file>: helper => math.helper (exact)
   src/index.ts:2 import <file>: @lib/strings => src/lib/strings.ts
   src/index.ts:3 import <file>: ./lib/strings => src/lib/strings.ts
+  src/index.ts:3 ref <file>: Greeter => strings.Greeter (exact)
+  src/index.ts:3 ref <file>: Named => strings.Named (exact)
   src/index.ts:5 inherit src.App: G => strings.Greeter (exact)
   src/index.ts:5 impl src.App: Named => strings.Named (exact)
   src/index.ts:9 call src.App.run: helper => math.helper (exact)

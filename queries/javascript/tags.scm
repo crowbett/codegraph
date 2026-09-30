@@ -109,6 +109,19 @@
 ; ---- imports / exports ----------------------------------------------------
 (import_statement) @import
 
+; names an import (or re-export) binds are references to the imported item
+(import_specifier
+  name: (identifier) @name) @reference.binding
+
+(import_clause
+  (identifier) @name) @reference.binding
+
+(export_statement
+  (export_clause
+    (export_specifier
+      name: (identifier) @name))
+  source: (string)) @reference.binding
+
 ((variable_declarator
   name: (_)
   value: (call_expression
