@@ -11,6 +11,7 @@ symbols:
   pkg/sub/tasks.py:5-5 const pkg.sub.tasks.MAX_TASKS  [pub]
   pkg/sub/tasks.py:8-12 function pkg.sub.tasks.run  [pub]
   pkg/sub/tasks.py:15-19 function pkg.sub.tasks.registry  [pub]
+  pkg/sub/tasks.py:22-24 function pkg.sub.tasks.kinds  [pub]
   pkg/util.py:1-2 function pkg.util.helper  [pub]
 edges:
   main.py:1 import <file>: pkg.util => pkg/util.py
@@ -38,3 +39,6 @@ edges:
   pkg/sub/tasks.py:16 value pkg.sub.tasks.registry: run => pkg.sub.tasks.run (exact)
   pkg/sub/tasks.py:16 value pkg.sub.tasks.registry: U => pkg.models.User (exact)
   pkg/sub/tasks.py:17 value pkg.sub.tasks.registry: helper => pkg.util.helper (exact)
+  pkg/sub/tasks.py:23 value pkg.sub.tasks.kinds: models => ?
+  pkg/sub/tasks.py:23 value pkg.sub.tasks.kinds: models.User => pkg.models.User (exact)
+  pkg/sub/tasks.py:24 value pkg.sub.tasks.kinds: U => pkg.models.User (exact)

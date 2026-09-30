@@ -571,6 +571,21 @@ fn extract_inner(
             }
         })
         .collect();
+    // First segment of every name an import binds (`import a.b` binds `a`).
+    let import_heads: std::collections::HashSet<String> = facts
+        .imports
+        .iter()
+        .flat_map(|i| i.bindings.iter())
+        .filter(|b| b.kind != BindKind::Glob)
+        .map(|b| {
+            let n = if b.local.is_empty() {
+                &b.name
+            } else {
+                &b.local
+            };
+            n.split('.').next().unwrap_or("").to_string()
+        })
+        .collect();
     let known: std::collections::HashSet<String> = facts
         .symbols
         .iter()
@@ -643,6 +658,23 @@ fn extract_inner(
         } else {
             (None, false)
         };
+        // Python attribute reads (`click.pass_context`, `result.output`) are kept only on an
+        // imported module/name or a receiver with a known type: `self.x` and field reads
+        // everywhere else would be unresolvable noise. Attributes passed as arguments
+        // (`f(self.handler)`) are callables often enough to keep as before.
+        if lang == Lang::Python && r.kind == EdgeKind::Value {
+            if let Some(q) = r.qualifier {
+                let in_args = nav
+                    .parent(r.name)
+                    .and_then(|a| nav.parent(a))
+                    .is_some_and(|p| p.kind() == "argument_list");
+                let head = text(q, src).split('.').next().unwrap_or("");
+                let typed = hint.as_deref().is_some_and(|h| h != "L" && h != "S");
+                if !in_args && !typed && !import_heads.contains(head) {
+                    continue;
+                }
+            }
+        }
         // First-argument type: picks among trait-overload impls (`Bytes::from(x)`) and
         // types a trait method called by path (`Display::fmt(&x, f)`, `ser::Trait::m(self)`).
         let ufcs = r.qualifier.is_some_and(|q| {

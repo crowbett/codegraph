@@ -232,6 +232,9 @@ fn python_relative_imports_and_inheritance() {
     assert_edge(&ix, tasks, 16, "U", "pkg.models.User", "exact");
     assert_edge(&ix, tasks, 17, "helper", "pkg.util.helper", "exact");
     assert_eq!(edge(&ix.store, tasks, 19, "local"), None);
+    // An attribute of an imported module, and a name compared with `is`.
+    assert_edge(&ix, tasks, 23, "User", "pkg.models.User", "exact");
+    assert_edge(&ix, tasks, 24, "U", "pkg.models.User", "exact");
     assert_edge(
         &ix,
         "pkg/sub/tasks.py",

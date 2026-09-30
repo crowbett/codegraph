@@ -1677,6 +1677,23 @@ impl Ctx {
         None
     }
 
+    /// Whether type `t` or one of its bases declares a field (a class attribute, not a
+    /// symbol) named `name`: the member is there, just not as a method.
+    fn declares_field(&self, t: usize, name: &str, d: u8) -> bool {
+        let s = &self.syms[t];
+        if s.fields.iter().any(|(k, _)| k == name) {
+            return true;
+        }
+        d < 4
+            && self.bases.get(&s.name).into_iter().flatten().any(|b| {
+                self.by_name.get(b).into_iter().flatten().any(|&bt| {
+                    bt != t
+                        && self.syms[bt].kind.is_type_like()
+                        && self.declares_field(bt, name, d + 1)
+                })
+            })
+    }
+
     fn field_of(&self, t: usize, name: &str, seen: &mut HashSet<usize>, d: u8) -> Val {
         if !seen.insert(t) || d > MAX_DEPTH {
             return Val::Ty(Ty::Unknown);
@@ -3125,7 +3142,10 @@ impl Ctx {
                             };
                             (m, c)
                         });
-                if found.is_none() && self.files[e.file].lang == Lang::Python {
+                if found.is_none()
+                    && self.files[e.file].lang == Lang::Python
+                    && !self.declares_field(t, &e.name, 0)
+                {
                     // Not on the static type: an `isinstance` narrowing to a subclass.
                     return Typed::Resolved(
                         self.subclass_method(t, &e.name)

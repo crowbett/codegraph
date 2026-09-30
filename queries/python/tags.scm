@@ -125,3 +125,31 @@
 (import_from_statement
   name: (aliased_import
     name: (dotted_name . (identifier) @name .))) @reference.binding
+
+; attribute reads (`@click.pass_context`, `click.utils._LazyFile`, `result.output`): kept
+; by extract.rs only on an imported module/name or a typed receiver
+(attribute
+  object: (_) @qualifier
+  attribute: (identifier) @name) @reference.value
+
+; `except NoSuchOption:`, `except ParseError as exc:`, `x is Cls`, `lambda: f`,
+; `ProgressBar[int]`, `type[ShellComplete]`
+(except_clause
+  (identifier) @name) @reference.value
+
+(except_clause
+  (as_pattern
+    .
+    (identifier) @name)) @reference.value
+
+(comparison_operator
+  (identifier) @name) @reference.value
+
+(lambda
+  body: (identifier) @name) @reference.value
+
+(subscript
+  value: (identifier) @name) @reference.value
+
+(subscript
+  subscript: (identifier) @name) @reference.value

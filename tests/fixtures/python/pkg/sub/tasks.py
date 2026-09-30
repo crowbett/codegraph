@@ -17,3 +17,8 @@ def registry(kind: U | None = None) -> dict:
     default = helper
     local = handlers
     return local
+
+
+def kinds():
+    cls = models.User
+    return cls is U
