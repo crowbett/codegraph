@@ -77,6 +77,12 @@ tasks:
     cmds:
       - cargo run --release -q -- scale {{.CLI_ARGS}}
 
+  bench:rebaseline:
+    desc: Re-score the frozen baseline (8d20102) with the current harness; run after any scoring change (Windows, pwsh)
+    cmds:
+      - task: bench:prepare
+      - pwsh -NoProfile -File bench/rebaseline.ps1
+
   bench:record:
     desc: Record the current accuracy run in bench/results/accuracy.json and docs/ACCURACY.md
     dir: bench

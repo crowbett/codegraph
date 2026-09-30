@@ -82,6 +82,9 @@ task bench:accuracy   # score against frozen SCIP ground truth, delta vs bench/b
                        # reports in .cache/bench/report/*.tsv (clones the corpus + builds 4
                        # SCIP indexers on first run: network + time)
 task bench:record     # once you're keeping the change: writes bench/results/ + docs/ACCURACY.md
+task bench:rebaseline # after changing the *harness's* scoring: re-scores the frozen baseline
+                       # (8d20102) so deltas stay comparable; document the rule in ACCURACY.md
+                       # --report also writes <repo>.refmisses.tsv (non-call refs) to cluster
 ```
 
 Agent eval (grep vs codegraph tool cost/correctness):

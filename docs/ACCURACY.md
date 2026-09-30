@@ -82,6 +82,17 @@ the v0.1.1 baseline was re-scored with the fixed harness so deltas stay comparab
   the end of the line) and the target is the same-named definition in the same file. Any
   other symbol SCIP records on the exact same range is also accepted. Added on 2026-09-29;
   the baseline was re-scored with it (TS refs hits +23).
+- Implementations: SCIP lists every supertype of a type transitively (`Atom -> IObservable`
+  through `IAtom`), codegraph stores direct `impl`/`inherit` edges, so a ground-truth pair
+  is found when a chain of codegraph edges reaches it. scip-typescript records nothing for
+  an interface's own `extends` or for local symbols (classes in files outside the tsconfig,
+  such as mobx's tests), so codegraph edges from those are unjudged. Added on 2026-09-29;
+  the baseline was re-scored with it.
+- Known ground-truth gaps, still scored as false: scip-go does not record echo's
+  `XConfig -> MiddlewareConfigurator` (value-receiver `ToMiddleware` in package
+  `middleware`, interface in `echo`; 22 pairs), and scip-python omits some direct subclass
+  pairs it records one level down (`BadParameter(UsageError)` is missing while
+  `MissingParameter -> BadParameter` is present).
 - Fields and Rust enum variants are not codegraph symbols and are excluded; rust-analyzer emits
   no implementation relationships, so Rust impl edges are unscored.
 

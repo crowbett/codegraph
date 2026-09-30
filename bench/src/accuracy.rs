@@ -811,11 +811,44 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
             cg_pairs.insert((f, t));
         }
     }
+    // SCIP lists every supertype, transitively (`Atom -> IObservable` through `IAtom`);
+    // codegraph stores direct edges, so a chain of them answers the pair.
+    let mut supers: HashMap<i64, Vec<i64>> = HashMap::new();
+    for &(a, b) in &cg_pairs {
+        supers.entry(a).or_default().push(b);
+    }
+    let reaches = |from: i64, to: i64| {
+        let (mut frontier, mut seen) = (vec![from], HashSet::new());
+        for _ in 0..6 {
+            let mut next = Vec::new();
+            for x in frontier {
+                for &y in supers.get(&x).into_iter().flatten() {
+                    if y == to {
+                        return true;
+                    }
+                    if seen.insert(y) {
+                        next.push(y);
+                    }
+                }
+            }
+            frontier = next;
+        }
+        false
+    };
+    // scip-typescript records no relationships for an interface's own `extends` or for
+    // local symbols (classes in files outside the tsconfig, like mobx's tests): no truth.
+    let no_truth = |a: i64| {
+        fam_of(cg.syms[&a].file) == Some("ts")
+            && (cg.syms[&a].kind == "interface"
+                || cg_to_scip
+                    .get(&a)
+                    .is_some_and(|v| v.iter().all(|s| is_local(s))))
+    };
     for p in &gt_pairs {
         let Some(f) = gt_fam.get(p) else { continue };
         let c = by_lang.entry((*f).to_string()).or_default();
         c.impl_gt += 1;
-        if cg_pairs.contains(p) {
+        if reaches(p.0, p.1) {
             c.impl_hit += 1;
         } else if report {
             rep.misses.push(format!(
@@ -831,7 +864,7 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
         };
         let c = by_lang.entry(f.to_string()).or_default();
         c.impl_edges.resolved += 1;
-        if cg_to_scip.contains_key(&p.0) && cg_to_scip.contains_key(&p.1) {
+        if cg_to_scip.contains_key(&p.0) && cg_to_scip.contains_key(&p.1) && !no_truth(p.0) {
             c.impl_edges.judged += 1;
             if gt_pairs.contains(p) {
                 c.impl_edges.correct += 1;
