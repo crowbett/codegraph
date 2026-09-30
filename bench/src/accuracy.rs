@@ -377,6 +377,8 @@ fn is_call(rest: &str) -> bool {
 
 struct Report {
     misses: Vec<String>,
+    /// Missed non-call references (types, values, callables used as values).
+    ref_misses: Vec<String>,
     falses: Vec<String>,
     defs_missing: Vec<String>,
 }
@@ -428,6 +430,7 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
     let mut by_lang: BTreeMap<String, Counts> = BTreeMap::new();
     let mut rep = Report {
         misses: Vec::new(),
+        ref_misses: Vec::new(),
         falses: Vec::new(),
         defs_missing: Vec::new(),
     };
@@ -604,13 +607,18 @@ fn score_repo(dirs: &Dirs, r: &Repo, report: bool) -> Result<(BTreeMap<String, C
                     Outcome::NoDef => b.no_def += 1,
                 }
             }
-            if report && call && !matches!(outcome, Outcome::Hit | Outcome::Dispatch) {
+            if report && !matches!(outcome, Outcome::Hit | Outcome::Dispatch) {
                 let got = edge.map(|e| {
                     let ce = &cg.edges[e];
                     format!("{} {}", describe(ce.to), ce.conf.as_deref().unwrap_or(""))
                 });
-                rep.misses.push(format!(
-                    "{:?}\t{}:{}\t{}\twant {}:{}\tgot {}\t| {}",
+                let (out, tag) = if call {
+                    (&mut rep.misses, String::new())
+                } else {
+                    (&mut rep.ref_misses, format!("{class:?}\t"))
+                };
+                out.push(format!(
+                    "{tag}{:?}\t{}:{}\t{}\twant {}:{}\tgot {}\t| {}",
                     outcome,
                     path,
                     o.line + 1,
@@ -1055,6 +1063,10 @@ pub fn run(
             std::fs::write(
                 dir.join(format!("{}.misses.tsv", r.name)),
                 rep.misses.join("\n"),
+            )?;
+            std::fs::write(
+                dir.join(format!("{}.refmisses.tsv", r.name)),
+                rep.ref_misses.join("\n"),
             )?;
             std::fs::write(
                 dir.join(format!("{}.false.tsv", r.name)),
