@@ -1,6 +1,6 @@
 # codegraph
 
-Tree-sitter symbol + call graph of every repo under the configured roots, served to agents over MCP (Rust, `codegraph.exe`). Part of **kit**: follow `~/dev/KIT.md` (config paths, `--json` envelope, exit codes, MCP rules). Do not edit KIT.md.
+Tree-sitter symbol + call graph of every repo under the configured roots, served to agents over MCP (Rust, `codegraph.exe`). Part of **kit**: follow `KIT.md` in the workspace root (`../../KIT.md`) (config paths, `--json` envelope, exit codes, MCP rules). Do not edit KIT.md.
 
 ## Where things are
 - `docs/PACKAGES.md`: what every `src/*`, `tests/*`, `bench/`, `evals/`, `packaging/` file does.

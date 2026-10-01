@@ -30,7 +30,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent.parent
-MAIN = Path(os.environ.get("CGAGENT_BENCH_CWD", r"C:\Users\corbe\dev\rust\codegraph"))
+MAIN = Path(os.environ.get("CGAGENT_BENCH_CWD", str(REPO_ROOT)))
 CORPUS = Path(os.environ.get("CGAGENT_CORPUS", str(MAIN / ".cache" / "bench" / "corpus")))
 BENCH = Path(os.environ.get("CGAGENT_BENCH_BIN", str(MAIN / "bench" / "target" / "release" / "codegraph-bench.exe")))
 CACHE = REPO_ROOT / ".cache" / "evals" / "scip"

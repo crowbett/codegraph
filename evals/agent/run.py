@@ -36,8 +36,11 @@ STATE = ROOT / ".cache" / "evals"
 DOC = ROOT / "docs" / "AGENT-EVAL.md"
 SUITE = HERE / "suite.yaml"
 RULES = HERE / "fake-rules.json"
-DEFAULT_CORPUS = Path(os.environ.get("CGAGENT_CORPUS", r"C:\Users\corbe\dev\rust\codegraph\.cache\bench\corpus"))
-DEFAULT_FAKE = Path(os.environ.get("CGAGENT_FAKE_LLM", r"C:\Users\corbe\dev\py\evalrig\scripts\fake_llm.py"))
+DEFAULT_CORPUS = Path(os.environ.get("CGAGENT_CORPUS", str(ROOT / ".cache" / "bench" / "corpus")))
+# Default assumes an evalrig checkout at <workdir>/py/evalrig next to <workdir>/rust/codegraph.
+DEFAULT_FAKE = Path(
+    os.environ.get("CGAGENT_FAKE_LLM", str(ROOT.parent.parent / "py" / "evalrig" / "scripts" / "fake_llm.py"))
+)
 REAL_MODEL = "claude-haiku-4-5-20251001"
 HAIKU = {"input": 1.0, "output": 5.0, "cache_read": 0.1}
 START, END = "<!-- results:start -->", "<!-- results:end -->"
