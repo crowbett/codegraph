@@ -39,23 +39,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: linux-amd64
-            os: ubuntu-latest
-            exe: codegraph
-            npm: linux-x64
-          - name: macos-arm64
-            os: macos-latest
-            exe: codegraph
-            npm: darwin-arm64
-          - name: windows-amd64
-            os: windows-latest
-            exe: codegraph.exe
-            npm: win32-x64
-        # macOS bills 10x on private repos: pushes and PRs skip it; the weekly schedule and
-        # workflow_dispatch run the full matrix.
-        exclude:
-          - os: ${{ (github.event_name == 'push' || github.event_name == 'pull_request') && 'macos-latest' || 'none' }}
+        # macOS bills 10x on private repos: pushes and PRs run linux + windows; the weekly schedule and
+        # workflow_dispatch add macOS. The list is chosen with fromJSON because an `exclude` cannot remove
+        # `include` entries (GitHub then drops the whole job, which is what happened to the first version).
+        include: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '[{"name":"linux-amd64","os":"ubuntu-latest","exe":"codegraph","npm":"linux-x64"},{"name":"macos-arm64","os":"macos-latest","exe":"codegraph","npm":"darwin-arm64"},{"name":"windows-amd64","os":"windows-latest","exe":"codegraph.exe","npm":"win32-x64"}]' || '[{"name":"linux-amd64","os":"ubuntu-latest","exe":"codegraph","npm":"linux-x64"},{"name":"windows-amd64","os":"windows-latest","exe":"codegraph.exe","npm":"win32-x64"}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
