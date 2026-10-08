@@ -277,7 +277,7 @@ mod tests {
     fn empty_is_default() {
         let (cfg, warn) = parse("").unwrap();
         assert_eq!(cfg, Config::default());
-        assert!(warn.is_empty());
+        assert_eq!(warn, [] as [String; 0]);
     }
 
     #[test]

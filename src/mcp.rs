@@ -838,7 +838,7 @@ mod tests {
                 (Line::TooLong, String::new())
             ]
         );
-        assert!(read_all(b"", 5).is_empty());
+        assert_eq!(read_all(b"", 5), [] as [(Line, String); 0]);
     }
 
     #[test]
