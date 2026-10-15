@@ -386,7 +386,7 @@ error rates — read them before trusting an edge blindly, especially `likely` a
   anything.
 - A handful of scoring artifacts remain even in the numbers above (e.g. 2 of the Go `impl`
   "false" pairs in the corpus are real cross-package implementations that scip-go itself
-  doesn't record) — see `docs/OVERNIGHT.md`'s "Known remaining gaps" for the full list.
+  doesn't record) — see [docs/ACCURACY.md](docs/ACCURACY.md) for the method and per-language results.
 
 See also [docs/COMPARISON.md](docs/COMPARISON.md) for how this stacks up against grep, ctags,
 LSP servers, SCIP/Sourcegraph and GitHub code search.

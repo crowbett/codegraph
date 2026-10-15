@@ -5,7 +5,7 @@ Tree-sitter symbol + call graph of every repo under the configured roots, served
 ## Where things are
 - `docs/PACKAGES.md`: what every `src/*`, `tests/*`, `bench/`, `evals/`, `packaging/` file does.
 - `docs/DEVELOPMENT.md`: full command list (accuracy bench, agent eval, profiling, smoke run) and the rules with their reasoning.
-- `docs/ACCURACY.md`, `AGENT-EVAL.md`, `INSTALL.md`, `SCALE.md`, `COMPARISON.md`, `OVERNIGHT.md` (running log of the 1.0 push: the *why*).
+- `docs/ACCURACY.md`, `AGENT-EVAL.md`, `INSTALL.md`, `SCALE.md`, `COMPARISON.md`.
 
 ## Invariants
 - Library code uses `crate::error::Error` (thiserror); only `main.rs` uses anyhow. No `unwrap`/`expect` outside tests (clippy denies them). `unsafe_code = "forbid"`.

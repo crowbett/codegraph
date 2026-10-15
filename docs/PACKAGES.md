@@ -58,8 +58,7 @@ evals/agent/     grep-vs-codegraph agent eval: cases.py (questions + SCIP/source
 packaging/       install.sh / install.ps1 (checksum-verified installers), npm/ (per-platform
                  packages), homebrew/codegraph.rb, scoop/, winget/. See docs/INSTALL.md
 docs/            ACCURACY.md (benchmark method + results), AGENT-EVAL.md (agent token/pass-rate
-                 eval), INSTALL.md (every install path), OVERNIGHT.md (running log of the 1.0
-                 push — read it for *why*, not just *what*), COMPARISON.md (vs grep/ctags/LSP/
+                 eval), INSTALL.md (every install path), COMPARISON.md (vs grep/ctags/LSP/
                  SCIP/GitHub search)
 ```
 
