@@ -7,17 +7,14 @@ dependencies.
 
 | Channel | Status |
 |---|---|
-| Windows x64 release zip | available: `codegraph-0.1.1-windows-amd64.zip` + `.sha256` on [v0.1.1](https://github.com/crowbett/codegraph/releases/tag/v0.1.1) |
+| Release archives (Linux, macOS, Windows) | available on [v0.1.2](https://github.com/crowbett/codegraph/releases/tag/v0.1.2) with `SHA256SUMS` and build provenance |
+| `install.sh` (Linux/macOS) / `install.ps1` (Windows) | available: download the latest release and verify `SHA256SUMS` |
 | `cargo install --git` (any OS) | available: builds from source, see below |
-| Linux / macOS archives | not shipped yet (built by the release workflow, not attached to v0.1.1) |
-| `install.sh` / `install.ps1` | not usable with v0.1.1: they need the release's `SHA256SUMS`, which v0.1.1 lacks |
-| scoop / winget | manifests in `packaging/` point at the v0.1.1 zip; not in a public bucket or winget-pkgs |
+| scoop / winget | manifests in `packaging/` point at v0.1.2; not in a public bucket or winget-pkgs |
 | Homebrew | formula in `packaging/homebrew/`; no tap repo yet |
 | npm | packages in `packaging/npm/`; not published |
 
-The install scripts, Homebrew and npm consume the full asset set that
-`.github/workflows/release.yml` builds (five archives plus `SHA256SUMS`), so they start
-working with the first release cut by that workflow:
+Each release built by `.github/workflows/release.yml` carries five archives plus `SHA256SUMS`:
 
 | Platform | Release asset | Built on |
 |---|---|---|
@@ -29,40 +26,9 @@ working with the first release cut by that workflow:
 
 Archives are flat: the binary, `README.md` and `LICENSE` at the top level.
 
-## Windows x64: release zip
+## Install script
 
-```powershell
-gh release download v0.1.1 -R crowbett/codegraph -p 'codegraph-0.1.1-windows-amd64.zip*'
-Get-FileHash codegraph-0.1.1-windows-amd64.zip -Algorithm SHA256   # compare with the .sha256 file
-Expand-Archive codegraph-0.1.1-windows-amd64.zip -DestinationPath "$env:LOCALAPPDATA\codegraph\bin"
-```
-
-(Or download both files from the release page in a browser.) Then add
-`%LOCALAPPDATA%\codegraph\bin` to your user PATH.
-
-## cargo (build from source)
-
-Needs Rust 1.85+ and a C compiler (tree-sitter grammars and bundled SQLite are C):
-
-```sh
-cargo install --git https://github.com/crowbett/codegraph --locked codegraph
-# a tag
-cargo install --git https://github.com/crowbett/codegraph --tag v0.1.1 --locked codegraph
-```
-
-The trailing package name `codegraph` is required: the repo also contains the `bench/`
-crate and a Rust test fixture, and `cargo install --git` refuses to guess between them.
-The crate is `publish = false`; it is not on crates.io.
-
-From a clone: `cargo install --path . --locked`.
-
-## Planned channels
-
-Written but not published. The install scripts, Homebrew and npm cannot install v0.1.1
-(see the table above). CI syntax-checks `install.sh` and smoke-tests the npm shim; the
-other channels are not exercised in CI.
-
-### Linux and macOS: install script
+### Linux and macOS
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/crowbett/codegraph/main/packaging/install.sh | sh
@@ -78,7 +44,7 @@ and installs `codegraph` into `~/.local/bin` (override: `--dir` or
 on PATH it prints the `export PATH=...` line to add. Needs `curl` (or GNU wget 1.15+ for
 `--https-only`), `tar`, and `sha256sum` or `shasum`.
 
-### Windows: install script
+### Windows
 
 ```powershell
 irm https://raw.githubusercontent.com/crowbett/codegraph/main/packaging/install.ps1 | iex
@@ -97,6 +63,45 @@ Both scripts also accept `GH_TOKEN` / `GITHUB_TOKEN` and then download through t
 API; a public install does not need it. `install.sh` takes the token path only with curl
 and passes the header through a mode-600 curl config file, never on a command line.
 
+## Manual download
+
+Download your platform's archive and `SHA256SUMS` from the
+[latest release](https://github.com/crowbett/codegraph/releases/latest), check the hash, and
+put the binary on your PATH:
+
+```sh
+gh release download -R crowbett/codegraph -p 'codegraph-*-linux-amd64.tar.gz' -p SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing   # macOS: shasum -a 256 -c SHA256SUMS --ignore-missing
+tar xzf codegraph-*-linux-amd64.tar.gz
+```
+
+```powershell
+gh release download -R crowbett/codegraph -p 'codegraph-*-windows-amd64.zip' -p SHA256SUMS
+Get-FileHash codegraph-*-windows-amd64.zip -Algorithm SHA256   # compare with its line in SHA256SUMS
+Expand-Archive codegraph-*-windows-amd64.zip -DestinationPath "$env:LOCALAPPDATA\codegraph\bin"
+```
+
+## cargo (build from source)
+
+Needs Rust 1.85+ and a C compiler (tree-sitter grammars and bundled SQLite are C):
+
+```sh
+cargo install --git https://github.com/crowbett/codegraph --locked codegraph
+# a tag
+cargo install --git https://github.com/crowbett/codegraph --tag v0.1.2 --locked codegraph
+```
+
+The trailing package name `codegraph` is required: the repo also contains the `bench/`
+crate and a Rust test fixture, and `cargo install --git` refuses to guess between them.
+The crate is `publish = false`; it is not on crates.io.
+
+From a clone: `cargo install --path . --locked`.
+
+## Planned channels
+
+Written but not published. CI smoke-tests the npm shim; scoop, winget and Homebrew are
+not exercised in CI.
+
 ### Windows: scoop / winget
 
 Manifests live in `packaging/scoop/codegraph.json` and `packaging/winget/`. They are not
@@ -110,8 +115,8 @@ winget install --manifest packaging\winget   # from a clone; needs `winget setti
 ### Homebrew (macOS / Linux)
 
 `packaging/homebrew/codegraph.rb` is a ready formula (arm/intel x macOS/Linux, installs
-the release tarball, `brew test` runs `codegraph version`). Its `sha256` lines are
-placeholders until a release ships the tarballs. Once it is copied to a tap repo
+the release tarball, `brew test` runs `codegraph version`). Its `sha256` lines match
+v0.1.2. Once it is copied to a tap repo
 `crowbett/homebrew-tap` as `Formula/codegraph.rb`:
 
 ```sh

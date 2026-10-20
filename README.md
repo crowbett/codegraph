@@ -25,18 +25,28 @@ conventions).
 
 ## Install
 
-**Windows x64:** download `codegraph-<ver>-windows-amd64.zip` (and its `.sha256`) from the
-[latest release](https://github.com/crowbett/codegraph/releases/latest), unzip, and put
-`codegraph.exe` on your PATH.
+**Linux / macOS:**
 
-**Any platform, from source** (Rust 1.85+ and a C compiler):
+```sh
+curl -fsSL https://raw.githubusercontent.com/crowbett/codegraph/main/packaging/install.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/crowbett/codegraph/main/packaging/install.ps1 | iex
+```
+
+Both download the [latest release](https://github.com/crowbett/codegraph/releases/latest) for
+your platform and verify it against `SHA256SUMS`; every archive also carries a build
+provenance attestation. **From source** (Rust 1.85+ and a C compiler):
 
 ```sh
 cargo install --git https://github.com/crowbett/codegraph --locked codegraph
 ```
 
-Linux/macOS archives, install scripts, Homebrew, scoop, winget and npm packages are
-prepared in `packaging/` but not shipped yet; see [docs/INSTALL.md](docs/INSTALL.md).
+Homebrew, scoop, winget and npm packages are prepared in `packaging/` but not published
+yet; see [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Quickstart
 

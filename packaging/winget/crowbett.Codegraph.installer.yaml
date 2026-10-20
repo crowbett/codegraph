@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.9.0.schema.json
 PackageIdentifier: crowbett.Codegraph
-PackageVersion: 0.1.1
+PackageVersion: 0.1.2
 InstallerType: zip
 NestedInstallerType: portable
 NestedInstallerFiles:
@@ -9,7 +9,7 @@ NestedInstallerFiles:
 MinimumOSVersion: 10.0.17763.0
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/crowbett/codegraph/releases/download/v0.1.1/codegraph-0.1.1-windows-amd64.zip
-    InstallerSha256: D54C9C6162B5C72ED553FAAD66F339D48DA349E65BC39006965E36B1F6940528
+    InstallerUrl: https://github.com/crowbett/codegraph/releases/download/v0.1.2/codegraph-0.1.2-windows-amd64.zip
+    InstallerSha256: 4B3E48D120999685DD45D22A4204EA902452C1187DD7E7F6A6904B24D077A585
 ManifestType: installer
 ManifestVersion: 1.9.0

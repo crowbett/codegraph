@@ -1,12 +1,12 @@
 {
-    "version": "0.1.1",
+    "version": "0.1.2",
     "description": "A tree-sitter symbol + call graph of every repo you own, served to AI agents over MCP.",
     "homepage": "https://github.com/crowbett/codegraph",
     "license": "MIT",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/crowbett/codegraph/releases/download/v0.1.1/codegraph-0.1.1-windows-amd64.zip",
-            "hash": "d54c9c6162b5c72ed553faad66f339d48da349e65bc39006965e36b1f6940528"
+            "url": "https://github.com/crowbett/codegraph/releases/download/v0.1.2/codegraph-0.1.2-windows-amd64.zip",
+            "hash": "4b3e48d120999685dd45d22a4204ea902452c1187dd7e7f6a6904b24d077a585"
         }
     },
     "bin": "codegraph.exe",
