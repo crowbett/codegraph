@@ -2,7 +2,7 @@ version: "3"
 
 vars:
   APP: codegraph
-  VERSION: 0.1.1
+  VERSION: 0.1.2
   ZIP: '{{.APP}}-{{.VERSION}}-windows-amd64.zip'
 
 tasks:

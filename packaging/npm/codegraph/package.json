@@ -1,6 +1,6 @@
 {
   "name": "@crowbett/codegraph",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A tree-sitter symbol + call graph of every repo you own, served to AI agents over MCP.",
   "license": "MIT",
   "author": "crowbett",
@@ -18,11 +18,11 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@crowbett/codegraph-win32-x64": "0.1.1",
-    "@crowbett/codegraph-linux-x64": "0.1.1",
-    "@crowbett/codegraph-linux-arm64": "0.1.1",
-    "@crowbett/codegraph-darwin-x64": "0.1.1",
-    "@crowbett/codegraph-darwin-arm64": "0.1.1"
+    "@crowbett/codegraph-win32-x64": "0.1.2",
+    "@crowbett/codegraph-linux-x64": "0.1.2",
+    "@crowbett/codegraph-linux-arm64": "0.1.2",
+    "@crowbett/codegraph-darwin-x64": "0.1.2",
+    "@crowbett/codegraph-darwin-arm64": "0.1.2"
   },
   "publishConfig": {
     "access": "restricted"
