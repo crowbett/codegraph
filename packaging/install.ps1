@@ -14,12 +14,8 @@
   %LOCALAPPDATA%\codegraph\bin (or -Dir / $env:CODEGRAPH_INSTALL_DIR). It never edits
   PATH or your profile; it prints the command to run if the directory is not on PATH.
 
-  Private repository: while crowbett/codegraph is private, anonymous
-  downloads (including raw.githubusercontent.com for this script) return 404. Set
-  $env:GH_TOKEN (or $env:GITHUB_TOKEN) to a token with read access. Prefer a
-  fine-grained personal access token scoped to this one repository with only
-  "Contents: read" (see docs/INSTALL.md); `$env:GH_TOKEN = gh auth token` also works
-  but hands the script your full gh login.
+  Optional token: set $env:GH_TOKEN (or $env:GITHUB_TOKEN) to fetch through the
+  GitHub API (higher rate limits). A fine-grained token with only "Contents: read" is enough.
   With a token the script downloads assets through the GitHub API. The token only
   travels in HTTPS request headers (never on a command line), and both Windows
   PowerShell and PowerShell 7 drop the Authorization header when GitHub redirects
@@ -80,7 +76,7 @@ if ($token) {
         $release = Invoke-RestMethod -Uri "$api/releases/latest" -Headers $headers -UseBasicParsing
         $Version = $release.tag_name.TrimStart('v')
     } catch {
-        throw "cannot find the latest release of $repo (private repo? set `$env:GH_TOKEN, or pass -Version): $_"
+        throw "cannot find the latest release of $repo (pass -Version): $_"
     }
 }
 

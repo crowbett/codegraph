@@ -9,12 +9,8 @@
 # ~/.local/bin (or --dir / $CODEGRAPH_INSTALL_DIR). It never edits PATH or shell
 # profiles; it prints the line to add if the directory is not on PATH.
 #
-# Private repository: while crowbett/codegraph is private, anonymous
-# downloads (including raw.githubusercontent.com for this script) return 404. Set
-# GH_TOKEN (or GITHUB_TOKEN) to a token with read access to the repo. Prefer a
-# fine-grained personal access token scoped to this one repository with only
-# "Contents: read" (see docs/INSTALL.md); `GH_TOKEN=$(gh auth token)` also works but
-# hands the script your full gh login.
+# Optional token: set GH_TOKEN (or GITHUB_TOKEN) to fetch through the GitHub API
+# (higher rate limits). A fine-grained token with only "Contents: read" is enough.
 # With a token the script downloads assets through the GitHub API using curl; the
 # token is passed in a private (mode 600) curl config file, never on a command line
 # where other local users could read it from ps. The token path requires curl.
@@ -43,7 +39,7 @@ usage: install.sh [--version X.Y.Z] [--dir DIR]
 
 Installs codegraph from GitHub releases into ~/.local/bin (or DIR), verifying the
 archive against SHA256SUMS. Never edits PATH or shell profiles.
-While the repo is private, set GH_TOKEN to a read-only token (needs curl).
+Optional: set GH_TOKEN to fetch through the GitHub API (needs curl).
 EOF
     exit 0
 }
@@ -134,7 +130,7 @@ API="https://api.github.com/repos/$REPO"
 
 # --- release metadata -------------------------------------------------------
 if [ -n "$TOKEN" ]; then
-    # Authenticated: go through the API (works for private repos).
+    # Authenticated: go through the API.
     if [ -n "$VERSION" ]; then
         rel_url="$API/releases/tags/v$VERSION"
     else
@@ -151,7 +147,7 @@ else
         if [ "$DL" = curl ]; then
             loc=$(curl -fsSLI --proto '=https' --proto-redir '=https' --tlsv1.2 -o /dev/null \
                 -w '%{url_effective}' "https://github.com/$REPO/releases/latest") ||
-                die "cannot reach github.com/$REPO (private repo? set GH_TOKEN)"
+                die "cannot reach github.com/$REPO"
         else
             loc=$(wget -q -S --spider --https-only "https://github.com/$REPO/releases/latest" 2>&1 |
                 sed -n 's/^ *Location: *//p' | tail -n1)
@@ -161,7 +157,7 @@ else
     fi
 fi
 if [ -z "$VERSION" ] || [ "$VERSION" = latest ]; then
-    die "could not determine the latest version (private repo? set GH_TOKEN), or pass --version"
+    die "could not determine the latest version, pass --version"
 fi
 
 ASSET="codegraph-$VERSION-$OS-$ARCH.tar.gz"

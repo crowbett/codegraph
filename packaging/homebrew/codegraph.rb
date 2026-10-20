@@ -4,11 +4,7 @@
 #   brew tap crowbett/tap
 #   brew install codegraph
 #
-# While the codegraph repo (and/or the tap) is private, Homebrew needs a token to fetch:
-#   export HOMEBREW_GITHUB_API_TOKEN=$(gh auth token)
-# and plain release-asset URLs still 404 for private repos (Homebrew's default curl
-# download strategy does not send the token to github.com/.../releases/download).
-# Until the repo is public, prefer packaging/install.sh with GH_TOKEN. See docs/INSTALL.md.
+# The tap is not published yet; docs/INSTALL.md lists the install channels that work today.
 #
 # On each release: bump `version` and replace every sha256 with the matching line from
 # the release's SHA256SUMS.
