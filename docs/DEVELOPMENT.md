@@ -36,7 +36,7 @@ index and FTS rebuild) to stderr.
 Smoke against a throwaway data dir (never the real `~/.config/kit`):
 
 ```powershell
-$env:KIT_DATA_DIR = "$env:TEMP\cg" ; .\target\release\codegraph.exe index C:\Users\corbe\dev -v
+$env:KIT_DATA_DIR = "$env:TEMP\cg" ; .\target\release\codegraph.exe index $env:USERPROFILE\dev -v
 ```
 
 ## Rules

@@ -1,7 +1,23 @@
 # Installing codegraph
 
 codegraph is a single binary (`codegraph` / `codegraph.exe`) with no runtime
-dependencies. Pick one install path; they all end with `codegraph` on your PATH.
+dependencies.
+
+## What works today
+
+| Channel | Status |
+|---|---|
+| Windows x64 release zip | available: `codegraph-0.1.1-windows-amd64.zip` + `.sha256` on [v0.1.1](https://github.com/crowbett/codegraph/releases/tag/v0.1.1) |
+| `cargo install --git` (any OS) | available: builds from source, see below |
+| Linux / macOS archives | not shipped yet (built by the release workflow, not attached to v0.1.1) |
+| `install.sh` / `install.ps1` | not usable with v0.1.1: they need the release's `SHA256SUMS`, which v0.1.1 lacks |
+| scoop / winget | manifests in `packaging/` point at the v0.1.1 zip; not in a public bucket or winget-pkgs |
+| Homebrew | formula in `packaging/homebrew/`; no tap repo yet |
+| npm | packages in `packaging/npm/`; not published |
+
+The install scripts, Homebrew and npm consume the full asset set that
+`.github/workflows/release.yml` builds (five archives plus `SHA256SUMS`), so they start
+working with the first release cut by that workflow:
 
 | Platform | Release asset | Built on |
 |---|---|---|
@@ -11,57 +27,45 @@ dependencies. Pick one install path; they all end with `codegraph` on your PATH.
 | macOS Apple silicon | `codegraph-<ver>-macos-arm64.tar.gz` | `aarch64-apple-darwin` |
 | macOS Intel | `codegraph-<ver>-macos-amd64.tar.gz` | `x86_64-apple-darwin` |
 
-Every release also carries `SHA256SUMS` (`sha256sum` format) covering all archives.
 Archives are flat: the binary, `README.md` and `LICENSE` at the top level.
 
-## While the repository is private
+## Windows x64: release zip
 
-`crowbett/codegraph` is currently a **private** repo. Anonymous requests to
-`github.com/.../releases/download/...`, `raw.githubusercontent.com` and the Git URL all
-return 404. Every path below therefore needs GitHub auth until the repo is made public:
+```powershell
+gh release download v0.1.1 -R crowbett/codegraph -p 'codegraph-0.1.1-windows-amd64.zip*'
+Get-FileHash codegraph-0.1.1-windows-amd64.zip -Algorithm SHA256   # compare with the .sha256 file
+Expand-Archive codegraph-0.1.1-windows-amd64.zip -DestinationPath "$env:LOCALAPPDATA\codegraph\bin"
+```
 
-- scripts: set `GH_TOKEN` (or `GITHUB_TOKEN`) to a token with `contents: read` on the repo
-  (see "Which token" below); the scripts then fetch through the GitHub API;
-- fetching the scripts themselves: use `gh` instead of curl (shown below);
-- cargo: an authenticated git (SSH key or credential helper);
-- scoop / winget / Homebrew / npm: only work once the repo (and the tap / npm packages)
-  are public, or with the per-tool token setup noted in each section.
+(Or download both files from the release page in a browser.) Then add
+`%LOCALAPPDATA%\codegraph\bin` to your user PATH.
 
-Once the repo is public, drop the token bits; nothing else changes.
+## cargo (build from source)
 
-### Which token
-
-Use a **fine-grained personal access token** made for this and nothing else: GitHub ->
-Settings -> Developer settings -> Fine-grained tokens -> "Generate new token", resource
-owner `crowbett`, "Only select repositories" = `codegraph`, repository
-permission **Contents: Read-only** (Metadata: Read-only is added automatically), a short
-expiry. That token can read releases and nothing else. `GH_TOKEN=$(gh auth token)` works
-too, but it hands the script your full `gh` login (typically `repo` scope on every repo
-you can reach), so prefer the fine-grained one on any machine you do not fully control.
-
-How the scripts handle it:
-
-- `install.sh` needs **curl** for the token path. The `Authorization` header goes into a
-  mode-600 curl `--config` file inside the script's private temp dir (deleted on exit),
-  never onto a command line where `ps` would show it to other local users. With only
-  `wget` available it refuses to use a token (wget takes headers on its command line and
-  re-sends them on redirects). All downloads are HTTPS-only, including redirects.
-- `install.ps1` passes the token only as an HTTPS request header; Windows PowerShell 5.1
-  and PowerShell 7 both drop it when GitHub redirects the download to its storage host.
-
-Environment variables are still readable by your own user (and root), so run the
-installer from a shell you trust and `unset GH_TOKEN` afterwards if you exported it.
-
-## Linux and macOS: install script
+Needs Rust 1.85+ and a C compiler (tree-sitter grammars and bundled SQLite are C):
 
 ```sh
-# public repo
-curl -fsSL https://raw.githubusercontent.com/crowbett/codegraph/main/packaging/install.sh | sh
+cargo install --git https://github.com/crowbett/codegraph --locked codegraph
+# a tag
+cargo install --git https://github.com/crowbett/codegraph --tag v0.1.1 --locked codegraph
+```
 
-# private repo (now)
-gh api -H 'Accept: application/vnd.github.raw' \
-  repos/crowbett/codegraph/contents/packaging/install.sh \
-  | GH_TOKEN=$(gh auth token) sh
+The trailing package name `codegraph` is required: the repo also contains the `bench/`
+crate and a Rust test fixture, and `cargo install --git` refuses to guess between them.
+The crate is `publish = false`; it is not on crates.io.
+
+From a clone: `cargo install --path . --locked`.
+
+## Planned channels
+
+Written but not published. The install scripts, Homebrew and npm cannot install v0.1.1
+(see the table above). CI syntax-checks `install.sh` and smoke-tests the npm shim; the
+other channels are not exercised in CI.
+
+### Linux and macOS: install script
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/crowbett/codegraph/main/packaging/install.sh | sh
 
 # a specific version / another directory
 ... | sh -s -- --version 0.2.0 --dir ~/bin
@@ -71,19 +75,13 @@ The script detects OS (`linux`/`macos`) and arch (`amd64`/`arm64`, native arm64 
 under Rosetta), downloads the matching archive and `SHA256SUMS`, verifies the hash,
 and installs `codegraph` into `~/.local/bin` (override: `--dir` or
 `CODEGRAPH_INSTALL_DIR`). It never edits PATH or shell profiles; if the directory is not
-on PATH it prints the `export PATH=...` line to add. Needs `curl` (or `wget` for public,
-token-less downloads; GNU wget 1.15+ for `--https-only`), `tar`, and `sha256sum` or
-`shasum`.
+on PATH it prints the `export PATH=...` line to add. Needs `curl` (or GNU wget 1.15+ for
+`--https-only`), `tar`, and `sha256sum` or `shasum`.
 
-## Windows: install script
+### Windows: install script
 
 ```powershell
-# public repo
 irm https://raw.githubusercontent.com/crowbett/codegraph/main/packaging/install.ps1 | iex
-
-# private repo (now)
-$env:GH_TOKEN = gh auth token
-gh api -H "Accept: application/vnd.github.raw" repos/crowbett/codegraph/contents/packaging/install.ps1 | Out-String | iex
 
 # with parameters
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/crowbett/codegraph/main/packaging/install.ps1))) -Version 0.2.0
@@ -95,34 +93,33 @@ verifying `SHA256SUMS`, and prints the one command that adds the directory to yo
 PATH if it is missing (it does not run it). Re-running upgrades in place, even while an
 MCP server holds the old exe open (the old file is renamed aside first).
 
-## Windows: scoop / winget
+Both scripts also accept `GH_TOKEN` / `GITHUB_TOKEN` and then download through the GitHub
+API; a public install does not need it. `install.sh` takes the token path only with curl
+and passes the header through a mode-600 curl config file, never on a command line.
+
+### Windows: scoop / winget
 
 Manifests live in `packaging/scoop/codegraph.json` and `packaging/winget/`. They are not
-in any public bucket or in winget-pkgs yet, and both download the release zip anonymously,
-so they only work after the repo is public:
+in any public bucket or in winget-pkgs yet; from the repo they can be used directly:
 
 ```powershell
 scoop install https://raw.githubusercontent.com/crowbett/codegraph/main/packaging/scoop/codegraph.json
 winget install --manifest packaging\winget   # from a clone; needs `winget settings --enable LocalManifestFiles`
 ```
 
-## Homebrew (macOS / Linux)
+### Homebrew (macOS / Linux)
 
 `packaging/homebrew/codegraph.rb` is a ready formula (arm/intel x macOS/Linux, installs
-the release tarball, `brew test` runs `codegraph version`). To use it, copy it to a tap
-repo `crowbett/homebrew-tap` as `Formula/codegraph.rb`, then:
+the release tarball, `brew test` runs `codegraph version`). Its `sha256` lines are
+placeholders until a release ships the tarballs. Once it is copied to a tap repo
+`crowbett/homebrew-tap` as `Formula/codegraph.rb`:
 
 ```sh
 brew tap crowbett/tap
 brew install codegraph
 ```
 
-A private tap clones fine with `HOMEBREW_GITHUB_API_TOKEN` / git credentials, but the
-formula's release-asset URLs are fetched anonymously by Homebrew's default download
-strategy, so `brew install` fails until the codegraph repo is public. Use the install
-script meanwhile.
-
-## npm (any OS with Node 18+)
+### npm (any OS with Node 18+)
 
 `packaging/npm/` holds an esbuild-style package set:
 
@@ -136,35 +133,6 @@ Once published: `npm i -g @crowbett/codegraph` or
 overrides the binary the shim runs. Nothing is published yet (see "Cutting a release").
 CI assembles the packages from each OS's build, installs them into a scratch project with
 `npm install` and runs the shim, on Linux, macOS and Windows.
-
-## cargo (build from source)
-
-Needs Rust 1.85+ and a C compiler (tree-sitter grammars and bundled SQLite are C):
-
-```sh
-cargo install --git https://github.com/crowbett/codegraph --locked codegraph
-# a tag
-cargo install --git https://github.com/crowbett/codegraph --tag v0.2.0 --locked codegraph
-```
-
-The trailing package name `codegraph` is required: the repo also contains the `bench/`
-crate and a Rust test fixture, and `cargo install --git` refuses to guess between them.
-
-While private, cargo must authenticate to GitHub. The reliable way is SSH through your
-git setup:
-
-```sh
-CARGO_NET_GIT_FETCH_WITH_CLI=true \
-  cargo install --git ssh://git@github.com/crowbett/codegraph.git --locked codegraph
-```
-
-(PowerShell: `$env:CARGO_NET_GIT_FETCH_WITH_CLI = "true"` first.) The https URL also
-works with `CARGO_NET_GIT_FETCH_WITH_CLI=true` and a git credential helper that already
-holds a token (`gh auth setup-git`); with Git Credential Manager and no cached credential
-it opens a login prompt, and in a non-interactive shell it just hangs. The crate is
-`publish = false`; it is not on crates.io.
-
-From a clone: `cargo install --path . --locked`.
 
 ## Verifying provenance
 
@@ -187,11 +155,10 @@ built by that workflow in that repo) fails with a non-zero exit. `--signer-workf
 also rejects artifacts attested by some other workflow in the repo. Offline:
 `gh attestation download` the bundle once, then `gh attestation verify --bundle <file>`.
 
-Caveats: GitHub only issues attestations for **public** repositories (private ones need
-GitHub Enterprise Cloud). While this repo is private the release workflow skips the step
-with a warning, so releases cut before it goes public (including v0.1.1) have no
-attestation; verify those with `SHA256SUMS` only. The install scripts verify the
-checksum, not the attestation; run `gh attestation verify` yourself when provenance matters.
+Caveats: GitHub only issues attestations for public repositories, and v0.1.1 was published
+before this repo went public, so it has no attestation (and no `SHA256SUMS`); verify its zip
+against the attached `.sha256` only. The install scripts verify the checksum, not the
+attestation; run `gh attestation verify` yourself when provenance matters.
 
 ## After installing
 
@@ -212,8 +179,8 @@ codegraph mcp        # stdio MCP server; see README for client registration
    `Cargo.toml` (the workflow fails otherwise). The workflow builds every target without a
    build cache (hermetic), attests build provenance for each archive (public repo only),
    and creates a **draft** GitHub release with the archives, `SHA256SUMS` and generated notes.
-4. Check the draft (download one archive, run `codegraph version`, and once the repo is
-   public `gh attestation verify` it as in "Verifying provenance"), then publish it.
+4. Check the draft (download one archive, run `codegraph version`, and
+   `gh attestation verify` it as in "Verifying provenance"), then publish it.
 5. Update the package manifests from the release's `SHA256SUMS`:
    - scoop `packaging/scoop/codegraph.json`: `version`, `url`, `hash` (windows zip);
    - winget `packaging/winget/*.yaml`: `PackageVersion` in all three, `InstallerUrl`,
@@ -229,5 +196,5 @@ codegraph mcp        # stdio MCP server; see README for client registration
      for d in dist/npm/codegraph-*/; do (cd "$d" && npm publish); done
      (cd dist/npm/codegraph && npm publish)
      ```
-     (`publishConfig.access` is `restricted`; switch to `public` when the repo goes public.)
+     (`publishConfig.access` is still `restricted`; switch it to `public` before the first publish.)
    Commit the manifest updates as `chore(packaging): vX.Y.Z hashes`.

@@ -16,7 +16,7 @@ language's semantic indexer, which resolves every reference the way the compiler
 | Python | scip-python 0.6.6 + runtime MRO (`bench/pytruth.py`) | patched locally for a Windows `path.sep` regex crash; `src/` layout passed via `pyrightconfig.json` `extraPaths` |
 
 **Corpus** (`bench/corpus.toml`): 16 repos pinned to commits, cloned into the gitignored
-`.cache/bench/` so the originals are never touched. Ten public and six of the author's kit
+`.cache/bench/` so the originals are never touched. Ten public and six of the author's own
 tools (pulse, keep, stash, recall, devkit, ledger); the private ones are skipped on machines
 that don't have them. Public repos, pinned to release-tag commits:
 

@@ -1,5 +1,9 @@
 # codegraph
 
+[![ci](https://github.com/crowbett/codegraph/actions/workflows/ci.yml/badge.svg)](https://github.com/crowbett/codegraph/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/crowbett/codegraph)](https://github.com/crowbett/codegraph/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A symbol + call graph of every repo you own, built with tree-sitter, stored in SQLite, and
 served to AI agents over MCP. It answers the structural questions an agent otherwise
 answers with a dozen greps: *where is this defined, who calls it, what does it call, what
@@ -16,26 +20,23 @@ breaks if I change this file?*, with `file:line` on every answer, and a confiden
 - **Incremental**: only files whose content hash changed are re-parsed (in parallel).
 - **MCP server** that re-indexes the repo you're asking about before it answers.
 
-Part of **kit**, a personal developer toolkit. It follows the shared contract (config paths,
-`--json` envelope, exit codes, MCP conventions).
+It follows a small shared CLI contract (config paths, `--json` envelope, exit codes, MCP
+conventions).
 
 ## Install
 
-See [docs/INSTALL.md](docs/INSTALL.md) for every platform (install scripts, scoop, winget,
-Homebrew, npm, `cargo install`) with checksums. Short version:
+**Windows x64:** download `codegraph-<ver>-windows-amd64.zip` (and its `.sha256`) from the
+[latest release](https://github.com/crowbett/codegraph/releases/latest), unzip, and put
+`codegraph.exe` on your PATH.
 
-```powershell
-irm https://raw.githubusercontent.com/crowbett/codegraph/main/packaging/install.ps1 | iex
-```
+**Any platform, from source** (Rust 1.85+ and a C compiler):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/crowbett/codegraph/main/packaging/install.sh | sh
+cargo install --git https://github.com/crowbett/codegraph --locked codegraph
 ```
 
-**The repo is currently private.** Every install path above needs GitHub auth until it's
-public — a `GH_TOKEN`/`gh auth token` for the scripts, SSH for `cargo install --git`;
-scoop/winget/Homebrew/npm don't work at all yet. Details and exact commands in
-[docs/INSTALL.md](docs/INSTALL.md#while-the-repository-is-private).
+Linux/macOS archives, install scripts, Homebrew, scoop, winget and npm packages are
+prepared in `packaging/` but not shipped yet; see [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Quickstart
 
@@ -51,7 +52,7 @@ Real output, from indexing this repo (`codegraph index`, then a few queries):
 
 ```text
 $ codegraph find Store --kind struct
-# codegraph C:/Users/corbe/dev/rust/codegraph
+# codegraph ~/src/codegraph
   struct  store::Store                src/store.rs:159                           pub struct Store
   struct  a.Store                     tests/fixtures/go/a/a.go:5                 type Store struct
   struct  store.Store                 tests/fixtures/go_infer/store/store.go:16  type Store struct
@@ -62,7 +63,7 @@ $ codegraph find Store --kind struct
 
 ```text
 $ codegraph def store::Store::open
-store::Store::open method C:/Users/corbe/dev/rust/codegraph/src/store.rs:174-193
+store::Store::open method ~/src/codegraph/src/store.rs:174-193
 173|     /// Open (creating if needed) the database at `path`.
 174|     pub fn open(path: &Path) -> Result<Self> {
 175|         if let Some(dir) = path.parent() {
@@ -75,7 +76,7 @@ store::Store::open method C:/Users/corbe/dev/rust/codegraph/src/store.rs:174-193
 
 ```text
 $ codegraph callers store::Store::open --depth 1
-store::Store::open (method)  C:/Users/corbe/dev/rust/codegraph/src/store.rs:174
+store::Store::open (method)  ~/src/codegraph/src/store.rs:174
 ├─ accuracy::index_repo  bench/src/accuracy.rs:399
 ├─ App::open_store  src/main.rs:54
 ├─ mcp::tests::server  src/mcp.rs:566
@@ -104,8 +105,8 @@ files
      2  d1  bench/src/accuracy.rs
 ```
 
-(Generated with a throwaway `KIT_DATA_DIR`/`KIT_CONFIG_DIR`, never `~/.config/kit`; paths
-above are shown as they'd appear from a normal `~/dev/rust/codegraph` checkout.)
+(Generated with a throwaway `KIT_DATA_DIR`/`KIT_CONFIG_DIR`, never `~/.config/kit`; absolute
+paths above are shown as they'd appear from a `~/src/codegraph` checkout.)
 
 **Staying fresh:** `codegraph watch` re-indexes a repo about 300 ms after its files change (see
 [watch](#watch)); `codegraph mcp --watch` does it in the background, and every MCP call also
@@ -340,7 +341,7 @@ Windows 11, 16 cores (7.0 s for 2,634 files on v0.1.1). Kernel-sized repos (Linu
 rust, Kubernetes: cold index, no-op and one-file re-index, the resident resolver of `watch`)
 are measured in [docs/SCALE.md](docs/SCALE.md).
 
-## Limitations (honest)
+## Limitations
 
 This is a **heuristic graph, not a type checker**. The numbers above are the actual measured
 error rates — read them before trusting an edge blindly, especially `likely` and
@@ -377,7 +378,7 @@ error rates — read them before trusting an edge blindly, especially `likely` a
   rules above. Functions passed as values are captured only when qualified (`s.handle`) or
   defined/imported in the same file.
 - **Cross-repo edges are not linked**: a qualifier bound to an import outside the repo
-  (stdlib, a dependency, another kit repo) resolves to nothing, by design, instead of
+  (stdlib, a dependency, another indexed repo) resolves to nothing, by design, instead of
   guessing a same-named symbol elsewhere.
 - **Rust module paths come from file layout** (`src/a/b.rs` is `a::b`) plus file-level
   `#[path = ".."] mod x;` declarations; `include!` is ignored.
