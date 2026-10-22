@@ -98,6 +98,18 @@ what is in this file (codegraph_outline). Symbols accept a simple name, a qualif
 or file:line. Edges carry confidence: exact, likely (~), name_only (?) — verify name_only edges by reading the code. \
 The repo you ask about is re-indexed automatically before each answer.";
 
+/// Names of the tools in [`tool_list`], in listing order.
+pub const TOOL_NAMES: [&str; 8] = [
+    "codegraph_find",
+    "codegraph_def",
+    "codegraph_refs",
+    "codegraph_callers",
+    "codegraph_callees",
+    "codegraph_outline",
+    "codegraph_impact",
+    "codegraph_status",
+];
+
 /// Tool definitions for `tools/list`.
 pub fn tool_list() -> Value {
     let ro = json!({"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false});
@@ -435,6 +447,14 @@ impl Server {
     }
 
     fn call_tool(&mut self, name: &str, args: &Value) -> Result<Value, CallError> {
+        // Reject unknown tools before the auto-refresh: a bad name must not cost an
+        // index pass.
+        if !TOOL_NAMES.contains(&name) {
+            return Err(CallError::Rpc(
+                INVALID_PARAMS,
+                format!("unknown tool: {name}"),
+            ));
+        }
         if name != "codegraph_status" {
             self.refresh(args);
         }
@@ -719,6 +739,56 @@ mod tests {
             .handle(&json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"codegraph_status","arguments":{}}}))
             .unwrap();
         assert_eq!(r["result"]["structuredContent"]["repos"], 0);
+    }
+
+    #[test]
+    fn unknown_tool_is_rejected_before_refresh() {
+        let (dir, mut s) = server();
+        // A real, indexed repo in the cwd, so a refresh would have something to do.
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join("x.go"), "package x\nfunc X() {}\n").unwrap();
+        index::index_roots(
+            &mut s.store,
+            &s.cfg,
+            &[dir.path().to_path_buf()],
+            &IndexOptions::default(),
+        )
+        .unwrap();
+        s.cfg.refresh_budget_ms = 1000;
+        let bad = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"codegraph_nope\",\"arguments\":{}}}\n";
+        let good = b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"codegraph_find\",\"arguments\":{\"query\":\"X\"}}}\n";
+        let mut out = Vec::new();
+        // Serve the unknown tool on its own: it must not refresh anything.
+        s.serve(&bad[..], &mut out).unwrap();
+        let r: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(r["id"], 1);
+        assert_eq!(r["error"]["code"], INVALID_PARAMS, "{r}");
+        assert!(r["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown tool: codegraph_nope"));
+        assert!(
+            s.last_refresh.is_empty(),
+            "unknown tool must not trigger a refresh"
+        );
+        // A known tool does refresh (so the assertion above is meaningful).
+        out.clear();
+        s.serve(&good[..], &mut out).unwrap();
+        let r: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(r["id"], 2);
+        assert_eq!(
+            r["result"]["structuredContent"]["hits"][0]["name"], "X",
+            "{r}"
+        );
+        assert_eq!(s.last_refresh.len(), 1);
+        // The validated names are exactly the listed tools.
+        let listed: Vec<String> = tool_list()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(listed, TOOL_NAMES);
     }
 
     #[test]
