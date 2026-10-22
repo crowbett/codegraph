@@ -609,13 +609,28 @@ impl Server {
         Some(resp)
     }
 
-    /// Serve until EOF on `reader`.
-    pub fn serve(&mut self, reader: impl BufRead, mut writer: impl Write) -> io::Result<()> {
+    /// Serve until the client goes away: EOF on `reader`, or a closed pipe on either
+    /// side (the client exited mid-session). Both are a normal shutdown and return
+    /// `Ok`, logged as one line on stderr; any other I/O error is returned.
+    pub fn serve(&mut self, reader: impl BufRead, writer: impl Write) -> io::Result<()> {
         eprintln!(
             "codegraph mcp: serving on stdio (protocol {PROTOCOL_VERSION}, db {})",
             util::slash(self.store.path())
         );
-        let mut reader = reader;
+        match self.serve_loop(reader, writer) {
+            Ok(()) => {
+                eprintln!("codegraph mcp: stdin closed, exiting");
+                Ok(())
+            }
+            Err(e) if is_closed_pipe(&e) => {
+                eprintln!("codegraph mcp: client closed the pipe, exiting");
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn serve_loop(&mut self, mut reader: impl BufRead, mut writer: impl Write) -> io::Result<()> {
         let mut line = Vec::new();
         loop {
             match read_line_bounded(&mut reader, &mut line, MAX_LINE_BYTES)? {
@@ -653,9 +668,19 @@ impl Server {
                 writer.flush()?;
             }
         }
-        eprintln!("codegraph mcp: stdin closed, exiting");
         Ok(())
     }
+}
+
+/// The peer closed its end of a pipe: `EPIPE` / `ERROR_BROKEN_PIPE` / `ERROR_NO_DATA` on
+/// write, a reset or aborted connection when stdio is a socket.
+fn is_closed_pipe(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+    )
 }
 
 fn rpc_error(id: &Value, code: i64, message: &str) -> Value {
@@ -940,6 +965,64 @@ mod tests {
         assert_eq!(lines[1]["result"], json!({}));
         assert_eq!(lines[2]["error"]["code"], PARSE_ERROR);
         assert_eq!(lines[3]["id"], 3);
+    }
+
+    /// A writer whose every write fails with the given kind (a closed stdout pipe).
+    struct FailWriter(io::ErrorKind);
+
+    impl Write for FailWriter {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(self.0, "write failed"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A reader whose every read fails with the given kind (a broken stdin pipe).
+    struct FailReader(io::ErrorKind);
+
+    impl io::Read for FailReader {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::new(self.0, "read failed"))
+        }
+    }
+
+    const PING: &[u8] = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n";
+
+    #[test]
+    fn closed_pipe_is_a_normal_shutdown() {
+        let (_d, mut s) = server();
+        // Client closed stdout: the response cannot be written.
+        s.serve(PING, FailWriter(io::ErrorKind::BrokenPipe))
+            .unwrap();
+        s.serve(PING, FailWriter(io::ErrorKind::ConnectionReset))
+            .unwrap();
+        // Client's end of stdin broke mid-session.
+        s.serve(
+            io::BufReader::new(FailReader(io::ErrorKind::BrokenPipe)),
+            Vec::new(),
+        )
+        .unwrap();
+        // Plain EOF on stdin.
+        s.serve(&b""[..], Vec::new()).unwrap();
+    }
+
+    #[test]
+    fn real_io_errors_still_fail() {
+        let (_d, mut s) = server();
+        let e = s
+            .serve(PING, FailWriter(io::ErrorKind::PermissionDenied))
+            .unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
+        let e = s
+            .serve(
+                io::BufReader::new(FailReader(io::ErrorKind::Other)),
+                Vec::new(),
+            )
+            .unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::Other);
     }
 
     #[test]

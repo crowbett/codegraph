@@ -282,6 +282,37 @@ fn mcp_stdio_session_auto_refreshes_indexed_repo() {
     assert!(status.success());
 }
 
+/// A client that closes the server's stdout mid-session (its own exit, a crash) is a
+/// normal shutdown: the server exits 0 instead of failing on the broken pipe.
+#[test]
+fn mcp_exits_zero_when_client_closes_stdout() {
+    let env = Env::new();
+    let mut child = env
+        .cmd()
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut lines = BufReader::new(&mut stdout).lines();
+    send(&mut stdin, &json!({"jsonrpc":"2.0","id":1,"method":"ping"}));
+    assert_eq!(recv(&mut lines)["result"], json!({}));
+    // Close our end of the server's stdout, then make it write a response.
+    drop(lines);
+    drop(stdout);
+    send(&mut stdin, &json!({"jsonrpc":"2.0","id":2,"method":"ping"}));
+    // Writing a second request may itself fail once the server has exited; that is fine.
+    let _ = writeln!(stdin, "{}", json!({"jsonrpc":"2.0","id":3,"method":"ping"}));
+    drop(stdin);
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "stderr: {stderr}");
+    assert!(stderr.contains("client closed the pipe"), "{stderr}");
+}
+
 #[test]
 fn self_index_finds_main() {
     let env = Env::new();

@@ -95,8 +95,8 @@ impact of store::Store::open: 38 dependent symbol(s) in 11 file(s) within depth 
 (`33% resolved` counts every reference, including calls into std and dependencies,
 which are deliberately left unresolved rather than guessed; `~` marks a `likely` edge.)
 
-The same graph over MCP (stdio, one JSON-RPC message per line; the server exits when stdin
-closes):
+The same graph over MCP (stdio, one JSON-RPC message per line; the server exits 0 when stdin
+closes or the client drops the pipe):
 
 ```sh
 printf '%s\n' \
