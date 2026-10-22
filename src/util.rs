@@ -116,7 +116,10 @@ fn resolve_outside_roots(abs: &Path, roots: &[PathBuf]) -> Result<PathBuf, Strin
         let meta =
             std::fs::symlink_metadata(&next).map_err(|e| format!("{}: {e}", slash(&next)))?;
         if !meta.file_type().is_symlink() {
-            cur = next;
+            // Not a link, and every component before it was checked the same way, so
+            // canonicalizing follows nothing: it only normalizes Windows 8.3 short names
+            // (`RUNNER~1`) and case, which the roots (canonical) are compared against.
+            cur = std::fs::canonicalize(&next).map_or(next, strip_verbatim);
             continue;
         }
         if roots.iter().any(|r| rel_under(r, &next).is_some()) {
@@ -148,8 +151,8 @@ fn resolve_outside_roots(abs: &Path, roots: &[PathBuf]) -> Result<PathBuf, Strin
 
 /// Validate an untrusted path argument: reject UNC/device paths lexically, resolve
 /// `..` and links (never a link inside a root, see `resolve_outside_roots`) and
-/// require the result to sit under one of the canonical `roots`. Returns the resolved
-/// path (links gone; case as given).
+/// require the result to sit under one of the canonical `roots`. Returns the resolved,
+/// canonical path (links gone, short names and case normalized, no `\\?\` prefix).
 pub fn confine(path: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
     if is_remote_path(path) {
         return Err(format!("`{path}`: UNC and device paths are not allowed"));

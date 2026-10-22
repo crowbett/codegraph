@@ -209,28 +209,52 @@ pub fn find_files(
     let conn = store.conn();
     let mut out = Vec::new();
     reject_remote(path)?;
-    // Purely lexical against the stored roots: the graph answers, never the
-    // filesystem (an `exists()` would follow a link planted in a repo).
+    // Lexical against the stored roots: the graph answers, never the filesystem (an
+    // `exists()` on the argument would follow a link planted in a repo). The argument is
+    // never canonicalized; the roots (trusted) are, as a second pass, since a confined
+    // argument comes back canonical while roots are stored as given (a Windows 8.3
+    // short name, a symlinked ~/dev, macOS /var).
     let abs = util::absolute(Path::new(path));
-    for r in store.repos()? {
+    let repos = store.repos()?;
+    let lookup = |repo_id: i64, root: &Path, rel: &str| -> Result<Option<(i64, String, String)>> {
+        if filter
+            .repos
+            .as_ref()
+            .is_some_and(|ids| !ids.contains(&repo_id))
+        {
+            return Ok(None);
+        }
+        // Case-insensitive path match on Windows.
+        let row: Option<(i64, String)> = conn
+            .query_row(
+                "SELECT id, path FROM files WHERE repo_id = ?1 AND path = ?2 COLLATE NOCASE",
+                rusqlite::params![repo_id, rel],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        Ok(row.map(|(id, path)| (id, util::slash(root), path)))
+    };
+    for r in &repos {
         if let Some(rel) = util::rel_under(&r.root, &abs) {
-            if filter
-                .repos
-                .as_ref()
-                .is_some_and(|ids| !ids.contains(&r.id))
-            {
+            out.extend(lookup(r.id, &r.root, &rel)?);
+        }
+    }
+    if out.is_empty() && abs.is_absolute() {
+        for r in &repos {
+            if util::is_remote_path(&r.root.to_string_lossy()) {
                 continue;
             }
-            // Case-insensitive path match on Windows.
-            let row: Option<(i64, String)> = conn
-                .query_row(
-                    "SELECT id, path FROM files WHERE repo_id = ?1 AND path = ?2 COLLATE NOCASE",
-                    rusqlite::params![r.id, rel],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?;
-            if let Some((id, path)) = row {
-                out.push((id, util::slash(&r.root), path));
+            let Some(croot) = std::fs::canonicalize(&r.root)
+                .ok()
+                .map(util::strip_verbatim)
+            else {
+                continue;
+            };
+            if croot == r.root {
+                continue; // already tried above
+            }
+            if let Some(rel) = util::rel_under(&croot, &abs) {
+                out.extend(lookup(r.id, &r.root, &rel)?);
             }
         }
     }
@@ -1338,13 +1362,27 @@ pub fn outline(
             "{path}: not an indexed file (not inside an indexed repo)"
         )));
     };
-    if !crate::index::walker_admits(&root, &abs, cfg) {
+    // `abs` is canonical (confined) while the root is stored as given (short name,
+    // symlinked ~/dev): address the file relative to the stored root.
+    let rel = util::rel_under(&root, &abs).or_else(|| {
+        std::fs::canonicalize(&root)
+            .ok()
+            .map(util::strip_verbatim)
+            .and_then(|c| util::rel_under(&c, &abs))
+    });
+    let Some(rel) = rel.filter(|r| !r.is_empty()) else {
+        return Err(Error::NotFound(format!(
+            "{path}: not an indexed file (not inside an indexed repo)"
+        )));
+    };
+    let in_repo = root.join(&rel);
+    if !crate::index::walker_admits(&root, &in_repo, cfg) {
         return Err(Error::NotFound(format!(
             "{path}: not an indexed file (ignored by .gitignore, hidden, in skip_dirs, or a link)"
         )));
     }
     let max_bytes = cfg.max_file_bytes();
-    let bytes = util::read_repo_bytes(&root, &abs, max_bytes).ok_or_else(|| {
+    let bytes = util::read_repo_bytes(&root, &in_repo, max_bytes).ok_or_else(|| {
         Error::Usage(format!(
             "{path}: unreadable, a link, or over max_file_kb ({max_bytes} bytes)"
         ))
