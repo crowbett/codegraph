@@ -77,7 +77,8 @@ versions follow [SemVer](https://semver.org/).
   passes), and the watcher treats those files as repo changes.
 - `mcp --watch` (which never adds or drops repos) discarded dropped-event and watcher-error
   notices because it may not rescan a root, so the graph went stale silently after a burst
-  of changes. It now queues every known repo under the watched roots for a refresh instead.
+  of changes. It now queues every known repo under the watched roots for a refresh instead
+  (at most once per 30 s).
 - The resident resolver (`watch`, `mcp --watch`) tagged its state with `PRAGMA data_version`
   read after its own commit; a commit from another connection landing in that window was
   absorbed into the tag and the stale state kept. The version is now read inside the write

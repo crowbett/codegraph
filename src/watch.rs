@@ -253,7 +253,13 @@ struct Watch<'a> {
     langs: HashSet<Lang>,
     /// Keeps the last big repo's resolution state between re-indexes.
     cache: crate::resolve::ResolveCache,
+    /// When every known repo was last queued after lost events (`queue_known`).
+    last_queue_all: Option<Instant>,
 }
+
+/// Lost-event catch-ups (`queue_known`) at most this often: an overflowing watcher can
+/// report them in a stream, and one refresh of every repo already covers them all.
+const QUEUE_ALL_EVERY: Duration = Duration::from_secs(30);
 
 impl Watch<'_> {
     /// Known repos: root -> name.
@@ -270,7 +276,14 @@ impl Watch<'_> {
     /// may have been lost (the OS dropped them, the watcher reported an error) and repos
     /// must not be added or removed (`mcp --watch`), where a root rescan is not allowed:
     /// without it the graph would go stale silently.
-    fn queue_known(&self, batch: &mut Batch, now: Instant) {
+    fn queue_known(&mut self, batch: &mut Batch, now: Instant) {
+        if self
+            .last_queue_all
+            .is_some_and(|t| now.duration_since(t) < QUEUE_ALL_EVERY)
+        {
+            return;
+        }
+        self.last_queue_all = Some(now);
         for (root, _) in self.known().values() {
             let idx = self.roots.iter().enumerate().find_map(|(i, r)| {
                 let under_given = util::rel_under(r, root).is_some();
@@ -498,6 +511,7 @@ pub fn watch(
         skip: cfg.skip_dirs.iter().map(|s| s.to_lowercase()).collect(),
         langs: cfg.languages.iter().copied().collect(),
         cache: crate::resolve::ResolveCache::new(),
+        last_queue_all: None,
     };
 
     let initial = if opts.initial_index {
@@ -600,6 +614,7 @@ mod tests {
             skip,
             langs,
             cache: crate::resolve::ResolveCache::new(),
+            last_queue_all: None,
         };
         let mut batch = Batch::default();
         let now = Instant::now();
@@ -631,7 +646,7 @@ mod tests {
             .unwrap();
         let cfg = Config::default();
         let (skip, langs) = sets();
-        let w = Watch {
+        let mut w = Watch {
             store: &mut store,
             cfg: &cfg,
             roots: vec![root.clone()],
@@ -643,6 +658,7 @@ mod tests {
             skip,
             langs,
             cache: crate::resolve::ResolveCache::new(),
+            last_queue_all: None,
         };
         let mut batch = Batch::default();
         let now = Instant::now();
@@ -652,6 +668,12 @@ mod tests {
         assert!(batch.repos.values().all(|w| w.root_idx == 0));
         assert!(batch.rescans.is_empty());
         assert_eq!(batch.first, Some(now));
+        // A second notice within the window adds nothing; after it, everything again.
+        let mut batch = Batch::default();
+        w.queue_known(&mut batch, now + Duration::from_secs(10));
+        assert!(batch.is_empty(), "{batch:?}");
+        w.queue_known(&mut batch, now + QUEUE_ALL_EVERY);
+        assert_eq!(batch.repos.len(), 2);
     }
 
     #[test]
