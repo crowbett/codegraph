@@ -367,8 +367,9 @@ impl Drop for RestorePermissions {
     }
 }
 
-/// A file that exists but cannot be read right now (an editor or scanner holding it,
-/// permission denied) keeps its symbols; it is counted and reported, not deleted.
+/// A file another process holds open without sharing (an editor, Defender) keeps its
+/// symbols; it is counted and reported, not deleted. A file that cannot be read for a
+/// lasting reason (permission denied) is dropped like a deleted one.
 #[test]
 fn unreadable_files_keep_their_rows() {
     let src = copy_fixture("go");
@@ -387,13 +388,21 @@ fn unreadable_files_keep_their_rows() {
         return;
     };
     let st = reindex(&mut store, root, false);
-    assert_eq!((st.parsed, st.failed, st.removed), (0, 1, 0), "{st:?}");
-    assert_eq!(count(&store, "SELECT count(*) FROM symbols"), symbols);
-    assert_eq!(count(&store, "SELECT count(*) FROM files"), 3);
+    if cfg!(windows) {
+        // A sharing violation clears on its own: kept, counted, reported.
+        assert_eq!((st.parsed, st.failed, st.removed), (0, 1, 0), "{st:?}");
+        assert_eq!(count(&store, "SELECT count(*) FROM symbols"), symbols);
+        assert_eq!(count(&store, "SELECT count(*) FROM files"), 3);
+    } else {
+        // Permission denied does not: the file leaves the graph like a deleted one.
+        assert_eq!((st.parsed, st.failed, st.removed), (0, 0, 1), "{st:?}");
+        assert_eq!(count(&store, "SELECT count(*) FROM files"), 2);
+    }
     drop(guard);
-    // Readable again: picked up as a normal change.
+    // Readable again: picked up as a normal change (or as a new file).
     let st = reindex(&mut store, root, false);
     assert_eq!((st.parsed, st.failed), (1, 0), "{st:?}");
+    assert_eq!(count(&store, "SELECT count(*) FROM files"), 3);
 }
 
 /// Editing `go.mod` (or Cargo.toml, package.json, tsconfig.json) moves every file's unit

@@ -707,17 +707,11 @@ fn index_repo(
         // advisory (the file may have grown or been swapped since).
         let bytes = match util::read_bounded(&f.abs, max_bytes) {
             Ok(b) => b,
-            // Gone or too big: drop it. Anything else (a sharing violation from an
-            // editor or Defender, permission denied) is transient: keep what we have.
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::FileTooLarge
-                ) =>
-            {
-                return Outcome::Failed;
-            }
-            Err(_) => return Outcome::Unreadable,
+            // A sharing violation (an editor or Defender holding the file) clears in
+            // seconds: keep what we have. Anything else (gone, too big, permission
+            // denied, not a regular file) is not going to change by itself: drop it.
+            Err(e) if is_sharing_violation(&e) => return Outcome::Unreadable,
+            Err(_) => return Outcome::Failed,
         };
         let hash = hash_hex(&bytes);
         if !full {
@@ -894,6 +888,12 @@ fn index_repo(
     resolve_succeeded(repo_root);
     store.set_indexed(repo_id, util::now_unix())?;
     Ok(())
+}
+
+/// Windows `ERROR_SHARING_VIOLATION` (32) / `ERROR_LOCK_VIOLATION` (33): another process
+/// has the file open without sharing, which clears on its own.
+fn is_sharing_violation(e: &std::io::Error) -> bool {
+    cfg!(windows) && matches!(e.raw_os_error(), Some(32 | 33))
 }
 
 /// Repos whose last resolve in this process failed after their write committed; the

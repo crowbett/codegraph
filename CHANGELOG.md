@@ -66,9 +66,9 @@ versions follow [SemVer](https://semver.org/).
   rolls back and skips `set_indexed`; the repo upsert only writes when the name changed.
 - A file that could not be read during a refresh (held open without sharing by an
   editor or Defender on Windows, permission denied) was deleted from the graph as if it
-  had vanished. Such files now keep their last indexed state; the run counts them
-  (`failed` in the summary and `--json`) and says so on stderr. Missing and oversize files
-  are still dropped.
+  had vanished. A file held open without sharing (Windows error 32/33) now keeps its last
+  indexed state; the run counts it (`failed` in the summary and `--json`) and says so on
+  stderr. Missing, oversize and permission-denied files are dropped as before.
 - Edits to `go.mod`, `Cargo.toml`, `package.json` and `tsconfig.json` were never noticed:
   the watcher ignored those names and unchanged source files were never re-unitized, so
   module paths went stale until `index --full`. Each repo now stores a content hash of its
