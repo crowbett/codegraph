@@ -422,14 +422,19 @@ impl Server {
                 full: false,
                 budget: Some(left),
             };
-            match index::refresh_repo_cached(
+            // The budget also bounds the wait for the write lock: while a CLI `index
+            // --full` holds it, a call must not stall for the full default busy timeout.
+            let _ = self.store.conn().busy_timeout(left);
+            let result = index::refresh_repo_cached(
                 &mut self.store,
                 &self.cfg,
                 &root,
                 &name,
                 &opts,
                 &mut self.resolve_cache,
-            ) {
+            );
+            let _ = self.store.conn().busy_timeout(Store::BUSY_TIMEOUT);
+            match result {
                 Ok(st) => {
                     if st.parsed > 0 || st.removed > 0 {
                         eprintln!(
@@ -441,7 +446,12 @@ impl Server {
                         self.last_refresh.insert(root, Instant::now());
                     }
                 }
-                Err(e) => eprintln!("codegraph mcp: refresh {name} failed: {e}"),
+                Err(e) => {
+                    eprintln!("codegraph mcp: refresh {name} failed: {e}");
+                    // Busy or broken, do not retry (and stall) on every call for the
+                    // next few seconds.
+                    self.last_refresh.insert(root, Instant::now());
+                }
             }
         }
     }
@@ -829,6 +839,63 @@ mod tests {
             .map(|t| t["name"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(listed, TOOL_NAMES);
+    }
+
+    /// While another connection holds the write lock (a CLI `index --full`), a tool call
+    /// waits at most its refresh budget, not the connection's default busy timeout, and
+    /// the failed refresh is not retried on every call.
+    #[test]
+    fn refresh_waits_for_the_lock_within_its_budget() {
+        let (dir, mut s) = server();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let x = dir.path().join("x.go");
+        std::fs::write(&x, "package x\nfunc X() {}\n").unwrap();
+        index::index_roots(
+            &mut s.store,
+            &s.cfg,
+            &[dir.path().to_path_buf()],
+            &IndexOptions::default(),
+        )
+        .unwrap();
+        // A change that a refresh would have to write.
+        std::fs::write(&x, "package x\nfunc X() {}\nfunc Y() {}\n").unwrap();
+        s.cfg.refresh_budget_ms = 300;
+        // Another connection holding the write lock.
+        let mut other = Store::open(s.store.path()).unwrap();
+        let lock = other
+            .conn_mut()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        let t0 = Instant::now();
+        let r = s
+            .handle(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"codegraph_find","arguments":{"query":"X"}}}))
+            .unwrap();
+        let waited = t0.elapsed();
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        assert!(waited < Duration::from_secs(3), "stalled {waited:?}");
+        assert_eq!(
+            s.last_refresh.len(),
+            1,
+            "a failed refresh is not retried at once"
+        );
+        // The answer came from the graph as it was.
+        assert_eq!(
+            r["result"]["structuredContent"]["hits"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        drop(lock);
+        // The default timeout is back on the connection: a later refresh succeeds.
+        s.last_refresh.clear();
+        let r = s
+            .handle(&json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"codegraph_find","arguments":{"query":"Y"}}}))
+            .unwrap();
+        assert_eq!(
+            r["result"]["structuredContent"]["hits"][0]["name"], "Y",
+            "{r}"
+        );
     }
 
     #[test]

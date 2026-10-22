@@ -191,6 +191,10 @@ impl std::fmt::Debug for Store {
 }
 
 impl Store {
+    /// How long a connection waits for the write lock by default. Long-running callers
+    /// with their own time budget (the MCP refresh) lower it for the duration of a call.
+    pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
     /// Open (creating if needed) the database at `path`.
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(dir) = path.parent() {
@@ -198,7 +202,7 @@ impl Store {
                 .map_err(|e| Error::io(format!("create {}", dir.display()), e))?;
         }
         let conn = Connection::open(path)?;
-        conn.busy_timeout(std::time::Duration::from_secs(10))?;
+        conn.busy_timeout(Self::BUSY_TIMEOUT)?;
         // The graph is a derived, rebuildable cache: skip fsyncs (4x faster bulk
         // indexing). An OS crash mid-index can at worst require `index --full`.
         conn.execute_batch(

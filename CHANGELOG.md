@@ -48,6 +48,11 @@ versions follow [SemVer](https://semver.org/).
   edges to reused ids. The write transaction now stamps `repos.write_started`; a repo is
   repaired only when that stamp is older than 15 minutes, and the check runs inside the
   (IMMEDIATE) write transaction.
+- The MCP refresh budget did not cover waiting for SQLite's write lock: while a CLI
+  `index --full` ran, every tool call stalled for the connection's full 10 s busy timeout,
+  and the failed refresh was retried on the very next call. The busy timeout is now
+  lowered to the remaining budget for the duration of the refresh, and a failed refresh
+  counts as the repo's last attempt (next try after the usual 3 s).
 - Overlapping index roots (`~/dev` and `~/dev/go`) indexed every nested repo twice per run
   and flipped its name between `go/pulse` and `pulse`. A root inside another root is now
   skipped with one warning on stderr, repos are deduplicated by canonical path, and a repo
