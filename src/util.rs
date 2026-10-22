@@ -297,6 +297,42 @@ pub(crate) fn try_symlink_dir(target: &Path, link: &Path) -> bool {
     }
 }
 
+/// `pid:nonce` identifying this process for the life of the process (the nonce tells a
+/// restarted process that got the same pid from the one that wrote a row).
+pub fn process_token() -> &'static str {
+    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOKEN.get_or_init(|| {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        format!("{}:{:08x}", std::process::id(), nanos ^ 0x9e37_79b9)
+    })
+}
+
+/// Whether a process with this pid exists, asked of the OS (`tasklist` on Windows, `ps`
+/// elsewhere). `None` when that could not be determined. Only used on the rare path
+/// that decides whether another indexer died mid-run.
+pub fn process_alive(pid: u32) -> Option<bool> {
+    if pid == std::process::id() {
+        return Some(true);
+    }
+    #[cfg(windows)]
+    let out = std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+        .output()
+        .ok()?;
+    #[cfg(not(windows))]
+    let out = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "pid="])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    #[cfg(windows)]
+    return Some(text.contains(&format!("\"{pid}\",")));
+    #[cfg(not(windows))]
+    return Some(out.status.success() && text.trim() == pid.to_string());
+}
+
 /// Files that must never be read or indexed (credentials and secrets), by name.
 pub fn is_secret_file(name: &str) -> bool {
     let n = name.to_ascii_lowercase();

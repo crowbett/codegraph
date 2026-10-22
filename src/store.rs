@@ -16,7 +16,7 @@ use crate::layout::FileUnit;
 
 /// Bump when the schema or extraction output changes incompatibly; a mismatch
 /// wipes the graph so the next `index` rebuilds it.
-pub const SCHEMA_VERSION: i64 = 20;
+pub const SCHEMA_VERSION: i64 = 21;
 
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS repos(
     -- Unix time the last write transaction began; with indexed_at = 0 it tells a run
     -- that is still in progress on another connection from one that died.
     write_started INTEGER NOT NULL DEFAULT 0,
+    -- `pid:nonce` of the process that began the last write (see util::process_token):
+    -- a live owner is still at work, however long ago it started.
+    owner TEXT NOT NULL DEFAULT '',
     -- Fingerprint of the repo's module-layout files (go.mod, Cargo.toml, ...): a change
     -- re-indexes the whole repo, since every file's unit may have moved.
     markers TEXT NOT NULL DEFAULT '',
@@ -424,23 +427,52 @@ pub fn repo_files(conn: &Connection, repo_id: i64) -> Result<HashMap<String, Fil
     Ok(rows.collect::<rusqlite::Result<HashMap<_, _>>>()?)
 }
 
-/// A write that began this long ago with `indexed_at` still 0 is taken for dead (the
-/// process died between its write commit and its resolve) rather than in progress on
-/// another connection. Resolving a huge repo takes well under this.
+/// A write whose owner is gone and whose commit happened this long ago with
+/// `indexed_at` still 0 is taken for dead (the process died between its write commit
+/// and its resolve). Resolving a huge repo takes well under this.
 pub const STALE_WRITE_SECS: i64 = 900;
 
+/// Even a live owner is not believed past this: a pid can be reused by an unrelated
+/// process, and nothing legitimately sits between commit and resolve for a day.
+pub const MAX_LIVE_OWNER_SECS: i64 = 24 * 3600;
+
 /// Whether the repo's last run died before finishing: stored files exist, `indexed_at`
-/// is 0 (reset by [`begin_repo_write`], set again after the resolve) and the write began
-/// more than [`STALE_WRITE_SECS`] ago. A recent write with `indexed_at = 0` is another
-/// connection mid-run (between its commit and its resolve), not a casualty: wiping it
+/// is 0 (reset by [`begin_repo_write`], set again after the resolve) and the owner is
+/// gone, with the stamp (re-set right before the commit, so it dates the start of the
+/// commit-to-resolve window) older than [`STALE_WRITE_SECS`]. A write whose owner
+/// process is still alive is another connection mid-run, not a casualty: wiping it
 /// would delete file rows that its resolve is about to attach edges to.
 pub fn repo_write_is_dead(conn: &Connection, repo_id: i64, now: i64) -> Result<bool> {
-    let (indexed_at, started): (i64, i64) = conn.query_row(
-        "SELECT indexed_at, write_started FROM repos WHERE id = ?1",
+    let (indexed_at, started, owner): (i64, i64, String) = conn.query_row(
+        "SELECT indexed_at, write_started, owner FROM repos WHERE id = ?1",
         [repo_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
-    Ok(indexed_at == 0 && now - started > STALE_WRITE_SECS)
+    if indexed_at != 0 {
+        return Ok(false);
+    }
+    let age = now - started;
+    if owner == crate::util::process_token() {
+        // Our own process (another connection of it, e.g. the watcher thread).
+        return Ok(age > MAX_LIVE_OWNER_SECS);
+    }
+    let pid = owner.split(':').next().and_then(|p| p.parse::<u32>().ok());
+    let live =
+        pid.is_some_and(|p| p != std::process::id() && crate::util::process_alive(p) == Some(true));
+    if live {
+        return Ok(age > MAX_LIVE_OWNER_SECS);
+    }
+    Ok(age > STALE_WRITE_SECS)
+}
+
+/// Re-stamp `write_started` (right before the write commits, so the dead-run window is
+/// only commit-to-resolve, not the whole parse).
+pub fn restamp_write_started(conn: &Connection, repo_id: i64, now: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE repos SET write_started = ?2 WHERE id = ?1",
+        [repo_id, now],
+    )?;
+    Ok(())
 }
 
 /// The stored fingerprint of the repo's module-layout marker files (`""` when never set).
@@ -481,15 +513,15 @@ pub fn repo_has_edges(conn: &Connection, repo_id: i64) -> Result<bool> {
     )?)
 }
 
-/// Start a repo's write transaction: reset `indexed_at` and stamp `write_started = now`
-/// so that, if the process dies before the resolve that follows the commit, a later run
-/// sees an unfinished, stale repo ([`repo_write_is_dead`]) and repairs it. `wipe_files`
-/// drops every stored file (a cold load whose edges never made it): the repo is then
-/// loaded cold again.
+/// Start a repo's write transaction: reset `indexed_at`, stamp `write_started = now` and
+/// record this process as the owner, so that, if the process dies before the resolve
+/// that follows the commit, a later run sees an unfinished, orphaned repo
+/// ([`repo_write_is_dead`]) and repairs it. `wipe_files` drops every stored file (a cold
+/// load whose edges never made it): the repo is then loaded cold again.
 pub fn begin_repo_write(tx: &Connection, repo_id: i64, wipe_files: bool, now: i64) -> Result<()> {
     tx.execute(
-        "UPDATE repos SET indexed_at = 0, write_started = ?2 WHERE id = ?1",
-        [repo_id, now],
+        "UPDATE repos SET indexed_at = 0, write_started = ?2, owner = ?3 WHERE id = ?1",
+        params![repo_id, now, crate::util::process_token()],
     )?;
     if wipe_files {
         tx.execute("DELETE FROM files WHERE repo_id = ?1", [repo_id])?;

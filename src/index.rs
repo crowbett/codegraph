@@ -845,6 +845,9 @@ fn index_repo(
         stats.write_ms += tail + t_write.elapsed().as_millis();
         return Ok(());
     }
+    // Dates the commit-to-resolve window (a cold index may parse for longer than the
+    // dead-run threshold; that time must not count).
+    store::restamp_write_started(&tx, repo_id, util::now_unix())?;
     tx.commit()?;
     util::trace("index.parse_and_write", t0);
     stats.write_ms += tail + t_write.elapsed().as_millis();

@@ -32,7 +32,7 @@ versions follow [SemVer](https://semver.org/).
 - Constant, variable and `#define` signatures no longer carry their initializer:
   `API_KEY = "sk_live_..."` is stored and shown as `API_KEY = …`, `#define TOKEN "x"` as
   `#define TOKEN …`, so a secret literal in source never reaches `find`, `outline`, `impact`
-  or the MCP tools. Schema version 20 (existing graphs are rebuilt on first use).
+  or the MCP tools. Schema version 21.
 
 ### Fixed
 - A Go receiver with `]` before `[` (`func (s /*]*/ T /*[*/) F()`, or plain broken
@@ -46,8 +46,9 @@ versions follow [SemVer](https://semver.org/).
   also the state of a run in progress on another connection (an MCP refresh during a CLI
   `index`): the refresh wiped the repo's file rows and the other run then attached its
   edges to reused ids. The write transaction now stamps `repos.write_started`; a repo is
-  repaired only when that stamp is older than 15 minutes, and the check runs inside the
-  (IMMEDIATE) write transaction.
+  repaired only when its owner process (`pid:nonce`, also stored) is gone and the stamp,
+  re-set right before the commit so a long cold parse does not count, is older than 15
+  minutes; the check runs inside the (IMMEDIATE) write transaction.
 - The MCP refresh budget did not cover waiting for SQLite's write lock: while a CLI
   `index --full` ran, every tool call stalled for the connection's full 10 s busy timeout,
   and the failed refresh was retried on the very next call. The busy timeout is now

@@ -223,18 +223,66 @@ fn a_write_in_progress_elsewhere_is_not_mistaken_for_a_dead_run() {
         "not repaired"
     );
 
-    // The same state, but the write began long ago: dead, repaired by a cold reload.
+    // The same state, stamped long ago, but its owner process is alive (a cold index of
+    // a huge repo on another connection): still in progress, left alone.
+    #[cfg(windows)]
+    let mut child = std::process::Command::new("ping")
+        .args(["-n", "60", "127.0.0.1"])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    #[cfg(not(windows))]
+    let mut child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let stale = now - codegraph::store::STALE_WRITE_SECS - 1;
     store
         .conn()
         .execute(
-            "UPDATE repos SET indexed_at = 0, write_started = ?1",
-            [now - codegraph::store::STALE_WRITE_SECS - 1],
+            "UPDATE repos SET indexed_at = 0, write_started = ?1, owner = ?2",
+            rusqlite::params![stale, format!("{}:deadbeef", child.id())],
+        )
+        .unwrap();
+    let st = reindex(&mut store, root, false);
+    assert_eq!((st.parsed, st.unchanged), (0, 3), "live owner: {st:?}");
+    assert_eq!(
+        count(&store, "SELECT count(*) FROM edges"),
+        0,
+        "not repaired"
+    );
+    child.kill().unwrap();
+    child.wait().unwrap();
+
+    // Owner gone and the stamp old: dead, repaired by a cold reload.
+    store
+        .conn()
+        .execute(
+            "UPDATE repos SET indexed_at = 0, write_started = ?1, owner = ?2",
+            rusqlite::params![stale, format!("{}:deadbeef", child.id())],
         )
         .unwrap();
     let st = reindex(&mut store, root, false);
     assert_eq!((st.parsed, st.unchanged), (3, 0), "{st:?}");
     assert!(count(&store, "SELECT count(*) FROM edges") > 0);
     assert!(store.repos().unwrap()[0].indexed_at > 0);
+    // A finished run leaves this process as the owner and a fresh stamp.
+    let (started, owner): (i64, String) = store
+        .conn()
+        .query_row("SELECT write_started, owner FROM repos", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert!(started >= now, "{started} < {now}");
+    assert_eq!(owner, codegraph::util::process_token());
+    // The stamp is re-set right before the commit (it dates commit-to-resolve, not the
+    // parse): a stale value is overwritten by `restamp_write_started`.
+    codegraph::store::restamp_write_started(store.conn(), 1, 42).unwrap();
+    let started: i64 = store
+        .conn()
+        .query_row("SELECT write_started FROM repos", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(started, 42);
 }
 
 /// A refresh that finds nothing to do must not write: every commit bumps `data_version`
