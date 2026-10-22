@@ -65,8 +65,9 @@ versions follow [SemVer](https://semver.org/).
 - Edits to `go.mod`, `Cargo.toml`, `package.json` and `tsconfig.json` were never noticed:
   the watcher ignored those names and unchanged source files were never re-unitized, so
   module paths went stale until `index --full`. Each repo now stores a fingerprint of its
-  marker files; when it changes the whole repo is re-indexed, and the watcher treats those
-  files as repo changes.
+  marker files; when it changes every stored file of the repo is invalidated and re-parsed
+  by the normal incremental path (so a budgeted MCP refresh finishes the job over several
+  passes), and the watcher treats those files as repo changes.
 - `mcp --watch` (which never adds or drops repos) discarded dropped-event and watcher-error
   notices because it may not rescan a root, so the graph went stale silently after a burst
   of changes. It now queues every known repo under the watched roots for a refresh instead.

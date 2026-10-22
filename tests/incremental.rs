@@ -382,6 +382,24 @@ fn marker_file_change_reindexes_the_repo() {
         "module example.com/renamed\n\ngo 1.22\n",
     )
     .unwrap();
+    // Under a spent budget nothing is parsed yet, but the rows are invalidated and the
+    // new fingerprint stored: the next pass must still re-unit everything.
+    let st = index::index_roots(
+        &mut store,
+        &test_config(),
+        &[root.to_path_buf()],
+        &IndexOptions {
+            full: false,
+            budget: Some(std::time::Duration::ZERO),
+        },
+    )
+    .unwrap();
+    assert_eq!((st.parsed, st.pending), (0, 3), "{st:?}");
+    assert!(
+        module(&store).contains("example.com/app"),
+        "{}",
+        module(&store)
+    );
     let st = reindex(&mut store, root, false);
     assert_eq!((st.parsed, st.unchanged), (3, 0), "{st:?}");
     assert!(

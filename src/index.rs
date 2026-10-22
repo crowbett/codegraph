@@ -659,13 +659,21 @@ fn index_repo(
         }
     }
     // A changed go.mod/Cargo.toml/package.json/tsconfig.json changes the unit (module
-    // path) of files that did not change themselves: re-parse the whole repo.
+    // path) of files that did not change themselves. Rather than forcing one full pass
+    // (which a budgeted MCP refresh could not finish, leaving the rest stale once the
+    // new fingerprint is stored), every stored row is invalidated: the normal
+    // incremental path then re-parses them, over as many passes as the budget needs.
     let markers_changed = store::repo_markers(&tx, repo_id)? != marker_sig;
-    let full = opts.full || (markers_changed && !existing.is_empty());
+    let full = opts.full;
     if markers_changed && !existing.is_empty() {
         eprintln!(
             "codegraph: {name}: module layout files changed (go.mod, Cargo.toml, package.json, tsconfig.json); re-indexing the repo"
         );
+        store::invalidate_repo_files(&tx, repo_id)?;
+        for row in existing.values_mut() {
+            row.mtime = -1;
+            row.hash.clear();
+        }
     }
     if markers_changed {
         store::set_repo_markers(&tx, repo_id, &marker_sig)?;
@@ -829,6 +837,7 @@ fn index_repo(
         && !changes.touched
         && !repair_resolve
         && !wipe
+        && !markers_changed
         && !full;
     if noop {
         tx.rollback()?;

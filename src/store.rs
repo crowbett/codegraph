@@ -452,6 +452,17 @@ pub fn repo_markers(conn: &Connection, repo_id: i64) -> Result<String> {
     )
 }
 
+/// Mark every stored file of the repo as changed (mtime/hash no longer match any file
+/// on disk), so the normal incremental path re-parses them, across budgeted passes if
+/// need be. Used when the repo's module-layout markers changed.
+pub fn invalidate_repo_files(conn: &Connection, repo_id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE files SET mtime = -1, hash = '' WHERE repo_id = ?1",
+        [repo_id],
+    )?;
+    Ok(())
+}
+
 /// Store the repo's marker-file fingerprint.
 pub fn set_repo_markers(conn: &Connection, repo_id: i64, sig: &str) -> Result<()> {
     conn.execute(
