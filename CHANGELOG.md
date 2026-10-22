@@ -67,6 +67,9 @@ versions follow [SemVer](https://semver.org/).
   module paths went stale until `index --full`. Each repo now stores a fingerprint of its
   marker files; when it changes the whole repo is re-indexed, and the watcher treats those
   files as repo changes.
+- `mcp --watch` (which never adds or drops repos) discarded dropped-event and watcher-error
+  notices because it may not rescan a root, so the graph went stale silently after a burst
+  of changes. It now queues every known repo under the watched roots for a refresh instead.
 - Overlapping index roots (`~/dev` and `~/dev/go`) indexed every nested repo twice per run
   and flipped its name between `go/pulse` and `pulse`. A root inside another root is now
   skipped with one warning on stderr, repos are deduplicated by canonical path, and a repo

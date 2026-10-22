@@ -266,6 +266,29 @@ impl Watch<'_> {
             .collect()
     }
 
+    /// Queue every known repo under the watched roots for a refresh. Used when events
+    /// may have been lost (the OS dropped them, the watcher reported an error) and repos
+    /// must not be added or removed (`mcp --watch`), where a root rescan is not allowed:
+    /// without it the graph would go stale silently.
+    fn queue_known(&self, batch: &mut Batch, now: Instant) {
+        for (root, _) in self.known().values() {
+            let idx = self.roots.iter().enumerate().find_map(|(i, r)| {
+                let under_given = util::rel_under(r, root).is_some();
+                let under_canon = self.canon[i]
+                    .as_deref()
+                    .is_some_and(|c| util::rel_under(c, root).is_some());
+                (under_given || under_canon).then_some(i)
+            });
+            if let Some(idx) = idx {
+                batch.repos.entry(root.clone()).or_insert_with(|| RepoWork {
+                    root_idx: idx,
+                    ..RepoWork::default()
+                });
+                batch.mark(now);
+            }
+        }
+    }
+
     fn add_path(&self, batch: &mut Batch, path: &Path, now: Instant) {
         let direct = self
             .roots
@@ -505,6 +528,8 @@ pub fn watch(
                             batch.rescans.insert(i, "file events were dropped".into());
                         }
                         batch.mark(now);
+                    } else {
+                        w.queue_known(&mut batch, now);
                     }
                 } else if !matches!(ev.kind, EventKind::Access(_)) {
                     for p in &ev.paths {
@@ -526,6 +551,8 @@ pub fn watch(
                             .insert(i, "file watcher reported an error".into());
                     }
                     batch.mark(Instant::now());
+                } else {
+                    w.queue_known(&mut batch, Instant::now());
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -586,6 +613,45 @@ mod tests {
         let (root, work) = batch.repos.iter().next().unwrap();
         assert_eq!(root, &given);
         assert!(work.files.contains("src/a.go"), "{:?}", work.files);
+    }
+
+    /// `mcp --watch` (no repo adds/removes) cannot rescan a root after lost events; it
+    /// refreshes every known repo under the roots instead of going stale.
+    #[test]
+    fn lost_events_without_rescans_queue_every_known_repo() {
+        let db = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&db.path().join("g.db")).unwrap();
+        let root = PathBuf::from("/w/dev");
+        store
+            .upsert_repo("go/a", &root.join("go").join("a"))
+            .unwrap();
+        store.upsert_repo("b", &root.join("b")).unwrap();
+        store
+            .upsert_repo("elsewhere", Path::new("/w/other/c"))
+            .unwrap();
+        let cfg = Config::default();
+        let (skip, langs) = sets();
+        let w = Watch {
+            store: &mut store,
+            cfg: &cfg,
+            roots: vec![root.clone()],
+            canon: vec![None],
+            opts: WatchOptions {
+                add_repos: false,
+                ..WatchOptions::default()
+            },
+            skip,
+            langs,
+            cache: crate::resolve::ResolveCache::new(),
+        };
+        let mut batch = Batch::default();
+        let now = Instant::now();
+        w.queue_known(&mut batch, now);
+        let queued: Vec<&PathBuf> = batch.repos.keys().collect();
+        assert_eq!(queued, [&root.join("b"), &root.join("go").join("a")]);
+        assert!(batch.repos.values().all(|w| w.root_idx == 0));
+        assert!(batch.rescans.is_empty());
+        assert_eq!(batch.first, Some(now));
     }
 
     #[test]
