@@ -6,6 +6,15 @@ versions follow [SemVer](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Overlapping index roots (`~/dev` and `~/dev/go`) indexed every nested repo twice per run
+  and flipped its name between `go/pulse` and `pulse`. A root inside another root is now
+  skipped with one warning on stderr, repos are deduplicated by canonical path, and a repo
+  is always named relative to its outermost root.
+- `codegraph mcp` exited 1 when the client closed the pipe mid-session (its own exit or
+  crash while a response was pending). A closed pipe on either side is now an ordinary end
+  of session: one stderr line and exit 0. Other I/O errors still exit non-zero.
+- `tools/call` with an unknown tool name ran the per-call auto-refresh before failing; the
+  name is now validated first and the -32602 error is returned without touching the index.
 - An index run that died between a repo's write commit and its resolve (Ctrl-C, a killed
   `watch` or MCP server) left that repo with unresolved or missing edges until
   `index --full`. The write transaction now resets the repo's `indexed_at`, and the next
