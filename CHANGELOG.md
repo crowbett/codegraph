@@ -62,6 +62,11 @@ versions follow [SemVer](https://semver.org/).
   had vanished. Such files now keep their last indexed state; the run counts them
   (`failed` in the summary and `--json`) and says so on stderr. Missing and oversize files
   are still dropped.
+- Edits to `go.mod`, `Cargo.toml`, `package.json` and `tsconfig.json` were never noticed:
+  the watcher ignored those names and unchanged source files were never re-unitized, so
+  module paths went stale until `index --full`. Each repo now stores a fingerprint of its
+  marker files; when it changes the whole repo is re-indexed, and the watcher treats those
+  files as repo changes.
 - Overlapping index roots (`~/dev` and `~/dev/go`) indexed every nested repo twice per run
   and flipped its name between `go/pulse` and `pulse`. A root inside another root is now
   skipped with one warning on stderr, repos are deduplicated by canonical path, and a repo

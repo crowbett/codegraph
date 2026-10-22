@@ -351,6 +351,56 @@ fn unreadable_files_keep_their_rows() {
     assert_eq!((st.parsed, st.failed), (1, 0), "{st:?}");
 }
 
+/// Editing `go.mod` (or Cargo.toml, package.json, tsconfig.json) moves every file's unit
+/// without touching the files: the next pass must re-index the whole repo.
+#[test]
+fn marker_file_change_reindexes_the_repo() {
+    let src = copy_fixture("go");
+    let db = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&db.path().join("g.db")).unwrap();
+    let root = src.path();
+    let first = reindex(&mut store, root, false);
+    assert_eq!(first.parsed, 3);
+    let module = |store: &Store| -> String {
+        store
+            .conn()
+            .query_row(
+                "SELECT module || '|' || package || '|' || coalesce(pkgname, '')
+                 FROM files WHERE path = 'a/a.go'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert!(
+        module(&store).contains("example.com/app"),
+        "{}",
+        module(&store)
+    );
+    let noop = reindex(&mut store, root, false);
+    assert_eq!(noop.parsed, 0);
+
+    std::fs::write(
+        root.join("go.mod"),
+        "module example.com/renamed
+
+go 1.22
+",
+    )
+    .unwrap();
+    let st = reindex(&mut store, root, false);
+    assert_eq!((st.parsed, st.unchanged), (3, 0), "{st:?}");
+    assert!(
+        module(&store).contains("example.com/renamed"),
+        "{}",
+        module(&store)
+    );
+    assert_counts(&store, &st);
+    // Settled again.
+    let again = reindex(&mut store, root, false);
+    assert_eq!((again.parsed, again.unchanged), (0, 3), "{again:?}");
+}
+
 #[test]
 fn secret_files_are_never_indexed() {
     let src = copy_fixture("python");

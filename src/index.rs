@@ -201,10 +201,21 @@ pub fn walker_admits(repo_root: &Path, path: &Path, cfg: &Config) -> bool {
         })
 }
 
-/// Walk `root` (gitignore-aware) and return supported source files.
-fn walk(root: &Path, cfg: &Config) -> Vec<(PathBuf, u64, i64)> {
+/// A walked file: path, size, mtime (ns).
+type Entry = (PathBuf, u64, i64);
+
+/// What a walk found: source files of enabled languages, and the module-layout marker
+/// files ([`crate::layout::MARKER_FILES`]) whose change means a repo must be re-unitized.
+#[derive(Default)]
+struct Walked {
+    files: Vec<Entry>,
+    markers: Vec<Entry>,
+}
+
+/// Walk `root` (gitignore-aware) and return supported source files and marker files.
+fn walk(root: &Path, cfg: &Config) -> Walked {
     let langs: HashSet<Lang> = cfg.languages.iter().copied().collect();
-    let out = Mutex::new(Vec::new());
+    let out = Mutex::new(Walked::default());
     let walker = walk_builder(root, cfg, None).build_parallel();
     walker.run(|| {
         let out = &out;
@@ -217,10 +228,20 @@ fn walk(root: &Path, cfg: &Config) -> Vec<(PathBuf, u64, i64)> {
                 return ignore::WalkState::Continue;
             }
             let path = entry.path();
-            if path
+            let name = path
                 .file_name()
-                .is_some_and(|n| util::is_secret_file(&n.to_string_lossy()))
-            {
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if util::is_secret_file(&name) {
+                return ignore::WalkState::Continue;
+            }
+            if crate::layout::is_marker_file(&name) {
+                if let Ok(meta) = entry.metadata() {
+                    if let Ok(mut w) = out.lock() {
+                        w.markers
+                            .push((path.to_path_buf(), meta.len(), util::mtime_ns(&meta)));
+                    }
+                }
                 return ignore::WalkState::Continue;
             }
             let Some(lang) = Lang::from_path(path) else {
@@ -231,23 +252,35 @@ fn walk(root: &Path, cfg: &Config) -> Vec<(PathBuf, u64, i64)> {
                 return ignore::WalkState::Continue;
             }
             if let Ok(meta) = entry.metadata() {
-                if let Ok(mut v) = out.lock() {
-                    v.push((path.to_path_buf(), meta.len(), util::mtime_ns(&meta)));
+                if let Ok(mut w) = out.lock() {
+                    w.files
+                        .push((path.to_path_buf(), meta.len(), util::mtime_ns(&meta)));
                 }
             }
             ignore::WalkState::Continue
         })
     });
-    let mut v = out.into_inner().unwrap_or_default();
-    v.sort();
-    v
+    let mut w = out.into_inner().unwrap_or_default();
+    w.files.sort();
+    w.markers.sort();
+    w
+}
+
+/// Fingerprint of a repo's marker files (repo-relative path, size, mtime): cheap to
+/// compute on every pass, and any edit to a `go.mod`/`Cargo.toml`/... changes it.
+fn markers_signature(repo_root: &Path, markers: &[Entry]) -> String {
+    let mut lines: Vec<String> = markers
+        .iter()
+        .filter_map(|(p, size, mtime)| {
+            util::rel_under(repo_root, p).map(|rel| format!("{rel}\t{size}\t{mtime}"))
+        })
+        .collect();
+    lines.sort();
+    hash_hex(lines.join("\n").as_bytes())
 }
 
 /// Group walked files into repos.
-fn group_repos(
-    root: &Path,
-    files: Vec<(PathBuf, u64, i64)>,
-) -> HashMap<PathBuf, Vec<(PathBuf, u64, i64)>> {
+fn group_repos(root: &Path, files: Vec<Entry>) -> HashMap<PathBuf, Vec<Entry>> {
     let mut memo: HashMap<PathBuf, PathBuf> = HashMap::new();
     let mut out: HashMap<PathBuf, Vec<(PathBuf, u64, i64)>> = HashMap::new();
     for f in files {
@@ -466,9 +499,10 @@ fn index_roots_inner(
     let mut seen_canon: HashSet<PathBuf> = HashSet::new();
     for root in &roots {
         let t0 = Instant::now();
-        let files = walk(root, cfg);
+        let walked = walk(root, cfg);
         util::trace("index.walk", t0);
-        let groups = group_repos(root, files);
+        let groups = group_repos(root, walked.files);
+        let mut marker_groups = group_repos(root, walked.markers);
         util::trace("index.group_repos", t0);
         let mut repos: Vec<_> = groups.into_iter().collect();
         repos.sort_by(|a, b| a.0.cmp(&b.0));
@@ -478,8 +512,9 @@ fn index_roots_inner(
             }
             seen_repos.insert(repo_root.clone());
             let name = repo_name(root, &repo_root);
+            let markers = marker_groups.remove(&repo_root).unwrap_or_default();
             index_repo(
-                store, cfg, &name, &repo_root, files, opts, start, stats, None,
+                store, cfg, &name, &repo_root, files, &markers, opts, start, stats, None,
             )?;
         }
         // Repos under this root that no longer have any source files.
@@ -534,18 +569,21 @@ fn refresh_repo_inner(
     let start = Instant::now();
     let mut stats = IndexStats::default();
     store.recover_fts(false)?;
-    let files = walk(repo_root, cfg);
+    let walked = walk(repo_root, cfg);
     // Drop files that belong to nested repos.
     let mut memo = HashMap::new();
-    let files: Vec<_> = files
-        .into_iter()
-        .filter(|(p, ..)| {
-            let dir = p.parent().map(Path::to_path_buf).unwrap_or_default();
-            find_repo(&dir, repo_root, &mut memo) == repo_root
-        })
-        .collect();
+    let mut own = |v: Vec<Entry>| -> Vec<Entry> {
+        v.into_iter()
+            .filter(|(p, ..)| {
+                let dir = p.parent().map(Path::to_path_buf).unwrap_or_default();
+                find_repo(&dir, repo_root, &mut memo) == repo_root
+            })
+            .collect()
+    };
+    let files = own(walked.files);
+    let markers = own(walked.markers);
     index_repo(
-        store, cfg, name, repo_root, files, opts, start, &mut stats, cache,
+        store, cfg, name, repo_root, files, &markers, opts, start, &mut stats, cache,
     )?;
     // Refreshes run per MCP call and per watch batch: count this repo only, from the
     // counts its last resolve stored.
@@ -583,7 +621,8 @@ fn index_repo(
     cfg: &Config,
     name: &str,
     repo_root: &Path,
-    files: Vec<(PathBuf, u64, i64)>,
+    files: Vec<Entry>,
+    markers: &[Entry],
     opts: &IndexOptions,
     start: Instant,
     stats: &mut IndexStats,
@@ -591,6 +630,7 @@ fn index_repo(
 ) -> Result<()> {
     let t0 = Instant::now();
     let found = classify(repo_root, files, cfg);
+    let marker_sig = markers_signature(repo_root, markers);
     util::trace("index.classify", t0);
     // The write lock is taken up front (IMMEDIATE), so the state read below cannot
     // change under us before our own `begin_repo_write`.
@@ -618,6 +658,18 @@ fn index_repo(
             existing.clear();
         }
     }
+    // A changed go.mod/Cargo.toml/package.json/tsconfig.json changes the unit (module
+    // path) of files that did not change themselves: re-parse the whole repo.
+    let markers_changed = store::repo_markers(&tx, repo_id)? != marker_sig;
+    let full = opts.full || (markers_changed && !existing.is_empty());
+    if markers_changed && !existing.is_empty() {
+        eprintln!(
+            "codegraph: {name}: module layout files changed (go.mod, Cargo.toml, package.json, tsconfig.json); re-indexing the repo"
+        );
+    }
+    if markers_changed {
+        store::set_repo_markers(&tx, repo_id, &marker_sig)?;
+    }
     stats.repos += 1;
     stats.files += found.len();
 
@@ -628,7 +680,7 @@ fn index_repo(
             return Outcome::Failed;
         }
         let old = existing.get(&f.rel);
-        if !opts.full {
+        if !full {
             if let Some(o) = old {
                 if o.mtime == f.mtime && o.size == f.size as i64 {
                     return Outcome::Unchanged;
@@ -655,7 +707,7 @@ fn index_repo(
             Err(_) => return Outcome::Unreadable,
         };
         let hash = hash_hex(&bytes);
-        if !opts.full {
+        if !full {
             if let Some(o) = old {
                 if o.hash == hash {
                     return Outcome::Touch {
@@ -777,7 +829,7 @@ fn index_repo(
         && !changes.touched
         && !repair_resolve
         && !wipe
-        && !opts.full;
+        && !full;
     if noop {
         tx.rollback()?;
         util::trace("index.parse_and_write", t0);
@@ -789,7 +841,7 @@ fn index_repo(
     stats.write_ms += tail + t_write.elapsed().as_millis();
     stats.parsed += rs.parsed;
     stats.removed += rs.removed;
-    if rs.parsed > 0 || rs.removed > 0 || opts.full || repair_resolve {
+    if rs.parsed > 0 || rs.removed > 0 || full || repair_resolve {
         let t_res = Instant::now();
         rs.resolve = Some(match (pending, cache) {
             (Some(p), cache) => {
@@ -804,7 +856,7 @@ fn index_repo(
                 repo_root,
                 c,
                 &changes.reparsed,
-                changes.structural || opts.full || repair_resolve,
+                changes.structural || full || repair_resolve,
             )?,
             (None, None) => resolve::resolve_repo(store, repo_id, repo_root)?,
         });

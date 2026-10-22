@@ -8,6 +8,17 @@ use std::path::{Path, PathBuf};
 
 use crate::lang::Lang;
 
+/// Files that decide where sources sit in their module system (`go.mod`, `Cargo.toml`
+/// here; `package.json` and `tsconfig.json` in the resolver). A change to one changes
+/// the unit of every file beneath it, so the indexer tracks them per repo and re-indexes
+/// the whole repo when they change.
+pub const MARKER_FILES: [&str; 4] = ["go.mod", "Cargo.toml", "package.json", "tsconfig.json"];
+
+/// Whether `name` (a file name) is one of [`MARKER_FILES`].
+pub fn is_marker_file(name: &str) -> bool {
+    MARKER_FILES.iter().any(|m| m.eq_ignore_ascii_case(name))
+}
+
 /// A file's position in its module system.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FileUnit {

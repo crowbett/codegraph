@@ -392,7 +392,9 @@ Neither ships in the binary. [docs/PACKAGES.md](docs/PACKAGES.md) says what ever
    `~/dev/go`) is skipped with a warning: the outer walk already covers it, and every repo
    is named relative to its outermost root.
 2. **Change detection**: a file is skipped when its mtime and size match the stored row,
-   otherwise it is hashed with xxh3. An unchanged hash only updates the mtime.
+   otherwise it is hashed with xxh3. An unchanged hash only updates the mtime. A changed
+   `go.mod`, `Cargo.toml`, `package.json` or `tsconfig.json` re-indexes its whole repo,
+   since every file's module path may have moved.
 3. **Extract** (rayon, one parser per thread): the tag query captures definitions,
    references (calls, type uses, `impl Trait for T`, `extends`/`implements`, functions passed
    as values, and calls inside macro invocations like `assert_eq!(f(x))` or `vec![t(1)]`) and

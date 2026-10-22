@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS repos(
     -- Unix time the last write transaction began; with indexed_at = 0 it tells a run
     -- that is still in progress on another connection from one that died.
     write_started INTEGER NOT NULL DEFAULT 0,
+    -- Fingerprint of the repo's module-layout files (go.mod, Cargo.toml, ...): a change
+    -- re-indexes the whole repo, since every file's unit may have moved.
+    markers TEXT NOT NULL DEFAULT '',
     -- Written by each resolve, so status and index summaries never scan edges.
     symbols INTEGER NOT NULL DEFAULT 0,
     edges INTEGER NOT NULL DEFAULT 0,
@@ -438,6 +441,24 @@ pub fn repo_write_is_dead(conn: &Connection, repo_id: i64, now: i64) -> Result<b
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     Ok(indexed_at == 0 && now - started > STALE_WRITE_SECS)
+}
+
+/// The stored fingerprint of the repo's module-layout marker files (`""` when never set).
+pub fn repo_markers(conn: &Connection, repo_id: i64) -> Result<String> {
+    Ok(
+        conn.query_row("SELECT markers FROM repos WHERE id = ?1", [repo_id], |r| {
+            r.get(0)
+        })?,
+    )
+}
+
+/// Store the repo's marker-file fingerprint.
+pub fn set_repo_markers(conn: &Connection, repo_id: i64, sig: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE repos SET markers = ?2 WHERE id = ?1",
+        params![repo_id, sig],
+    )?;
+    Ok(())
 }
 
 /// Whether any edge of the repo is stored.

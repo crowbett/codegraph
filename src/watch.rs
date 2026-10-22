@@ -153,6 +153,10 @@ fn classify(rel: &str, skip: &HashSet<String>, langs: &HashSet<Lang>) -> PathCla
     if last.starts_with('.') || skip.contains(&last.to_lowercase()) || util::is_secret_file(last) {
         return PathClass::Ignore;
     }
+    // go.mod, Cargo.toml, package.json, tsconfig.json: the repo's units may have moved.
+    if crate::layout::is_marker_file(last) {
+        return PathClass::Repo;
+    }
     let p = Path::new(last);
     match Lang::from_path(p) {
         Some(l) if langs.contains(&l) || (l == Lang::C && langs.contains(&Lang::Cpp)) => {
@@ -591,6 +595,11 @@ mod tests {
         assert_eq!(c("repo/src/main.go"), PathClass::Repo);
         assert_eq!(c("repo/include/x.h"), PathClass::Repo);
         assert_eq!(c("repo/.gitignore"), PathClass::Repo);
+        assert_eq!(c("repo/go.mod"), PathClass::Repo);
+        assert_eq!(c("repo/crates/x/Cargo.toml"), PathClass::Repo);
+        assert_eq!(c("repo/package.json"), PathClass::Repo);
+        assert_eq!(c("repo/tsconfig.json"), PathClass::Repo);
+        assert_eq!(c("repo/node_modules/x/package.json"), PathClass::Ignore);
         assert_eq!(c("repo/src"), PathClass::Repo, "possible directory");
         assert_eq!(c("repo/.git"), PathClass::Boundary);
         assert_eq!(c("repo/.git/index.lock"), PathClass::Ignore);
