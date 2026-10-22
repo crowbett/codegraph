@@ -371,12 +371,38 @@ fn add(tier: &mut HashMap<i64, u8>, ids: Vec<i64>, t: u8) {
     }
 }
 
+/// Longest accepted `find` query, in bytes.
+pub const MAX_QUERY_BYTES: usize = 256;
+
+/// Fuzzy (subsequence) matching loads every distinct symbol name of the searched repos;
+/// above this many symbols it is skipped (exact, suffix, prefix, substring and doc tiers
+/// still run).
+pub const FUZZY_MAX_SYMBOLS: i64 = 300_000;
+
+/// Whether the repos in `filter` (all repos when none) hold at most `max_symbols`
+/// symbols, from the per-repo counts each resolve stores (no table scan).
+fn fuzzy_allowed(store: &Store, filter: &Filter, max_symbols: i64) -> Result<bool> {
+    let total: i64 = store
+        .repos()?
+        .iter()
+        .filter(|r| filter.repos.as_ref().is_none_or(|ids| ids.contains(&r.id)))
+        .map(|r| r.counts[0])
+        .sum();
+    Ok(total <= max_symbols)
+}
+
 /// Fuzzy + exact symbol search.
 pub fn find(store: &Store, query: &str, filter: &Filter, limit: usize) -> Result<Vec<Hit>> {
     let conn = store.conn();
     let q = query.trim();
     if q.is_empty() {
         return Err(Error::Usage("empty query".into()));
+    }
+    if q.len() > MAX_QUERY_BYTES {
+        return Err(Error::Usage(format!(
+            "query is {} bytes; at most {MAX_QUERY_BYTES} are accepted",
+            q.len()
+        )));
     }
     let limit = limit.clamp(1, 500);
     let f = filter.sql();
@@ -452,7 +478,11 @@ pub fn find(store: &Store, query: &str, filter: &Filter, limit: usize) -> Result
             );
         }
     }
-    if tier.len() < limit && q.len() >= 2 && !q.contains(['.', ':']) {
+    if tier.len() < limit
+        && q.len() >= 2
+        && !q.contains(['.', ':'])
+        && fuzzy_allowed(store, filter, FUZZY_MAX_SYMBOLS)?
+    {
         // Subsequence match over distinct names (e.g. `hndlreq` -> handleRequest).
         let mut st = conn.prepare_cached(&format!(
             "SELECT DISTINCT s.name FROM symbols s WHERE 1=1 {f}"
@@ -2080,5 +2110,45 @@ mod tests {
     fn subsequence() {
         assert!(is_subsequence("hndlreq", "handleRequest"));
         assert!(!is_subsequence("xyz", "handleRequest"));
+    }
+
+    #[test]
+    fn find_caps_query_length_and_fuzzy_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("g.db")).unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(
+            repo.join("a.go"),
+            "package a\nfunc HandleRequest() {}\nfunc Other() {}\n",
+        )
+        .unwrap();
+        let cfg = crate::config::Config {
+            roots: Vec::new(),
+            ..crate::config::Config::default()
+        };
+        crate::index::index_roots(
+            &mut store,
+            &cfg,
+            &[repo],
+            &crate::index::IndexOptions::default(),
+        )
+        .unwrap();
+        let f = Filter::default();
+        let long = "x".repeat(MAX_QUERY_BYTES + 1);
+        let err = find(&store, &long, &f, 10).unwrap_err();
+        assert!(matches!(err, Error::Usage(_)), "{err}");
+        assert!(find(&store, &"x".repeat(MAX_QUERY_BYTES), &f, 10).is_ok());
+        // Fuzzy still finds by subsequence on a small graph...
+        let hits = find(&store, "hndlreq", &f, 10).unwrap();
+        assert_eq!(hits[0].sym.name, "HandleRequest");
+        // ...and the guard reads the stored per-repo counts (2 symbols here).
+        assert!(fuzzy_allowed(&store, &f, 2).unwrap());
+        assert!(!fuzzy_allowed(&store, &f, 1).unwrap());
+        let other = Filter {
+            repos: Some(vec![i64::MAX]),
+            kinds: None,
+        };
+        assert!(fuzzy_allowed(&store, &other, 0).unwrap());
     }
 }

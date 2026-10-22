@@ -24,6 +24,11 @@ versions follow [SemVer](https://semver.org/).
   the directory walk reported; a file that grew or was swapped in between could exhaust
   memory. Reads now go through `util::read_bounded`: a regular file checked on the open
   handle, read with `take(max + 1)`, refused over `max_file_kb`.
+- `find` accepted a query of any length, and every 2+ character query without `.`/`:`
+  loaded every distinct symbol name of the searched repos for fuzzy matching. Queries over
+  256 bytes are now rejected (`-32602` over MCP, a usage error on the CLI), and the fuzzy
+  tier is skipped when the searched repos hold more than 300,000 symbols (from the stored
+  per-repo counts; the exact, qualified, prefix, substring and doc tiers still run).
 
 ### Fixed
 - Overlapping index roots (`~/dev` and `~/dev/go`) indexed every nested repo twice per run

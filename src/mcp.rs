@@ -462,6 +462,16 @@ impl Server {
         match name {
             "codegraph_find" => {
                 let q = req_str(args, "query")?;
+                if q.len() > query::MAX_QUERY_BYTES {
+                    return Err(CallError::Rpc(
+                        INVALID_PARAMS,
+                        format!(
+                            "`query` is {} bytes; at most {} are accepted",
+                            q.len(),
+                            query::MAX_QUERY_BYTES
+                        ),
+                    ));
+                }
                 let mut filter = self.filter(args)?;
                 if let Some(k) = str_arg(args, "kind") {
                     filter.kinds = Some(SymKind::parse_filter(k).ok_or_else(|| {
@@ -763,6 +773,12 @@ mod tests {
             .handle(&json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"codegraph_status","arguments":{}}}))
             .unwrap();
         assert_eq!(r["result"]["structuredContent"]["repos"], 0);
+        // An over-long find query is invalid params, not a tool error.
+        let long = "q".repeat(query::MAX_QUERY_BYTES + 1);
+        let r = s
+            .handle(&json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"codegraph_find","arguments":{"query": long}}}))
+            .unwrap();
+        assert_eq!(r["error"]["code"], INVALID_PARAMS, "{r}");
     }
 
     #[test]
