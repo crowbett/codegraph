@@ -1387,7 +1387,12 @@ pub fn outline(
             "{path}: unreadable, a link, or over max_file_kb ({max_bytes} bytes)"
         ))
     })?;
-    let facts = extract::extract(lang, &bytes)?;
+    // Same containment as the indexer's `parse_one`: a parser bug on one hostile file
+    // must not take the MCP server down with it.
+    let facts = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        extract::extract(lang, &bytes)
+    }))
+    .map_err(|_| Error::Internal(format!("{path}: parser panicked")))??;
     let items: Vec<(i64, Option<i64>, OutlineNode)> = facts
         .symbols
         .iter()

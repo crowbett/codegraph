@@ -987,6 +987,13 @@ mod tests {
             std::fs::write(p, text).unwrap();
         };
         write("repo/new.go", "package x\nfunc New() {}\n");
+        // The receivers that used to panic the parser: outlined, never a crash (the
+        // extraction is wrapped in catch_unwind like the indexer's).
+        let hostile = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hostile/a.go"),
+        )
+        .unwrap();
+        write("repo/hostile.go", &hostile);
         write("repo/ignored.go", "package x\nfunc Ignored() {}\n");
         write("repo/.hidden/h.go", "package x\nfunc Hidden() {}\n");
         write("repo/node_modules/n.go", "package x\nfunc Skipped() {}\n");
@@ -1007,6 +1014,19 @@ mod tests {
         assert_eq!(
             r["result"]["structuredContent"]["symbols"][0]["name"],
             "New"
+        );
+        let r = out("repo/hostile.go");
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let names: Vec<&str> = r["result"]["structuredContent"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
+        // Methods are shown as `<receiver>.<name>`; the receiver text is the hostile part.
+        assert!(
+            names.iter().any(|n| n.rsplit('.').next() == Some("F")),
+            "{names:?}"
         );
         // Everything an index pass would not read is refused, under a root or not.
         for f in [
