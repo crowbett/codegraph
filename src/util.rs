@@ -61,10 +61,27 @@ pub fn is_remote_path(s: &str) -> bool {
 /// Drop the `\\?\` prefix `canonicalize` adds on Windows (`\\?\C:\x` -> `C:\x`).
 /// Verbatim UNC paths are left as-is (and rejected by callers).
 pub fn strip_verbatim(p: PathBuf) -> PathBuf {
-    let s = p.to_string_lossy();
-    match s.strip_prefix(r"\\?\") {
-        Some(rest) if !rest.starts_with("UNC\\") => PathBuf::from(rest.to_string()),
-        _ => p,
+    #[cfg(windows)]
+    {
+        // On the UTF-16 units, not a lossy String: a path with an unpaired surrogate
+        // must come back byte-for-byte, prefix aside.
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        let w: Vec<u16> = p.as_os_str().encode_wide().collect();
+        let prefix: Vec<u16> = r"\\?\".encode_utf16().collect();
+        let unc: Vec<u16> = r"UNC\".encode_utf16().collect();
+        if w.starts_with(&prefix) && !w[prefix.len()..].starts_with(&unc) {
+            return PathBuf::from(std::ffi::OsString::from_wide(&w[prefix.len()..]));
+        }
+        p
+    }
+    #[cfg(not(windows))]
+    {
+        // `canonicalize` never adds the prefix here; a UTF-8 spelling of it is stripped
+        // for symmetry, any other path is returned untouched.
+        match p.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+            Some(rest) if !rest.starts_with("UNC\\") => PathBuf::from(rest),
+            _ => p,
+        }
     }
 }
 
@@ -408,6 +425,36 @@ mod tests {
         );
         assert_eq!(rel_under(root, Path::new("C:/a/bc/d.go")), None);
         assert_eq!(rel_under(root, Path::new("C:/a/b")).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn strip_verbatim_prefix() {
+        assert_eq!(
+            strip_verbatim(PathBuf::from(r"\\?\C:\x\y.go")),
+            PathBuf::from(r"C:\x\y.go")
+        );
+        assert_eq!(
+            strip_verbatim(PathBuf::from(r"\\?\UNC\h\s\y.go")),
+            PathBuf::from(r"\\?\UNC\h\s\y.go")
+        );
+        assert_eq!(
+            strip_verbatim(PathBuf::from(r"C:\x\y.go")),
+            PathBuf::from(r"C:\x\y.go")
+        );
+        #[cfg(windows)]
+        {
+            // An unpaired surrogate (not valid UTF-16, so not representable in a String)
+            // survives the strip.
+            use std::os::windows::ffi::OsStringExt;
+            let mut wide: Vec<u16> = r"\\?\C:\x\".encode_utf16().collect();
+            wide.push(0xD800);
+            wide.extend(".go".encode_utf16());
+            let got = strip_verbatim(PathBuf::from(std::ffi::OsString::from_wide(&wide)));
+            let mut want: Vec<u16> = r"C:\x\".encode_utf16().collect();
+            want.push(0xD800);
+            want.extend(".go".encode_utf16());
+            assert_eq!(got, PathBuf::from(std::ffi::OsString::from_wide(&want)));
+        }
     }
 
     #[test]
