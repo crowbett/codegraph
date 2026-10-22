@@ -377,11 +377,30 @@ impl Store {
         Ok(())
     }
 
-    /// Mark a repo as indexed now.
+    /// Mark a repo as indexed now (its write and its resolve both finished).
     pub fn set_indexed(&self, id: i64, ts: i64) -> Result<()> {
         self.conn
             .execute("UPDATE repos SET indexed_at = ?2 WHERE id = ?1", [id, ts])?;
         Ok(())
+    }
+
+    /// When a repo was last indexed: 0 when it never was, or when its last run died
+    /// between the write transaction and the resolve (see [`begin_repo_write`]).
+    pub fn repo_indexed_at(&self, id: i64) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row("SELECT indexed_at FROM repos WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })?)
+    }
+
+    /// Whether any edge of the repo is stored.
+    pub fn repo_has_edges(&self, id: i64) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM edges WHERE repo_id = ?1)",
+            [id],
+            |r| r.get(0),
+        )?)
     }
 
     /// Files of a repo keyed by relative path.
@@ -402,6 +421,18 @@ impl Store {
         })?;
         Ok(rows.collect::<rusqlite::Result<HashMap<_, _>>>()?)
     }
+}
+
+/// Start a repo's write transaction: reset `indexed_at` so that, if the process dies
+/// before the resolve that follows the commit, the next run sees an unfinished repo
+/// ([`Store::repo_indexed_at`] is 0) and repairs it. `wipe_files` drops every stored file
+/// (a cold load whose edges never made it): the repo is then loaded cold again.
+pub fn begin_repo_write(tx: &Connection, repo_id: i64, wipe_files: bool) -> Result<()> {
+    tx.execute("UPDATE repos SET indexed_at = 0 WHERE id = ?1", [repo_id])?;
+    if wipe_files {
+        tx.execute("DELETE FROM files WHERE repo_id = ?1", [repo_id])?;
+    }
+    Ok(())
 }
 
 /// Update mtime/size of an unchanged-content file.

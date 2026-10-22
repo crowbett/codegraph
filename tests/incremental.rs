@@ -133,6 +133,53 @@ fn edit_touch_delete_and_full() {
     assert_counts(&store, &full);
 }
 
+/// A run that dies between its write commit and its resolve (Ctrl-C, a killed MCP
+/// server) leaves `indexed_at = 0`; the next incremental run must repair the repo on
+/// its own instead of waiting for `--full`.
+#[test]
+fn interrupted_runs_are_repaired_by_the_next_run() {
+    let src = copy_fixture("go");
+    let db = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&db.path().join("g.db")).unwrap();
+    let root = src.path();
+    let first = reindex(&mut store, root, false);
+    assert_counts(&store, &first);
+    let edges = count(&store, "SELECT count(*) FROM edges");
+    assert!(edges > 0);
+
+    // A cold load that died before its edge insert: files and symbols, no edges.
+    store
+        .conn()
+        .execute_batch("DELETE FROM edges; UPDATE repos SET indexed_at = 0")
+        .unwrap();
+    let repaired = reindex(&mut store, root, false);
+    assert_eq!((repaired.parsed, repaired.unchanged), (3, 0));
+    assert_eq!(count(&store, "SELECT count(*) FROM edges"), edges);
+    assert_counts(&store, &repaired);
+    assert!(store.repos().unwrap()[0].indexed_at > 0);
+
+    // An incremental run that died before its resolve: edges stored but unresolved.
+    store
+        .conn()
+        .execute_batch(
+            "UPDATE edges SET to_symbol = NULL, confidence = NULL WHERE kind != 'import';
+             UPDATE repos SET indexed_at = 0",
+        )
+        .unwrap();
+    let repaired = reindex(&mut store, root, false);
+    assert_eq!((repaired.parsed, repaired.unchanged), (0, 3));
+    assert_eq!(repaired.resolved_edges, first.resolved_edges);
+    assert_counts(&store, &repaired);
+    assert_eq!(
+        edge(&store, "main.go", 13, "Use"),
+        Some(("b.Use".to_string(), "exact".to_string()))
+    );
+
+    // A finished repo is left alone.
+    let again = reindex(&mut store, root, false);
+    assert!(again.changed_repos.is_empty(), "{again:?}");
+}
+
 #[test]
 fn secret_files_are_never_indexed() {
     let src = copy_fixture("python");
