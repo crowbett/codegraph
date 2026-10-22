@@ -71,7 +71,7 @@ pub struct RawSymbol {
     pub default_export: bool,
     /// Receiver variable name (Go `func (s *Store) ...` -> `s`).
     pub recv: Option<String>,
-    /// Return type hint (functions/methods), see [`crate::infer`].
+    /// Return type hint (functions/methods), see `crate::infer`.
     pub ret: Option<String>,
     /// Field name -> type hint (structs/classes); Go embedded fields are `~Type`.
     pub fields: Vec<(String, String)>,
@@ -98,7 +98,7 @@ pub struct RawRef {
     pub from: Option<usize>,
     /// For `impl Trait for Type`: the implementing type's name.
     pub from_name: Option<String>,
-    /// Receiver type hint for calls/values (see [`crate::infer`]); `L` on a bare name
+    /// Receiver type hint for calls/values (see `crate::infer`); `L` on a bare name
     /// means it is a local variable.
     pub hint: Option<String>,
     /// Method-call syntax (`x.f()`), as opposed to a path (`x::f()`); Rust only.
@@ -167,8 +167,8 @@ pub struct FileFacts {
     /// tree-sitter reported syntax errors (extraction still ran).
     pub has_errors: bool,
     /// Extraction was bounded: receiver hints were skipped for all or part of the file
-    /// (nesting deeper than `infer::MAX_INFER_DEPTH`, or [`HINT_BUDGET`] ran out), or the
-    /// query hit its match limit or [`QUERY_BUDGET`] (symbols and edges are still
+    /// (nesting deeper than `infer::MAX_INFER_DEPTH`, or `HINT_BUDGET` ran out), or the
+    /// query hit its match limit or `QUERY_BUDGET` (symbols and edges are still
     /// extracted, some may be missing).
     pub limited: bool,
 }
