@@ -635,9 +635,21 @@ fn index_repo(
                 }
             }
         }
-        match extract::extract(f.lang, &bytes) {
-            Ok(facts) => Outcome::Parsed(Box::new((facts, hash))),
-            Err(_) => Outcome::Failed,
+        // A parser bug on one hostile file must not take the whole run (or the MCP
+        // server) down: the panic is caught here and the file is dropped from the graph.
+        let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            extract::extract(f.lang, &bytes)
+        }));
+        match parsed {
+            Ok(Ok(facts)) => Outcome::Parsed(Box::new((facts, hash))),
+            Ok(Err(_)) => Outcome::Failed,
+            Err(_) => {
+                eprintln!(
+                    "codegraph: parser panicked on {}; file skipped",
+                    util::slash(&f.abs)
+                );
+                Outcome::Failed
+            }
         }
     };
 
@@ -692,7 +704,17 @@ fn index_repo(
                 &mut changes,
             );
         }
-        parse_wall = producer.join().unwrap_or_default();
+        // The producer only dies on a panic that escaped `parse_one` (rayon itself, or
+        // the channel): files it never sent are not in the graph, so fail loudly
+        // instead of committing a silently partial repo.
+        match producer.join() {
+            Ok(ms) => parse_wall = ms,
+            Err(_) => {
+                if res.is_ok() {
+                    res = Err(Error::Internal("parser thread panicked".into()));
+                }
+            }
+        }
         res
     });
     write_result?;

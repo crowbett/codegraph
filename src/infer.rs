@@ -1608,15 +1608,20 @@ impl<'a> Infer<'a> {
                 // (by position) as in the type's declaration when it is in this file.
                 if let Some(r) = f.child_by_field_name("receiver") {
                     let text = squash(self.t(r));
+                    // `]` before `[` happens in (broken) real input: `func (s ]T[) F()`,
+                    // or brackets inside comments in the receiver; `get` keeps the
+                    // slices in bounds instead of panicking the parser thread.
                     if let (Some(a), Some(b)) = (text.find('['), text.rfind(']')) {
-                        let tname = text[..a]
-                            .rsplit([' ', '*', '('])
-                            .next()
-                            .unwrap_or("")
-                            .to_string();
-                        let bounds = self.go_type_param_bounds(&tname);
-                        for (i, n) in text[a + 1..b].split(',').enumerate() {
-                            add(n.trim(), bounds.get(i).cloned().flatten());
+                        if let (Some(head), Some(list)) = (text.get(..a), text.get(a + 1..b)) {
+                            let tname = head
+                                .rsplit([' ', '*', '('])
+                                .next()
+                                .unwrap_or("")
+                                .to_string();
+                            let bounds = self.go_type_param_bounds(&tname);
+                            for (i, n) in list.split(',').enumerate() {
+                                add(n.trim(), bounds.get(i).cloned().flatten());
+                            }
                         }
                     }
                 }

@@ -78,7 +78,9 @@ lto = true
 codegen-units = 1
 strip = true
 opt-level = 3
-panic = "abort"
+# Unwinding (the default) so a parser panic on one hostile file is caught per file
+# (`index::parse_one`) instead of aborting `codegraph index` or the MCP server.
+# Costs a little binary size over `panic = "abort"`.
 
 [profile.dev]
 opt-level = 1

@@ -35,6 +35,13 @@ versions follow [SemVer](https://semver.org/).
   or the MCP tools. Schema version 20 (existing graphs are rebuilt on first use).
 
 ### Fixed
+- A Go receiver with `]` before `[` (`func (s /*]*/ T /*[*/) F()`, or plain broken
+  input) sliced out of bounds in the receiver type-parameter scan and panicked the parser
+  thread: with `panic = "abort"` one such file killed `codegraph index` and the MCP server
+  on every refresh, and debug builds silently dropped the file. The scan is bounds-checked,
+  the release profile unwinds again, a parser panic on one file is caught in the indexer
+  (logged, file skipped), and a parser thread that dies for any other reason fails the run
+  instead of committing a partial repo.
 - Overlapping index roots (`~/dev` and `~/dev/go`) indexed every nested repo twice per run
   and flipped its name between `go/pulse` and `pulse`. A root inside another root is now
   skipped with one warning on stderr, repos are deduplicated by canonical path, and a repo

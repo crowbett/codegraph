@@ -92,3 +92,32 @@ fn nested_generic_receivers_are_cheap() {
     let facts = timed(Lang::Go, &src);
     assert!(facts.symbols.iter().any(|s| s.name == "M"));
 }
+
+/// Go receivers with `]` before `[` (`func (s /*]*/ T /*[*/) F()`, `func (s ]T[) F()`)
+/// used to slice out of bounds in the receiver type-parameter scan and panic the parser
+/// thread: with `panic = "abort"` that killed `codegraph index` and the MCP server on
+/// every refresh; in debug builds the file silently vanished from the graph.
+#[test]
+fn broken_go_receivers_do_not_panic() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hostile");
+    for f in ["a.go", "b.go"] {
+        let src = std::fs::read(dir.join(f)).unwrap();
+        let facts = extract(Lang::Go, &src).unwrap();
+        assert!(facts.symbols.iter().any(|s| s.name == "F"), "{f}");
+    }
+    // Through the indexer too: both files land in the graph.
+    let db = tempfile::tempdir().unwrap();
+    let mut store = codegraph::store::Store::open(&db.path().join("g.db")).unwrap();
+    let cfg = codegraph::config::Config {
+        roots: Vec::new(),
+        ..codegraph::config::Config::default()
+    };
+    let st = codegraph::index::index_roots(
+        &mut store,
+        &cfg,
+        &[dir],
+        &codegraph::index::IndexOptions::default(),
+    )
+    .unwrap();
+    assert_eq!((st.files, st.parsed), (2, 2), "{st:?}");
+}
