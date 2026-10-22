@@ -1226,12 +1226,14 @@ fn reject_remote(path: &str) -> Result<()> {
 }
 
 /// Nested outline of a file. Indexed files come from the graph; other files are
-/// parsed on the fly only when `unindexed_max_bytes` is set (and within that size).
+/// parsed on the fly only when `unindexed` is set, and then only a file inside an
+/// indexed repo that an index pass would include (not gitignored, hidden, under
+/// `skip_dirs`, a link or a secret file) and within `max_file_kb`.
 pub fn outline(
     store: &Store,
     path: &str,
     filter: &Filter,
-    unindexed_max_bytes: Option<u64>,
+    unindexed: Option<&crate::config::Config>,
 ) -> Result<Outline> {
     let conn = store.conn();
     let files = find_files(store, path, filter)?;
@@ -1282,7 +1284,7 @@ pub fn outline(
         });
     }
     // Not indexed: parse directly, if the caller allows it.
-    let Some(max_bytes) = unindexed_max_bytes else {
+    let Some(cfg) = unindexed else {
         return Err(Error::NotFound(format!("{path}: not an indexed file")));
     };
     let abs = util::absolute(Path::new(path));
@@ -1294,20 +1296,29 @@ pub fn outline(
             "{path}: refusing to read a secret file"
         )));
     }
-    let size = std::fs::metadata(&abs)
-        .map_err(|e| Error::io(format!("stat {}", abs.display()), e))?
-        .len();
-    if size > max_bytes {
-        return Err(Error::Usage(format!(
-            "{path}: {size} bytes exceeds max_file_kb ({max_bytes} bytes)"
-        )));
-    }
     let lang = Lang::from_path(&abs).ok_or_else(|| {
         Error::NotFound(format!(
             "{path}: not an indexed file or a supported language"
         ))
     })?;
-    let bytes = std::fs::read(&abs).map_err(|e| Error::io(format!("read {}", abs.display()), e))?;
+    // Only what an index pass of its repo would read: a gitignored `local_settings.py`
+    // or a `.venv` file must not have its first lines served as signatures.
+    let Some((_, _, root)) = repo_containing(store, &abs)? else {
+        return Err(Error::NotFound(format!(
+            "{path}: not an indexed file (not inside an indexed repo)"
+        )));
+    };
+    if !crate::index::walker_admits(&root, &abs, cfg) {
+        return Err(Error::NotFound(format!(
+            "{path}: not an indexed file (ignored by .gitignore, hidden, in skip_dirs, or a link)"
+        )));
+    }
+    let max_bytes = cfg.max_file_bytes();
+    let bytes = util::read_repo_bytes(&root, &abs, max_bytes).ok_or_else(|| {
+        Error::Usage(format!(
+            "{path}: unreadable, a link, or over max_file_kb ({max_bytes} bytes)"
+        ))
+    })?;
     let facts = extract::extract(lang, &bytes)?;
     let items: Vec<(i64, Option<i64>, OutlineNode)> = facts
         .symbols

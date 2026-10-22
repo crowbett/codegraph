@@ -341,12 +341,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Outline(a) => {
             let store = app.open_store()?;
-            let o = query::outline(
-                &store,
-                &a.file,
-                &Filter::default(),
-                Some(app.cfg.max_file_bytes()),
-            )?;
+            let o = query::outline(&store, &a.file, &Filter::default(), Some(&app.cfg))?;
             let sigs = a.signatures || app.verbose;
             app.emit(&o, || render::outline(&o, sigs, app.style))?;
         }

@@ -128,26 +128,71 @@ fn repo_name(root_of_index: &Path, repo: &Path) -> String {
     }
 }
 
-/// Walk `root` (gitignore-aware) and return supported source files.
-fn walk(root: &Path, cfg: &Config) -> Vec<(PathBuf, u64, i64)> {
+/// The walker every index pass uses: gitignore-aware (`.gitignore`, `.ignore`,
+/// `.git/info/exclude`, no global excludes), hidden entries skipped, links not
+/// followed, `skip_dirs` pruned.
+fn walk_builder(root: &Path, cfg: &Config, only: Option<PathBuf>) -> ignore::WalkBuilder {
     let skip: HashSet<String> = cfg.skip_dirs.iter().map(|s| s.to_lowercase()).collect();
-    let langs: HashSet<Lang> = cfg.languages.iter().copied().collect();
-    let out = Mutex::new(Vec::new());
-    let walker = ignore::WalkBuilder::new(root)
-        .hidden(true)
+    let mut b = ignore::WalkBuilder::new(root);
+    b.hidden(true)
         .git_ignore(true)
         .git_global(false)
         .git_exclude(true)
         .require_git(false)
         .follow_links(false)
+        // One filter: `filter_entry` replaces rather than chains.
         .filter_entry(move |e| {
+            if only
+                .as_deref()
+                .is_some_and(|t| util::rel_under(e.path(), t).is_none())
+            {
+                return false;
+            }
             if e.file_type().is_some_and(|t| t.is_dir()) && e.depth() > 0 {
                 let n = e.file_name().to_string_lossy().to_lowercase();
                 return !skip.contains(&n);
             }
             true
+        });
+    b
+}
+
+/// Whether a source file is one the walker yields: a regular file under `repo_root`
+/// that an index pass would include (not gitignored, hidden, under a `skip_dirs`
+/// directory, a link, a secret file, or an unsupported or disabled language).
+pub fn walker_admits(repo_root: &Path, path: &Path, cfg: &Config) -> bool {
+    let Some(rel) = util::rel_under(repo_root, path).filter(|r| !r.is_empty()) else {
+        return false;
+    };
+    if path
+        .file_name()
+        .is_some_and(|n| util::is_secret_file(&n.to_string_lossy()))
+    {
+        return false;
+    }
+    let langs: HashSet<Lang> = cfg.languages.iter().copied().collect();
+    let lang_ok = Lang::from_path(path)
+        .is_some_and(|l| langs.contains(&l) || (l == Lang::C && langs.contains(&Lang::Cpp)));
+    if !lang_ok {
+        return false;
+    }
+    // Walk only the chain of directories leading to `path`; the walker applies the
+    // ignore rules exactly as an index pass does.
+    let target = repo_root.join(rel);
+    walk_builder(repo_root, cfg, Some(target))
+        .build()
+        .flatten()
+        .any(|e| {
+            e.file_type().is_some_and(|t| t.is_file())
+                && util::rel_under(e.path(), path) == Some(String::new())
         })
-        .build_parallel();
+}
+
+/// Walk `root` (gitignore-aware) and return supported source files.
+fn walk(root: &Path, cfg: &Config) -> Vec<(PathBuf, u64, i64)> {
+    let langs: HashSet<Lang> = cfg.languages.iter().copied().collect();
+    let out = Mutex::new(Vec::new());
+    let walker = walk_builder(root, cfg, None).build_parallel();
     walker.run(|| {
         let out = &out;
         let langs = &langs;

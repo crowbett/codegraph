@@ -269,7 +269,9 @@ today; `codegraph watch` (above) will do the same for the CLI between MCP calls.
 **Safety:** MCP never adds repos to the graph; only repos indexed with `codegraph index` are
 refreshed. Path arguments are canonicalized and must resolve under a configured root. UNC
 and device paths (`\\host\share`, `\\?\UNC\...`) are rejected lexically, before any
-filesystem call. Unindexed files are outlined only under a root and within `max_file_kb`.
+filesystem call. Unindexed files are outlined only inside an indexed repo, only when an
+index pass would include them (not gitignored, hidden, in `skip_dirs` or a link), and
+within `max_file_kb`.
 Credential files (`.env*`, `*.pem`, `*.key`, `id_*`, `*.pfx`, `*.p12`, `*.kdbx`,
 `credentials*.json`, `secrets.*`, `*.tfstate`, `.npmrc`, `.netrc`) are never indexed or
 read. Source snippets have control characters replaced. Responses are capped at 256 KB with

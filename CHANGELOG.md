@@ -14,6 +14,12 @@ versions follow [SemVer](https://semver.org/).
   with its target checked lexically for a remote path first. `find_files` and `impact` no
   longer probe the filesystem (`exists()`) for untrusted arguments at all.
 - `is_remote_path` also rejects the NT object-namespace spelling `\??\UNC\host\share`.
+- On-the-fly `outline` (CLI and `codegraph_outline`) parsed any supported-language file under
+  a root, including gitignored, hidden and `skip_dirs` files, and returned their first lines
+  as signatures (a gitignored `local_settings.py`, a `.venv` file). It now only parses a file
+  inside an indexed repo that an index pass would include, applying the walker's own rules
+  (`.gitignore`, hidden entries, `skip_dirs`, no links, no secret files), through the
+  bounded repo-file reader.
 
 ### Fixed
 - Overlapping index roots (`~/dev` and `~/dev/go`) indexed every nested repo twice per run

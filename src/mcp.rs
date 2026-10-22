@@ -516,12 +516,11 @@ impl Server {
                         "`{file}`: UNC and device paths are not allowed"
                     ))));
                 }
-                // Unindexed files are parsed on the fly only under a configured root.
+                // Unindexed files are parsed on the fly only under a configured root
+                // (and, inside `outline`, only inside an indexed repo and when the
+                // walker would include them).
                 let (spec, cap) = match util::confine(file, &self.roots) {
-                    Ok(p) => (
-                        p.to_string_lossy().into_owned(),
-                        Some(self.cfg.max_file_bytes()),
-                    ),
+                    Ok(p) => (p.to_string_lossy().into_owned(), Some(&self.cfg)),
                     Err(_) => (file.to_string(), None),
                 };
                 let o = query::outline(&self.store, &spec, &Filter::default(), cap)?;
@@ -878,28 +877,68 @@ mod tests {
     }
 
     #[test]
-    fn outline_on_the_fly_only_under_roots_and_within_cap() {
+    fn outline_on_the_fly_only_inside_indexed_repos_as_the_walker_sees_them() {
         let (dir, s) = server();
-        let root = dir.path().join("root");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("ok.go"), "package x\nfunc Ok() {}\n").unwrap();
-        std::fs::write(root.join("big.go"), "// x\n".repeat(400)).unwrap();
-        std::fs::write(root.join("secrets.go"), "package x\n").unwrap();
+        let root = dir.path().to_path_buf();
+        let repo = root.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join("indexed.go"), "package x\nfunc Indexed() {}\n").unwrap();
+        std::fs::write(repo.join(".gitignore"), "ignored.go\n").unwrap();
         let cfg = Config {
             roots: vec![root.clone()],
             max_file_kb: 1,
             ..s.cfg.clone()
         };
-        let mut s = Server::new(s.store, cfg, dir.path().to_path_buf());
+        let mut s = Server::new(s.store, cfg, root.clone());
+        index::index_roots(
+            &mut s.store,
+            &s.cfg,
+            std::slice::from_ref(&root),
+            &IndexOptions::default(),
+        )
+        .unwrap();
+        // Files that appeared after the index.
+        let write = |rel: &str, text: &str| {
+            let p = root.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        write("repo/new.go", "package x\nfunc New() {}\n");
+        write("repo/ignored.go", "package x\nfunc Ignored() {}\n");
+        write("repo/.hidden/h.go", "package x\nfunc Hidden() {}\n");
+        write("repo/node_modules/n.go", "package x\nfunc Skipped() {}\n");
+        write("repo/big.go", &"// x\n".repeat(400));
+        write("repo/secrets.go", "package x\n");
+        write("loose/x.go", "package x\nfunc Loose() {}\n");
         let mut out = |f: &str| {
             s.handle(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"codegraph_outline","arguments":{"file": root.join(f).to_string_lossy()}}}))
                 .unwrap()
         };
-        let r = out("ok.go");
+        // From the graph, and parsed on the fly: a plain new file in an indexed repo.
+        let r = out("repo/indexed.go");
         assert_eq!(r["result"]["isError"], false, "{r}");
-        assert_eq!(r["result"]["structuredContent"]["symbols"][0]["name"], "Ok");
-        assert_eq!(out("big.go")["result"]["isError"], true);
-        assert_eq!(out("secrets.go")["result"]["isError"], true);
+        assert_eq!(r["result"]["structuredContent"]["indexed"], true);
+        let r = out("repo/new.go");
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        assert_eq!(r["result"]["structuredContent"]["indexed"], false);
+        assert_eq!(
+            r["result"]["structuredContent"]["symbols"][0]["name"],
+            "New"
+        );
+        // Everything an index pass would not read is refused, under a root or not.
+        for f in [
+            "repo/ignored.go",
+            "repo/.hidden/h.go",
+            "repo/node_modules/n.go",
+            "repo/big.go",
+            "repo/secrets.go",
+            "loose/x.go",
+        ] {
+            let r = out(f);
+            assert_eq!(r["result"]["isError"], true, "{f}: {r}");
+            let t = r["result"]["content"][0]["text"].as_str().unwrap();
+            assert!(!t.contains("Ignored") && !t.contains("Hidden"), "{f}: {t}");
+        }
     }
 
     #[test]
