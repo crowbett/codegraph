@@ -32,7 +32,10 @@ versions follow [SemVer](https://semver.org/).
 - Constant, variable and `#define` signatures no longer carry their initializer:
   `API_KEY = "sk_live_..."` is stored and shown as `API_KEY = …`, `#define TOKEN "x"` as
   `#define TOKEN …` (also when spaced as `#  define`), so a secret literal in source never reaches `find`, `outline`, `impact`
-  or the MCP tools. Schema version 21.
+  or the MCP tools. Schema version 21: on first use the old graph is cleared (stderr says
+  so) and must be re-indexed with `codegraph index`; the MCP server never adds repos, so
+  until then every tool answers with that hint instead of an empty result, and `status`
+  prints it.
 
 ### Fixed
 - A Go receiver with `]` before `[` (`func (s /*]*/ T /*[*/) F()`, or plain broken

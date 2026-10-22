@@ -33,6 +33,9 @@ const INVALID_PARAMS: i64 = -32602;
 /// Minimum gap between two refreshes of the same repo.
 const REFRESH_EVERY: Duration = Duration::from_secs(3);
 
+/// What an empty graph answers (also printed by `status`).
+pub const EMPTY_GRAPH_HINT: &str = "graph is empty: run `codegraph index` (a schema upgrade clears the graph; the MCP server never adds repos)";
+
 /// Floor for the write-lock wait during a refresh (see `Server::refresh`).
 const MIN_BUSY_WAIT: Duration = Duration::from_millis(250);
 
@@ -481,6 +484,22 @@ impl Server {
             self.refresh(args);
         }
         let plain = Style::plain();
+        let result = self.call_tool_inner(name, args, plain);
+        // Every answer from an empty graph is "nothing"; say why instead (a schema
+        // upgrade cleared it, or `index` never ran: the server never adds repos).
+        // Argument errors keep their own message; `status` carries the hint in its text.
+        if result.is_ok() && name != "codegraph_status" && self.store.repos()?.is_empty() {
+            return Err(CallError::Tool(Error::NotFound(EMPTY_GRAPH_HINT.into())));
+        }
+        result
+    }
+
+    fn call_tool_inner(
+        &mut self,
+        name: &str,
+        args: &Value,
+        plain: Style,
+    ) -> Result<Value, CallError> {
         match name {
             "codegraph_find" => {
                 let q = req_str(args, "query")?;
@@ -795,6 +814,18 @@ mod tests {
             .handle(&json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"codegraph_status","arguments":{}}}))
             .unwrap();
         assert_eq!(r["result"]["structuredContent"]["repos"], 0);
+        assert_eq!(r["result"]["isError"], false);
+        let t = r["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(t.contains("run `codegraph index`"), "{t}");
+        // Any other tool on the empty graph says so instead of answering "nothing".
+        let r = s
+            .handle(&json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"codegraph_find","arguments":{"query":"anything"}}}))
+            .unwrap();
+        assert_eq!(r["result"]["isError"], true, "{r}");
+        assert!(r["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("run `codegraph index`"));
         // An over-long find query is invalid params, not a tool error.
         let long = "q".repeat(query::MAX_QUERY_BYTES + 1);
         let r = s
@@ -943,7 +974,9 @@ mod tests {
                 .unwrap()
         };
         let r = call(&mut s, 1, "codegraph_find", json!({"query": "X"}));
-        assert_eq!(r["result"]["structuredContent"]["hits"], json!([]), "{r}");
+        assert_eq!(r["result"]["isError"], true, "{r}");
+        let t = r["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(t.contains("run `codegraph index`"), "{t}");
         assert!(
             s.store.repos().unwrap().is_empty(),
             "MCP must not add repos"

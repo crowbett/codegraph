@@ -462,6 +462,9 @@ fn pct(a: i64, b: i64) -> String {
 /// `status` result.
 pub fn status(st: &Status, s: Style) -> String {
     let mut out = String::new();
+    if st.repos == 0 {
+        let _ = writeln!(out, "{}", s.yellow(crate::mcp::EMPTY_GRAPH_HINT));
+    }
     let conf = |k: &str| st.by_confidence.get(k).copied().unwrap_or(0);
     let _ = writeln!(
         out,

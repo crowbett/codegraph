@@ -59,6 +59,11 @@ verifying `SHA256SUMS`, and prints the one command that adds the directory to yo
 PATH if it is missing (it does not run it). Re-running upgrades in place, even while an
 MCP server holds the old exe open (the old file is renamed aside first).
 
+**Upgrading across a graph schema change** (noted in the CHANGELOG): the first run of the
+new binary clears the old graph and says so on stderr. Run `codegraph index` again before
+relying on the MCP server; it never adds repos itself and answers every tool with
+`graph is empty: run codegraph index` until you do.
+
 Both scripts also accept `GH_TOKEN` / `GITHUB_TOKEN` and then download through the GitHub
 API; a public install does not need it. `install.sh` takes the token path only with curl
 and passes the header through a mode-600 curl config file, never on a command line.

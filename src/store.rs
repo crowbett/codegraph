@@ -237,6 +237,12 @@ impl Store {
                 })
                 .optional()?;
             if v.as_deref() != Some(&SCHEMA_VERSION.to_string()) {
+                // The MCP server never adds repos: without this line the cleared graph
+                // would just answer every question with nothing.
+                eprintln!(
+                    "codegraph: graph schema {} -> {SCHEMA_VERSION}: graph cleared, run `codegraph index`",
+                    v.as_deref().unwrap_or("?")
+                );
                 self.conn.execute_batch(
                     "DROP TABLE IF EXISTS symbols_fts; DROP VIEW IF EXISTS symbols_fts_src;
                      DROP TABLE IF EXISTS edges;
