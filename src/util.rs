@@ -147,7 +147,7 @@ fn resolve_outside_roots(abs: &Path, roots: &[PathBuf]) -> Result<PathBuf, Strin
 }
 
 /// Validate an untrusted path argument: reject UNC/device paths lexically, resolve
-/// `..` and links (never a link inside a root, see [`resolve_outside_roots`]) and
+/// `..` and links (never a link inside a root, see `resolve_outside_roots`) and
 /// require the result to sit under one of the canonical `roots`. Returns the resolved
 /// path (links gone; case as given).
 pub fn confine(path: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
