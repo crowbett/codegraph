@@ -299,18 +299,23 @@ fn lock_for_reading(path: &std::path::Path) -> Option<Box<dyn std::any::Any>> {
     {
         use std::os::unix::fs::PermissionsExt;
         let before = std::fs::metadata(path).unwrap().permissions();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0)).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
         if std::fs::File::open(path).is_ok() {
             std::fs::set_permissions(path, before).unwrap();
             return None;
         }
-        struct Restore(std::path::PathBuf, std::fs::Permissions);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                let _ = std::fs::set_permissions(&self.0, self.1.clone());
-            }
-        }
-        Some(Box::new(Restore(path.to_path_buf(), before)))
+        Some(Box::new(RestorePermissions(path.to_path_buf(), before)))
+    }
+}
+
+/// Puts a file's permissions back when dropped (see `lock_for_reading`).
+#[cfg(unix)]
+struct RestorePermissions(std::path::PathBuf, std::fs::Permissions);
+
+#[cfg(unix)]
+impl Drop for RestorePermissions {
+    fn drop(&mut self) {
+        let _ = std::fs::set_permissions(&self.0, self.1.clone());
     }
 }
 
