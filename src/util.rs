@@ -77,9 +77,79 @@ pub fn canonical_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Validate an untrusted path argument: reject UNC/device paths lexically, then
-/// canonicalize (resolving `..` and links) and require it to sit under one of the
-/// canonical `roots`. Returns the canonical path.
+/// Most symlink hops [`resolve_outside_roots`] follows (Linux uses 40).
+const MAX_LINK_HOPS: usize = 40;
+
+/// Resolve `abs` (lexically absolute) component by component without ever following
+/// a link that sits under one of `roots`: repo content is untrusted, and a symlink or
+/// junction inside a repo can point at a UNC share, which `canonicalize`/`exists`
+/// would open (SMB authentication, NTLM hash leak) before any root check. Links
+/// outside the roots (a symlinked `~/dev`, macOS `/var`) are the user's own and are
+/// followed one hop at a time, each target checked lexically for a remote path first.
+/// Every component must exist. The result has no links left in it.
+fn resolve_outside_roots(abs: &Path, roots: &[PathBuf]) -> Result<PathBuf, String> {
+    use std::collections::VecDeque;
+    use std::ffi::OsString;
+    let queue = |todo: &mut VecDeque<OsString>, p: &Path| {
+        for c in p.components().rev() {
+            todo.push_front(c.as_os_str().to_os_string());
+        }
+    };
+    let mut todo: VecDeque<OsString> = VecDeque::new();
+    queue(&mut todo, abs);
+    let mut cur = PathBuf::new();
+    let mut hops = 0usize;
+    while let Some(c) = todo.pop_front() {
+        match Path::new(&c).components().next() {
+            Some(Component::Prefix(_) | Component::RootDir) => {
+                cur.push(&c);
+                continue;
+            }
+            Some(Component::CurDir) | None => continue,
+            Some(Component::ParentDir) => {
+                cur.pop();
+                continue;
+            }
+            Some(Component::Normal(_)) => {}
+        }
+        let next = cur.join(&c);
+        let meta =
+            std::fs::symlink_metadata(&next).map_err(|e| format!("{}: {e}", slash(&next)))?;
+        if !meta.file_type().is_symlink() {
+            cur = next;
+            continue;
+        }
+        if roots.iter().any(|r| rel_under(r, &next).is_some()) {
+            return Err(format!(
+                "{}: links inside a root are not followed",
+                slash(&next)
+            ));
+        }
+        hops += 1;
+        if hops > MAX_LINK_HOPS {
+            return Err(format!("{}: too many levels of links", slash(&next)));
+        }
+        let target = std::fs::read_link(&next).map_err(|e| format!("{}: {e}", slash(&next)))?;
+        let target = strip_verbatim(target);
+        if is_remote_path(&target.to_string_lossy()) {
+            return Err(format!("{}: links to a UNC path", slash(&next)));
+        }
+        let target = if target.is_absolute() {
+            target
+        } else {
+            cur.join(target)
+        };
+        // The link stands for its target: resolve the target's components, then the rest.
+        cur = PathBuf::new();
+        queue(&mut todo, &absolute(&target));
+    }
+    Ok(cur)
+}
+
+/// Validate an untrusted path argument: reject UNC/device paths lexically, resolve
+/// `..` and links (never a link inside a root, see [`resolve_outside_roots`]) and
+/// require the result to sit under one of the canonical `roots`. Returns the resolved
+/// path (links gone; case as given).
 pub fn confine(path: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
     if is_remote_path(path) {
         return Err(format!("`{path}`: UNC and device paths are not allowed"));
@@ -91,14 +161,12 @@ pub fn confine(path: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
     if roots.is_empty() {
         return Err(format!("`{path}`: no configured roots"));
     }
-    let canon = std::fs::canonicalize(&abs)
-        .map(strip_verbatim)
-        .map_err(|e| format!("`{path}`: {e}"))?;
-    if is_remote_path(&canon.to_string_lossy()) {
+    let resolved = resolve_outside_roots(&abs, roots).map_err(|e| format!("`{path}`: {e}"))?;
+    if is_remote_path(&resolved.to_string_lossy()) {
         return Err(format!("`{path}`: resolves to a UNC path"));
     }
-    if roots.iter().any(|r| rel_under(r, &canon).is_some()) {
-        Ok(canon)
+    if roots.iter().any(|r| rel_under(r, &resolved).is_some()) {
+        Ok(resolved)
     } else {
         Err(format!("`{path}` is outside the configured roots"))
     }
@@ -166,6 +234,35 @@ pub(crate) fn try_symlink(target: &Path, link: &Path) -> bool {
         Ok(()) => true,
         Err(e) => {
             eprintln!("skipping symlink case: {e}");
+            false
+        }
+    }
+}
+
+/// Test helper: create a directory link (a symlink; on Windows a junction when
+/// symlinks are not permitted), or return `false` so the caller can skip.
+#[cfg(test)]
+pub(crate) fn try_symlink_dir(target: &Path, link: &Path) -> bool {
+    #[cfg(unix)]
+    let r = std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    let r = std::os::windows::fs::symlink_dir(target, link).or_else(|_| {
+        let st = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .stdout(std::process::Stdio::null())
+            .status()?;
+        if st.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other("mklink /J failed"))
+        }
+    });
+    match r {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("skipping directory link case: {e}");
             false
         }
     }
@@ -299,6 +396,86 @@ mod tests {
         );
         assert!(confine(&sneaky.join("b.go").to_string_lossy(), &roots).is_err());
         assert!(confine("does/not/exist.go", &roots).is_err());
+    }
+
+    #[test]
+    fn confine_never_follows_links_inside_a_root() {
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(other.path().join("b.go"), "package b").unwrap();
+        std::fs::write(root.path().join("a.go"), "package a").unwrap();
+        let roots = canonical_roots(&[root.path().to_path_buf()]);
+        // A directory link inside the root (what a hostile repo or build script plants;
+        // in the real attack it points at a UNC share): refused without following it.
+        if try_symlink_dir(other.path(), &root.path().join("sub")) {
+            let err = confine(&root.path().join("sub/b.go").to_string_lossy(), &roots).unwrap_err();
+            assert!(err.contains("links inside a root"), "{err}");
+            let err = confine(&root.path().join("sub").to_string_lossy(), &roots).unwrap_err();
+            assert!(err.contains("links inside a root"), "{err}");
+        }
+        // A file link inside the root, even to a file inside the root.
+        if try_symlink(&root.path().join("a.go"), &root.path().join("l.go")) {
+            let err = confine(&root.path().join("l.go").to_string_lossy(), &roots).unwrap_err();
+            assert!(err.contains("links inside a root"), "{err}");
+        }
+        // A link that lives outside every root (a symlinked ~/dev) is the user's own
+        // and is followed; the result is the real path under the root.
+        let outside = tempfile::tempdir().unwrap();
+        if try_symlink_dir(root.path(), &outside.path().join("dev")) {
+            let ok = confine(&outside.path().join("dev/a.go").to_string_lossy(), &roots).unwrap();
+            assert!(
+                rel_under(&roots[0], &ok).as_deref() == Some("a.go"),
+                "{}",
+                ok.display()
+            );
+            // ...but still not through a link inside the root behind it.
+            if root.path().join("sub").symlink_metadata().is_ok() {
+                let p = outside.path().join("dev/sub/b.go");
+                let err = confine(&p.to_string_lossy(), &roots).unwrap_err();
+                assert!(err.contains("links inside a root"), "{err}");
+            }
+        }
+    }
+
+    /// Junctions need no privilege, so a build script in a cloned repo can plant one.
+    #[cfg(windows)]
+    #[test]
+    fn confine_never_follows_junctions_inside_a_root() {
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(other.path().join("b.go"), "package b").unwrap();
+        let link = root.path().join("junction");
+        let st = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(other.path())
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(st.success(), "mklink /J failed");
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        let roots = canonical_roots(&[root.path().to_path_buf()]);
+        let err = confine(&link.join("b.go").to_string_lossy(), &roots).unwrap_err();
+        assert!(err.contains("links inside a root"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn confine_rejects_links_to_remote_paths_and_loops() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("a.go"), "package a").unwrap();
+        let roots = canonical_roots(&[root.path().to_path_buf()]);
+        // Outside the root, a link whose target is spelled as a UNC path: rejected
+        // lexically from the link text, never opened.
+        std::os::unix::fs::symlink("//evil-host/share", outside.path().join("unc")).unwrap();
+        let err = confine(&outside.path().join("unc/a.go").to_string_lossy(), &roots).unwrap_err();
+        assert!(err.contains("UNC"), "{err}");
+        // A loop outside the root ends with an error, not a hang.
+        std::os::unix::fs::symlink(outside.path().join("l2"), outside.path().join("l1")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("l1"), outside.path().join("l2")).unwrap();
+        let err = confine(&outside.path().join("l1/a.go").to_string_lossy(), &roots).unwrap_err();
+        assert!(err.contains("too many levels"), "{err}");
     }
 
     #[test]

@@ -5,6 +5,16 @@ versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+- Path arguments never follow a link inside a root. `confine` used `canonicalize`, which
+  follows symlinks and junctions before the root check, so a link planted in a cloned repo
+  could point an MCP `file`/`target` argument at a UNC share (SMB authentication, NTLM hash
+  leak). Paths are now resolved component by component: a link under a root is refused, a
+  link outside the roots (a symlinked `~/dev`, macOS `/var`) is followed one hop at a time
+  with its target checked lexically for a remote path first. `find_files` and `impact` no
+  longer probe the filesystem (`exists()`) for untrusted arguments at all.
+- `is_remote_path` also rejects the NT object-namespace spelling `\??\UNC\host\share`.
+
 ### Fixed
 - Overlapping index roots (`~/dev` and `~/dev/go`) indexed every nested repo twice per run
   and flipped its name between `go/pulse` and `pulse`. A root inside another root is now

@@ -209,34 +209,33 @@ pub fn find_files(
     let conn = store.conn();
     let mut out = Vec::new();
     reject_remote(path)?;
-    let p = Path::new(path);
-    let abs = util::absolute(p);
-    if abs.exists() {
-        for r in store.repos()? {
-            if let Some(rel) = util::rel_under(&r.root, &abs) {
-                if filter
-                    .repos
-                    .as_ref()
-                    .is_some_and(|ids| !ids.contains(&r.id))
-                {
-                    continue;
-                }
-                // Case-insensitive path match on Windows.
-                let row: Option<(i64, String)> = conn
-                    .query_row(
-                        "SELECT id, path FROM files WHERE repo_id = ?1 AND path = ?2 COLLATE NOCASE",
-                        rusqlite::params![r.id, rel],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .optional()?;
-                if let Some((id, path)) = row {
-                    out.push((id, util::slash(&r.root), path));
-                }
+    // Purely lexical against the stored roots: the graph answers, never the
+    // filesystem (an `exists()` would follow a link planted in a repo).
+    let abs = util::absolute(Path::new(path));
+    for r in store.repos()? {
+        if let Some(rel) = util::rel_under(&r.root, &abs) {
+            if filter
+                .repos
+                .as_ref()
+                .is_some_and(|ids| !ids.contains(&r.id))
+            {
+                continue;
+            }
+            // Case-insensitive path match on Windows.
+            let row: Option<(i64, String)> = conn
+                .query_row(
+                    "SELECT id, path FROM files WHERE repo_id = ?1 AND path = ?2 COLLATE NOCASE",
+                    rusqlite::params![r.id, rel],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if let Some((id, path)) = row {
+                out.push((id, util::slash(&r.root), path));
             }
         }
-        if !out.is_empty() {
-            return Ok(out);
-        }
+    }
+    if !out.is_empty() {
+        return Ok(out);
     }
     let norm = path.replace('\\', "/");
     let norm = norm.trim_start_matches("./");
@@ -1521,7 +1520,9 @@ pub fn impact(
     let mut seeds: Vec<i64> = Vec::new();
     let mut importers = Vec::new();
     reject_remote(target)?;
-    let is_path = target.contains(['/', '\\']) || Path::new(target).exists();
+    // Decided lexically (a file name of a supported language, or anything with a
+    // separator): no `exists()` on an untrusted argument.
+    let is_path = target.contains(['/', '\\']) || Lang::from_path(Path::new(target)).is_some();
     let files = if is_path && split_file_line(target).is_none() {
         find_files(store, target, filter)?
     } else {
@@ -2007,7 +2008,12 @@ pub fn repo_containing(store: &Store, path: &Path) -> Result<Option<(i64, String
     }
     // Roots are stored as given, while `path` may be canonical (the cwd, or a confined
     // argument): compare canonical forms too, so symlinked roots still match (macOS
-    // /var -> /private/var, a symlinked ~/dev). Remote roots are never touched.
+    // /var -> /private/var, a symlinked ~/dev). `path` is the server's own cwd or a
+    // confined argument (links resolved, none left under a root), so canonicalizing
+    // it follows nothing a repo planted; remote paths are never touched.
+    if util::is_remote_path(&path.to_string_lossy()) {
+        return Ok(None);
+    }
     let Ok(canon) = std::fs::canonicalize(path).map(util::strip_verbatim) else {
         return Ok(None);
     };
