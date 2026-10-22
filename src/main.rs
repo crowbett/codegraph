@@ -345,7 +345,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 &store,
                 &a.file,
                 &Filter::default(),
-                Some(app.cfg.max_file_kb * 1024),
+                Some(app.cfg.max_file_bytes()),
             )?;
             let sigs = a.signatures || app.verbose;
             app.emit(&o, || render::outline(&o, sigs, app.style))?;

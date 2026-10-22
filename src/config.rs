@@ -14,6 +14,12 @@ use crate::lang::Lang;
 /// Tool name used for config and data paths.
 pub const TOOL: &str = "codegraph";
 
+/// Largest accepted `max_file_kb` (4 GiB: tree-sitter addresses a file with 32-bit
+/// offsets, and the byte cap must not overflow).
+pub const MAX_FILE_KB_LIMIT: u64 = 4 * 1024 * 1024;
+/// Largest accepted `threads` (rayon would try to allocate a pool that size).
+pub const THREADS_LIMIT: u64 = 1024;
+
 const KNOWN_KEYS: [&str; 7] = [
     "roots",
     "skip_dirs",
@@ -116,6 +122,11 @@ pub struct ConfigView {
 }
 
 impl Config {
+    /// `max_file_kb` in bytes.
+    pub fn max_file_bytes(&self) -> u64 {
+        self.max_file_kb.saturating_mul(1024)
+    }
+
     /// View for `config show`.
     pub fn view(&self, path: &Path) -> ConfigView {
         ConfigView {
@@ -207,12 +218,13 @@ fn str_array(key: &str, value: &toml::Value) -> Result<Vec<String>> {
         .ok_or_else(|| bad(key, "expected an array of strings"))
 }
 
-fn positive(key: &str, value: &toml::Value, allow_zero: bool) -> Result<u64> {
+/// An integer in `min..=max` (`min` is 0 or 1).
+fn bounded(key: &str, value: &toml::Value, min: u64, max: u64) -> Result<u64> {
     value
         .as_integer()
-        .filter(|n| *n > 0 || (allow_zero && *n == 0))
-        .map(|n| n as u64)
-        .ok_or_else(|| bad(key, "expected a positive integer"))
+        .and_then(|n| u64::try_from(n).ok())
+        .filter(|n| (min..=max).contains(n))
+        .ok_or_else(|| bad(key, &format!("expected an integer in {min}..={max}")))
 }
 
 /// Parse config text. Unknown keys become warnings.
@@ -232,9 +244,11 @@ pub fn parse(text: &str) -> Result<(Config, Vec<String>)> {
                 cfg.roots = roots.iter().map(|r| expand(r)).collect();
             }
             "skip_dirs" => cfg.skip_dirs = str_array(key, value)?,
-            "max_file_kb" => cfg.max_file_kb = positive(key, value, false)?,
-            "refresh_budget_ms" => cfg.refresh_budget_ms = positive(key, value, true)?,
-            "threads" => cfg.threads = positive(key, value, true)? as usize,
+            "max_file_kb" => cfg.max_file_kb = bounded(key, value, 1, MAX_FILE_KB_LIMIT)?,
+            "refresh_budget_ms" => {
+                cfg.refresh_budget_ms = bounded(key, value, 0, u64::from(u32::MAX))?;
+            }
+            "threads" => cfg.threads = bounded(key, value, 0, THREADS_LIMIT)? as usize,
             "languages" => {
                 let names = str_array(key, value)?;
                 let mut langs = Vec::new();
@@ -311,6 +325,10 @@ mod tests {
             "roots = []",
             "roots = [1]",
             "max_file_kb = 0",
+            "max_file_kb = -1",
+            "max_file_kb = 9223372036854775807",
+            "threads = 4096",
+            "refresh_budget_ms = -5",
             "languages = [\"cobol\"]",
             "color = 1",
             "not toml",

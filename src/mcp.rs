@@ -500,7 +500,7 @@ impl Server {
                 let (spec, cap) = match util::confine(file, &self.roots) {
                     Ok(p) => (
                         p.to_string_lossy().into_owned(),
-                        Some(self.cfg.max_file_kb * 1024),
+                        Some(self.cfg.max_file_bytes()),
                     ),
                     Err(_) => (file.to_string(), None),
                 };
@@ -593,7 +593,7 @@ impl Server {
     pub fn serve(&mut self, reader: impl BufRead, mut writer: impl Write) -> io::Result<()> {
         eprintln!(
             "codegraph mcp: serving on stdio (protocol {PROTOCOL_VERSION}, db {})",
-            self.store.path().display()
+            util::slash(self.store.path())
         );
         let mut reader = reader;
         let mut line = Vec::new();
