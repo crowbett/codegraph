@@ -65,7 +65,7 @@ versions follow [SemVer](https://semver.org/).
   are still dropped.
 - Edits to `go.mod`, `Cargo.toml`, `package.json` and `tsconfig.json` were never noticed:
   the watcher ignored those names and unchanged source files were never re-unitized, so
-  module paths went stale until `index --full`. Each repo now stores a fingerprint of its
+  module paths went stale until `index --full`. Each repo now stores a content hash of its
   marker files; when it changes every stored file of the repo is invalidated and re-parsed
   by the normal incremental path (so a budgeted MCP refresh finishes the job over several
   passes), and the watcher treats those files as repo changes.

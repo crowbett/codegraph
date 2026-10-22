@@ -424,6 +424,16 @@ fn marker_file_change_reindexes_the_repo() {
     );
     let noop = reindex(&mut store, root, false);
     assert_eq!(noop.parsed, 0);
+    // Same bytes, new mtime (a checkout, a stash pop): not a layout change.
+    let gomod = root.join("go.mod");
+    std::fs::File::options()
+        .write(true)
+        .open(&gomod)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+        .unwrap();
+    let touched = reindex(&mut store, root, false);
+    assert_eq!((touched.parsed, touched.unchanged), (0, 3), "{touched:?}");
 
     std::fs::write(
         root.join("go.mod"),

@@ -266,13 +266,18 @@ fn walk(root: &Path, cfg: &Config) -> Walked {
     w
 }
 
-/// Fingerprint of a repo's marker files (repo-relative path, size, mtime): cheap to
-/// compute on every pass, and any edit to a `go.mod`/`Cargo.toml`/... changes it.
+/// Fingerprint of a repo's marker files: repo-relative path plus a hash of the content
+/// (they are tiny, and a checkout or stash that rewrites `go.mod` with the same bytes
+/// must not cost a whole-repo pass). A marker that cannot be read (a link, oversize)
+/// counts by size only.
 fn markers_signature(repo_root: &Path, markers: &[Entry]) -> String {
     let mut lines: Vec<String> = markers
         .iter()
-        .filter_map(|(p, size, mtime)| {
-            util::rel_under(repo_root, p).map(|rel| format!("{rel}\t{size}\t{mtime}"))
+        .filter_map(|(p, size, _)| {
+            let rel = util::rel_under(repo_root, p)?;
+            let content = util::read_repo_bytes(repo_root, p, util::MAX_REPO_FILE_BYTES)
+                .map_or_else(|| format!("?{size}"), |b| hash_hex(&b));
+            Some(format!("{rel}\t{content}"))
         })
         .collect();
     lines.sort();
