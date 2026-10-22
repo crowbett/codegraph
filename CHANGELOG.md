@@ -20,6 +20,10 @@ versions follow [SemVer](https://semver.org/).
   inside an indexed repo that an index pass would include, applying the walker's own rules
   (`.gitignore`, hidden entries, `skip_dirs`, no links, no secret files), through the
   bounded repo-file reader.
+- The indexer read each source file with an unbounded `fs::read` after checking the size
+  the directory walk reported; a file that grew or was swapped in between could exhaust
+  memory. Reads now go through `util::read_bounded`: a regular file checked on the open
+  handle, read with `take(max + 1)`, refused over `max_file_kb`.
 
 ### Fixed
 - Overlapping index roots (`~/dev` and `~/dev/go`) indexed every nested repo twice per run

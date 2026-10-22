@@ -602,6 +602,7 @@ fn index_repo(
     stats.files += found.len();
 
     let t_parse = Instant::now();
+    let max_bytes = cfg.max_file_bytes();
     let parse_one = |f: &Found| -> Outcome {
         if f.size == u64::MAX {
             return Outcome::Failed;
@@ -617,7 +618,9 @@ fn index_repo(
         if opts.budget.is_some_and(|b| start.elapsed() > b) {
             return Outcome::Pending;
         }
-        let Ok(bytes) = std::fs::read(&f.abs) else {
+        // Bounded by the cap, checked on the open handle: the size the walk saw is
+        // advisory (the file may have grown or been swapped since).
+        let Ok(bytes) = util::read_bounded(&f.abs, max_bytes) else {
             return Outcome::Failed;
         };
         let hash = hash_hex(&bytes);

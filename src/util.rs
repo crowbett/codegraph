@@ -217,6 +217,32 @@ pub fn read_repo_bytes(root: &Path, path: &Path, max_bytes: u64) -> Option<Vec<u
     Some(buf)
 }
 
+/// Read a regular file of at most `max_bytes`, checking the size on the open handle and
+/// bounding the read itself (a file that grows between the directory walk and the read
+/// cannot exhaust memory). Errors: `IsADirectory`/`InvalidInput` for a non-regular file,
+/// `FileTooLarge` when over the cap, else the I/O error.
+pub fn read_bounded(path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::{Error, ErrorKind, Read as _};
+    let file = std::fs::File::open(path)?;
+    let meta = file.metadata()?;
+    if meta.is_dir() {
+        return Err(Error::from(ErrorKind::IsADirectory));
+    }
+    if !meta.is_file() {
+        return Err(Error::new(ErrorKind::InvalidInput, "not a regular file"));
+    }
+    if meta.len() > max_bytes {
+        return Err(Error::from(ErrorKind::FileTooLarge));
+    }
+    let mut buf = Vec::with_capacity(meta.len() as usize);
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut buf)?;
+    if buf.len() as u64 > max_bytes {
+        return Err(Error::from(ErrorKind::FileTooLarge));
+    }
+    Ok(buf)
+}
+
 /// [`read_repo_bytes`] decoded as UTF-8 (`None` if it is not valid UTF-8).
 pub fn read_repo_file(root: &Path, path: &Path, max_bytes: u64) -> Option<String> {
     String::from_utf8(read_repo_bytes(root, path, max_bytes)?).ok()
@@ -496,6 +522,26 @@ mod tests {
         std::fs::write(root.path().join("bin"), [0xff, 0xfe]).unwrap();
         assert!(read_repo_file(root.path(), &root.path().join("bin"), 100).is_none());
         assert!(read_repo_bytes(root.path(), &root.path().join("bin"), 100).is_some());
+    }
+
+    #[test]
+    fn read_bounded_checks_the_open_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a.go");
+        std::fs::write(&p, "package a\n").unwrap();
+        assert_eq!(read_bounded(&p, 10).unwrap(), b"package a\n");
+        assert_eq!(
+            read_bounded(&p, 9).unwrap_err().kind(),
+            std::io::ErrorKind::FileTooLarge
+        );
+        // A directory fails at open (Windows: PermissionDenied) or at the check.
+        assert!(read_bounded(dir.path(), 100).is_err());
+        assert_eq!(
+            read_bounded(&dir.path().join("missing.go"), 100)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
     }
 
     #[test]
