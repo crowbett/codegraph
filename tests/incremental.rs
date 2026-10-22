@@ -237,6 +237,50 @@ fn a_write_in_progress_elsewhere_is_not_mistaken_for_a_dead_run() {
     assert!(store.repos().unwrap()[0].indexed_at > 0);
 }
 
+/// A refresh that finds nothing to do must not write: every commit bumps `data_version`
+/// and makes other connections (the `watch` resolver cache) throw their state away.
+#[test]
+fn noop_refresh_does_not_write() {
+    let src = copy_fixture("go");
+    let db = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&db.path().join("g.db")).unwrap();
+    let root = src.path();
+    reindex(&mut store, root, false);
+    let repo_row = |store: &Store| -> (i64, i64, String) {
+        store
+            .conn()
+            .query_row(
+                "SELECT indexed_at, write_started, name FROM repos",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+    };
+    let before = repo_row(&store);
+    // Another connection sees the graph version; a no-op run must leave it alone.
+    let other = Store::open(store.path()).unwrap();
+    let v0 = other.data_version().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let st = reindex(&mut store, root, false);
+    assert_eq!((st.parsed, st.unchanged, st.removed), (0, 3, 0));
+    assert_eq!(other.data_version().unwrap(), v0, "no-op refresh committed");
+    assert_eq!(repo_row(&store), before);
+    // The same file content with a new mtime is a real (row) write.
+    let a = root.join("a/a.go");
+    let text = std::fs::read_to_string(&a).unwrap();
+    std::fs::write(&a, text).unwrap();
+    let now = std::time::SystemTime::now();
+    std::fs::File::options()
+        .write(true)
+        .open(&a)
+        .unwrap()
+        .set_modified(now + std::time::Duration::from_secs(5))
+        .unwrap();
+    let st = reindex(&mut store, root, false);
+    assert_eq!((st.parsed, st.unchanged), (0, 3));
+    assert_ne!(other.data_version().unwrap(), v0, "touch must commit");
+}
+
 #[test]
 fn secret_files_are_never_indexed() {
     let src = copy_fixture("python");

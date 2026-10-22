@@ -53,6 +53,10 @@ versions follow [SemVer](https://semver.org/).
   and the failed refresh was retried on the very next call. The busy timeout is now
   lowered to the remaining budget for the duration of the refresh, and a failed refresh
   counts as the repo's last attempt (next try after the usual 3 s).
+- A refresh that found nothing to do still wrote three rows (`repos` upsert, `indexed_at`
+  reset, `indexed_at` set) and committed, bumping SQLite's `data_version` and making the
+  `watch`/`mcp --watch` resolver cache drop its state on every tick. A no-op refresh now
+  rolls back and skips `set_indexed`; the repo upsert only writes when the name changed.
 - Overlapping index roots (`~/dev` and `~/dev/go`) indexed every nested repo twice per run
   and flipped its name between `go/pulse` and `pulse`. A root inside another root is now
   skipped with one warning on stderr, repos are deduplicated by canonical path, and a repo

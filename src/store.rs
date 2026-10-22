@@ -390,9 +390,10 @@ impl Store {
 /// Insert or rename a repo (on a connection or an open transaction); returns its id.
 pub fn upsert_repo(conn: &Connection, name: &str, root: &Path) -> Result<i64> {
     let root_s = root.to_string_lossy();
+    // No row write when the name is unchanged: a no-op refresh must not dirty the graph.
     conn.execute(
         "INSERT INTO repos(name, root) VALUES (?1, ?2)
-         ON CONFLICT(root) DO UPDATE SET name = excluded.name",
+         ON CONFLICT(root) DO UPDATE SET name = excluded.name WHERE name IS NOT excluded.name",
         params![name, root_s],
     )?;
     Ok(

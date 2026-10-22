@@ -736,6 +736,23 @@ fn index_repo(
             changes.structural = true;
         }
     }
+    // Nothing changed in a known repo: roll back the bookkeeping writes
+    // (`indexed_at`/`write_started`) instead of committing them. A commit would bump
+    // `data_version` and make every other connection (the `watch` resolve cache) drop
+    // state for no reason.
+    let noop = pending.is_none()
+        && rs.parsed == 0
+        && rs.removed == 0
+        && !changes.touched
+        && !repair_resolve
+        && !wipe
+        && !opts.full;
+    if noop {
+        tx.rollback()?;
+        util::trace("index.parse_and_write", t0);
+        stats.write_ms += tail + t_write.elapsed().as_millis();
+        return Ok(());
+    }
     tx.commit()?;
     util::trace("index.parse_and_write", t0);
     stats.write_ms += tail + t_write.elapsed().as_millis();
@@ -775,6 +792,8 @@ struct Changes {
     reparsed: Vec<(i64, i64)>,
     /// Files were added or removed.
     structural: bool,
+    /// Some file's mtime/size row was updated (content unchanged).
+    touched: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -795,6 +814,7 @@ fn write_outcome(
         Outcome::Touch { id, mtime, size } => {
             stats.unchanged += 1;
             store::touch_file(tx, id, mtime, size)?;
+            changes.touched = true;
         }
         Outcome::Pending => stats.pending += 1,
         Outcome::Failed => {
