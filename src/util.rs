@@ -49,13 +49,13 @@ pub fn rel_under(root: &Path, path: &Path) -> Option<String> {
     None
 }
 
-/// UNC / device / verbatim paths (`\\host\share`, `//host/share`, `\\?\UNC\...`,
-/// `\\.\pipe\x`). Checked purely lexically so that rejecting them never touches the
-/// filesystem (an `exists()` on a UNC path starts SMB authentication and can leak an
-/// NTLM hash).
+/// UNC / device / verbatim / NT-namespace paths (`\\host\share`, `//host/share`,
+/// `\\?\UNC\...`, `\\.\pipe\x`, `\??\UNC\...`). Checked purely lexically so that
+/// rejecting them never touches the filesystem (an `exists()` on a UNC path starts SMB
+/// authentication and can leak an NTLM hash).
 pub fn is_remote_path(s: &str) -> bool {
     let b = s.trim().as_bytes();
-    b.len() >= 2 && matches!(b[0], b'\\' | b'/') && matches!(b[1], b'\\' | b'/')
+    b.len() >= 2 && matches!(b[0], b'\\' | b'/') && matches!(b[1], b'\\' | b'/' | b'?')
 }
 
 /// Drop the `\\?\` prefix `canonicalize` adds on Windows (`\\?\C:\x` -> `C:\x`).
@@ -262,6 +262,9 @@ mod tests {
             r"\\?\UNC\evil-host\share\x.go",
             r"\\.\pipe\x",
             r"\/host/x",
+            r"\??\UNC\evil-host\share\x.go",
+            r"\??\C:\x.go",
+            "/??/UNC/evil-host/share/x.go",
         ] {
             assert!(is_remote_path(p), "{p}");
             // With no roots the validator still rejects on the UNC rule first
