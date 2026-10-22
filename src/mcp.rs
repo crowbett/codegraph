@@ -33,6 +33,9 @@ const INVALID_PARAMS: i64 = -32602;
 /// Minimum gap between two refreshes of the same repo.
 const REFRESH_EVERY: Duration = Duration::from_secs(3);
 
+/// Floor for the write-lock wait during a refresh (see `Server::refresh`).
+const MIN_BUSY_WAIT: Duration = Duration::from_millis(250);
+
 /// Longest accepted JSON-RPC request line (bytes, excluding the newline). Longer
 /// lines get a parse error and are skipped without being buffered.
 pub const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
@@ -424,7 +427,12 @@ impl Server {
             };
             // The budget also bounds the wait for the write lock: while a CLI `index
             // --full` holds it, a call must not stall for the full default busy timeout.
-            let _ = self.store.conn().busy_timeout(left);
+            // Never below 250 ms, though: with a near-zero timeout the write commits and
+            // the resolve right after it fails SQLITE_BUSY, leaving the repo unresolved.
+            let wait = left.max(MIN_BUSY_WAIT);
+            if let Err(e) = self.store.conn().busy_timeout(wait) {
+                eprintln!("codegraph mcp: busy_timeout({wait:?}): {e}");
+            }
             let result = index::refresh_repo_cached(
                 &mut self.store,
                 &self.cfg,
@@ -433,7 +441,11 @@ impl Server {
                 &opts,
                 &mut self.resolve_cache,
             );
-            let _ = self.store.conn().busy_timeout(Store::BUSY_TIMEOUT);
+            // Back to the default for everything outside a refresh (queries, the next
+            // call's lock wait).
+            if let Err(e) = self.store.conn().busy_timeout(Store::BUSY_TIMEOUT) {
+                eprintln!("codegraph mcp: could not restore the busy timeout: {e}");
+            }
             match result {
                 Ok(st) => {
                     if st.parsed > 0 || st.removed > 0 {

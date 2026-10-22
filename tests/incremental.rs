@@ -471,6 +471,29 @@ fn marker_file_change_reindexes_the_repo() {
     assert_eq!((again.parsed, again.unchanged), (0, 3), "{again:?}");
 }
 
+/// A resolve that failed after its write committed (SQLITE_BUSY under a short lock wait)
+/// leaves `indexed_at = 0` with a fresh stamp, which looks like a run in progress; the
+/// process remembers the repo and the next pass resolves it again.
+#[test]
+fn a_failed_resolve_is_repaired_on_the_next_pass() {
+    let src = copy_fixture("go");
+    let db = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&db.path().join("g.db")).unwrap();
+    let root = src.path();
+    reindex(&mut store, root, false);
+    let settled = reindex(&mut store, root, false);
+    assert!(settled.changed_repos.is_empty(), "{settled:?}");
+    index::note_resolve_failed(root);
+    let st = reindex(&mut store, root, false);
+    assert_eq!(st.parsed, 0);
+    assert_eq!(st.changed_repos.len(), 1, "repair resolve expected: {st:?}");
+    assert!(st.changed_repos[0].resolve.is_some());
+    assert_counts(&store, &st);
+    // Once repaired, forgotten.
+    let again = reindex(&mut store, root, false);
+    assert!(again.changed_repos.is_empty(), "{again:?}");
+}
+
 #[test]
 fn secret_files_are_never_indexed() {
     let src = copy_fixture("python");

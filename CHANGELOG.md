@@ -53,8 +53,10 @@ versions follow [SemVer](https://semver.org/).
 - The MCP refresh budget did not cover waiting for SQLite's write lock: while a CLI
   `index --full` ran, every tool call stalled for the connection's full 10 s busy timeout,
   and the failed refresh was retried on the very next call. The busy timeout is now
-  lowered to the remaining budget for the duration of the refresh, and a failed refresh
-  counts as the repo's last attempt (next try after the usual 3 s).
+  lowered to the remaining budget (never below 250 ms, so the resolve after a committed
+  write does not fail on the lock) for the duration of the refresh, and a failed refresh
+  counts as the repo's last attempt (next try after the usual 3 s). A resolve that fails
+  after its write committed is remembered and repaired on the repo's next pass.
 - A refresh that found nothing to do still wrote three rows (`repos` upsert, `indexed_at`
   reset, `indexed_at` set) and committed, bumping SQLite's `data_version` and making the
   `watch`/`mcp --watch` resolver cache drop its state on every tick. A no-op refresh now

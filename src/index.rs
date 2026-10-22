@@ -653,7 +653,7 @@ fn index_repo(
     // With edges stored a whole-repo resolve repairs it; without any, the stored files
     // are dropped and the repo is loaded cold again (a budgeted run then converges, the
     // files it did not reach are simply new next time).
-    let mut repair_resolve = false;
+    let mut repair_resolve = resolve_failed_before(repo_root);
     let mut wipe = false;
     if !existing.is_empty() && store::repo_write_is_dead(&tx, repo_id, now)? {
         if store::repo_has_edges(&tx, repo_id)? {
@@ -860,12 +860,12 @@ fn index_repo(
     stats.removed += rs.removed;
     if rs.parsed > 0 || rs.removed > 0 || full || repair_resolve {
         let t_res = Instant::now();
-        rs.resolve = Some(match (pending, cache) {
+        let resolved = match (pending, cache) {
             (Some(p), cache) => {
                 if let Some(c) = cache {
                     c.clear();
                 }
-                resolve::resolve_and_insert(store, repo_id, repo_root, p)?
+                resolve::resolve_and_insert(store, repo_id, repo_root, p)
             }
             (None, Some(c)) => resolve::resolve_with_cache(
                 store,
@@ -874,14 +874,51 @@ fn index_repo(
                 c,
                 &changes.reparsed,
                 changes.structural || full || repair_resolve,
-            )?,
-            (None, None) => resolve::resolve_repo(store, repo_id, repo_root)?,
-        });
+            ),
+            (None, None) => resolve::resolve_repo(store, repo_id, repo_root),
+        };
+        // The write is committed; a resolve that fails here (SQLITE_BUSY under a short
+        // lock wait, say) leaves the repo unresolved with `indexed_at = 0`, which the
+        // next pass would take for "in progress" and skip as a no-op. Remember it so
+        // the next pass in this process repairs it.
+        match resolved {
+            Ok(r) => rs.resolve = Some(r),
+            Err(e) => {
+                note_resolve_failed(repo_root);
+                return Err(e);
+            }
+        }
         stats.resolve_ms += t_res.elapsed().as_millis();
         stats.changed_repos.push(rs);
     }
+    resolve_succeeded(repo_root);
     store.set_indexed(repo_id, util::now_unix())?;
     Ok(())
+}
+
+/// Repos whose last resolve in this process failed after their write committed; the
+/// next pass of each runs a whole-repo resolve whatever else it finds.
+fn resolve_failed() -> &'static Mutex<HashSet<PathBuf>> {
+    static FAILED: std::sync::OnceLock<Mutex<HashSet<PathBuf>>> = std::sync::OnceLock::new();
+    FAILED.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Record that `root`'s resolve failed after its write committed (also for tests).
+#[doc(hidden)]
+pub fn note_resolve_failed(root: &Path) {
+    if let Ok(mut set) = resolve_failed().lock() {
+        set.insert(root.to_path_buf());
+    }
+}
+
+fn resolve_failed_before(root: &Path) -> bool {
+    resolve_failed().lock().is_ok_and(|set| set.contains(root))
+}
+
+fn resolve_succeeded(root: &Path) {
+    if let Ok(mut set) = resolve_failed().lock() {
+        set.remove(root);
+    }
 }
 
 /// Apply one parse outcome inside the repo's write transaction.
