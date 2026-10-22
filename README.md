@@ -4,6 +4,17 @@
 [![release](https://img.shields.io/github/v/release/crowbett/codegraph)](https://github.com/crowbett/codegraph/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+**A Rust CLI + MCP server that answers "who calls this / what breaks if I change it" across
+8 languages for AI agents, with every edge's accuracy measured against compiler-grade
+ground truth.**
+
+**Results:** **99.5% callers recall, 0.6% false call edges** and 99.2% refs recall vs SCIP
+ground truth (scip-go, rust-analyzer, scip-typescript, scip-python) on 16 repos / 1,079 files;
+`exact` edges are 99.9% correct (47,193 / 47,258)
+([docs/ACCURACY.md](docs/ACCURACY.md), raw run: [bench/results/accuracy.json](bench/results/accuracy.json)).
+Cold index of Linux v6.12 (59,994 files) in **91.8 s**; a one-line edit under `watch`
+re-indexes it in **3.5–3.7 s** ([docs/SCALE.md](docs/SCALE.md)).
+
 A symbol + call graph of every repo you own, built with tree-sitter, stored in SQLite, and
 served to AI agents over MCP. It answers the structural questions an agent otherwise
 answers with a dozen greps: *where is this defined, who calls it, what does it call, what
@@ -48,6 +59,58 @@ cargo install --git https://github.com/crowbett/codegraph --locked codegraph
 Homebrew, scoop, winget and npm packages are prepared in `packaging/` but not published
 yet; see [docs/INSTALL.md](docs/INSTALL.md).
 
+## Try it in 60 seconds
+
+From a clone, with Rust 1.85+ and a C compiler. The first `cargo build --release` is the slow
+part (a few minutes cold); everything after it is instant. The throwaway `KIT_DATA_DIR` /
+`KIT_CONFIG_DIR` keep it away from any real config (`.cache/` is gitignored).
+
+```sh
+cargo build --release
+export KIT_DATA_DIR="$PWD/.cache/try/data" KIT_CONFIG_DIR="$PWD/.cache/try/config"
+./target/release/codegraph index .
+./target/release/codegraph callers store::Store::open --depth 1
+./target/release/codegraph impact store::Store::open --depth 2
+```
+
+What that printed on this checkout (Windows 11, Git Bash):
+
+```text
+indexed 1 repos · 156 files (156 parsed, 0 unchanged, 0 removed) · 1,919 symbols · 21,795 edges (33% resolved) · 0.54s
+
+store::Store::open (method)  ~/src/codegraph/src/store.rs:192
+├─ accuracy::index_repo  bench/src/accuracy.rs:438
+├─ scale::one_iteration  bench/src/scale.rs:263
+├─ App::open_store  src/main.rs:64
+├─ spawn_mcp_watcher  src/main.rs:405
+├─ mcp::tests::server  src/mcp.rs:656
+├─ store::tests::open_twice_and_version_reset  src/store.rs:601 ~ ×2
+...
+└─ concurrent_writer_waits_instead_of_failing  tests/watch.rs:196 ×2
+20 node(s), depth 1; paths relative to each root's repo; ~ likely, ? name-only
+
+impact of store::Store::open: 38 dependent symbol(s) in 11 file(s) within depth 2 (1 seed symbol(s))
+```
+
+(`33% resolved` counts every reference, including calls into std and dependencies,
+which are deliberately left unresolved rather than guessed; `~` marks a `likely` edge.)
+
+The same graph over MCP (stdio, one JSON-RPC message per line; the server exits when stdin
+closes):
+
+```sh
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"codegraph_def","arguments":{"symbol":"store::Store::open"}}}' \
+  | ./target/release/codegraph mcp
+```
+
+That returns the 8 read-only `codegraph_*` tools and the source of `Store::open`, one JSON
+response per line and nothing else on stdout (logs go to stderr). To use it from Claude Code:
+`claude mcp add codegraph -- codegraph mcp`.
+
 ## Quickstart
 
 ```powershell
@@ -63,60 +126,69 @@ Real output, from indexing this repo (`codegraph index`, then a few queries):
 ```text
 $ codegraph find Store --kind struct
 # codegraph ~/src/codegraph
-  struct  store::Store                src/store.rs:159                           pub struct Store
-  struct  a.Store                     tests/fixtures/go/a/a.go:5                 type Store struct
-  struct  store.Store                 tests/fixtures/go_infer/store/store.go:16  type Store struct
-  struct  store::Store                tests/fixtures/rust/src/store.rs:5         pub struct Store
-  struct  store::FileRow (substring)  src/store.rs:116                           pub struct FileRow
-  struct  store::RepoRow (substring)  src/store.rs:129                           pub struct RepoRow
+  struct  store::Store                   src/store.rs:177                           pub struct Store
+  struct  a.Store                        tests/fixtures/go/a/a.go:5                 type Store struct
+  struct  store.Store                    tests/fixtures/go_infer/store/store.go:16  type Store struct
+  struct  store::Store                   tests/fixtures/rust/src/store.rs:5         pub struct Store
+  struct  store.Cache (substring)        tests/fixtures/go_infer/store/store.go:27  type Cache struct
+  struct  store::FileRow (substring)     src/store.rs:131                           pub struct FileRow
+  ...
+  struct  resolve::Pending (doc)         src/resolve.rs:1095                        pub struct Pending
 ```
 
 ```text
 $ codegraph def store::Store::open
-store::Store::open method ~/src/codegraph/src/store.rs:174-193
-173|     /// Open (creating if needed) the database at `path`.
-174|     pub fn open(path: &Path) -> Result<Self> {
-175|         if let Some(dir) = path.parent() {
-176|             std::fs::create_dir_all(dir)
-177|                 .map_err(|e| Error::io(format!("create {}", dir.display()), e))?;
-178|         }
-179|         let conn = Connection::open(path)?;
+store::Store::open method ~/src/codegraph/src/store.rs:192-211
+191|     /// Open (creating if needed) the database at `path`.
+192|     pub fn open(path: &Path) -> Result<Self> {
+193|         if let Some(dir) = path.parent() {
+194|             std::fs::create_dir_all(dir)
+195|                 .map_err(|e| Error::io(format!("create {}", dir.display()), e))?;
+196|         }
+197|         let conn = Connection::open(path)?;
+198|         conn.busy_timeout(std::time::Duration::from_secs(10))?;
 ...
 ```
 
 ```text
 $ codegraph callers store::Store::open --depth 1
-store::Store::open (method)  ~/src/codegraph/src/store.rs:174
-├─ accuracy::index_repo  bench/src/accuracy.rs:399
-├─ App::open_store  src/main.rs:54
-├─ mcp::tests::server  src/mcp.rs:566
-├─ store::tests::open_twice_and_version_reset  src/store.rs:481 ~ ×2
+store::Store::open (method)  ~/src/codegraph/src/store.rs:192
+├─ accuracy::index_repo  bench/src/accuracy.rs:438
+├─ scale::one_iteration  bench/src/scale.rs:263
+├─ App::open_store  src/main.rs:64
+├─ spawn_mcp_watcher  src/main.rs:405
+├─ mcp::tests::server  src/mcp.rs:656
+├─ store::tests::open_twice_and_version_reset  src/store.rs:601 ~ ×2
 ├─ index_dir  tests/common/mod.rs:36
-├─ edit_touch_delete_and_full  tests/incremental.rs:29
-└─ secret_files_are_never_indexed  tests/incremental.rs:96
-9 node(s), depth 1; paths relative to each root's repo; ~ likely, ? name-only
+├─ edit_touch_delete_and_full  tests/incremental.rs:61
+...
+└─ concurrent_writer_waits_instead_of_failing  tests/watch.rs:196 ×2
+20 node(s), depth 1; paths relative to each root's repo; ~ likely, ? name-only
 ```
 
 ```text
 $ codegraph impact store::Store::open --depth 2
-impact of store::Store::open: 17 dependent symbol(s) in 6 file(s) within depth 2 (1 seed symbol(s))
+impact of store::Store::open: 38 dependent symbol(s) in 11 file(s) within depth 2 (1 seed symbol(s))
 depth 1 (direct)
-  fn accuracy::index_repo  bench/src/accuracy.rs:399  via call
-  method App::open_store  src/main.rs:54  via call
-  fn mcp::tests::server  src/mcp.rs:566  via call
+  fn accuracy::index_repo  bench/src/accuracy.rs:438  via call
+  fn scale::one_iteration  bench/src/scale.rs:263  via call
+  method App::open_store  src/main.rs:64  via call
   ...
 depth 2
-  fn accuracy::score_repo  bench/src/accuracy.rs:416  via call
-  fn run  src/main.rs:160  via call
+  fn accuracy::score_repo  bench/src/accuracy.rs:455  via call
+  fn scale::run  bench/src/scale.rs:433  via call
+  fn run  src/main.rs:170  via call
   ...
 files
-     6  d1  src/mcp.rs
-     3  d1  tests/incremental.rs
-     2  d1  bench/src/accuracy.rs
+     7  d1  ~/src/codegraph/src/mcp.rs
+     7  d1  ~/src/codegraph/tests/incremental.rs
+     6  d1  ~/src/codegraph/tests/watch.rs
+  ...
 ```
 
-(Generated with a throwaway `KIT_DATA_DIR`/`KIT_CONFIG_DIR`, never `~/.config/kit`; absolute
-paths above are shown as they'd appear from a `~/src/codegraph` checkout.)
+(Generated at the commit that introduced this README, with a throwaway `KIT_DATA_DIR` /
+`KIT_CONFIG_DIR`, never `~/.config/kit`; the repo root is shown as `~/src/codegraph` and line
+numbers drift as the code changes.)
 
 **Staying fresh:** `codegraph watch` re-indexes a repo about 300 ms after its files change (see
 [watch](#watch)); `codegraph mcp --watch` does it in the background, and every MCP call also
@@ -215,12 +287,100 @@ roots = ["~/dev"]                 # every git repo below becomes a graph repo
 skip_dirs = ["vendor", "node_modules", "target", "build", "dist", "out", ".git", ".venv",
              "venv", "__pycache__", ".next", ".cache", "third_party", "bower_components",
              "coverage", "testdata"]   # on top of .gitignore
-max_file_kb = 1024                # skip bigger files (bundles, generated code)
+max_file_kb = 1024                # skip bigger files (bundles, generated code); max 4194304
 languages = ["go", "rust", "c", "cpp", "typescript", "tsx", "javascript", "python"]
 color = "auto"                    # auto | always | never
 refresh_budget_ms = 1500          # MCP auto-refresh budget per call (0 = off)
-threads = 0                       # parser threads (0 = one per core)
+threads = 0                       # parser threads (0 = one per core; max 1024)
 ```
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph entry["entry points"]
+        CLI["main.rs + cli.rs<br/>(clap CLI)"]
+        MCP["mcp.rs<br/>stdio MCP server"]
+        W["watch.rs<br/>notify + debounce"]
+    end
+    subgraph pipeline["index pipeline (index.rs)"]
+        WALK["walk roots<br/>(ignore crate, .git = repo)"]
+        CHG["change detection<br/>mtime/size, xxh3"]
+        EXT["extract.rs + lang.rs<br/>tree-sitter tag queries<br/>(queries/&lt;lang&gt;/tags.scm)<br/>rayon, per file"]
+        INF["infer.rs<br/>receiver type hints"]
+        RES["resolve.rs + resolve_types.rs<br/>per repo: imports (layout.rs),<br/>scopes, typed receivers,<br/>dispatch, confidence"]
+    end
+    DB[("store.rs<br/>SQLite: repos / files /<br/>symbols / edges + FTS5")]
+    Q["query.rs<br/>find, def, refs, callers,<br/>callees, impact, path, hotspots"]
+    R["render.rs / output.rs<br/>text, --json envelope"]
+
+    CLI --> WALK
+    W --> WALK
+    MCP -->|"auto-refresh asked repo"| WALK
+    WALK --> CHG --> EXT
+    EXT --- INF
+    EXT -->|"symbols, refs, imports"| DB
+    DB --> RES -->|"resolved edges"| DB
+    CLI --> Q
+    MCP --> Q
+    Q --> DB
+    Q --> R
+```
+
+`bench/` (separate crate, `codegraph-bench`) clones the pinned corpus, builds SCIP ground
+truth and scores the graph; `evals/agent/` runs the grep-vs-codegraph agent comparison.
+Neither ships in the binary. [docs/PACKAGES.md](docs/PACKAGES.md) says what every file does.
+
+## Design decisions & trade-offs
+
+- **Syntax-only, but measured.** No LSP, compiler or build step: tree-sitter tag queries
+  ([queries/](queries/)) plus a rule-based resolver, so one binary indexes Go, Rust, C/C++,
+  TS/JS and Python in seconds. The cost is that it is a heuristic, so every resolver change is
+  scored site by site against SCIP indexes on a pinned 16-repo corpus
+  ([bench/src/accuracy.rs](bench/src/accuracy.rs)), and a change that regresses any
+  language is not kept.
+- **A confidence on every edge instead of false certainty.** Edges are `exact` / `likely` /
+  `name_only` ([src/model.rs:168](src/model.rs#L168)), and the tiers are calibrated (table in
+  [Accuracy](#accuracy)). A qualifier bound to an import outside the repo resolves to nothing
+  rather than to a same-named symbol ([src/resolve.rs:8](src/resolve.rs#L8)): lower
+  recall on purpose, in exchange for edges an agent can trust.
+- **Type hints without a type checker.** Per-file extraction (parallel, rayon) records a small
+  hint for every receiver call (`x.foo()`): enclosing type, written type, constructor, field,
+  element, `?`/`await` unwrap (grammar in [src/infer.rs](src/infer.rs)'s module doc). A
+  whole-repo pass evaluates them once every type is known
+  ([src/resolve.rs:3039](src/resolve.rs#L3039), `src/resolve_types.rs`). Parsing stays
+  embarrassingly parallel and resolution lives in one place; the price is that what a
+  compiler would infer through generics or closures can still fall back to name matching.
+- **Incremental at two levels, SQLite as the only store.** mtime/size, then an xxh3 content
+  hash, decide what to re-parse ([src/index.rs:509](src/index.rs#L509),
+  [src/index.rs:520](src/index.rs#L520)); each repo is written in one transaction
+  ([src/index.rs:558](src/index.rs#L558)), and a run that dies before its resolve is
+  repaired by the next one. The scale work traced cold-index cost to SQLite I/O, not
+  parsing, and fixed it with bulk loads and deferred index builds; measured and rejected
+  changes are both listed in [docs/SCALE.md](docs/SCALE.md). `watch` keeps a big repo's
+  resolver state in memory, verified edge-for-edge against a full re-resolve.
+- **Small, read-only, hand-written MCP server.** No MCP SDK dependency; tools never write,
+  UNC/device paths are rejected before any filesystem call and other paths must canonicalize
+  under a configured root ([src/util.rs:83](src/util.rs#L83)), and credential files are never
+  indexed or read ([src/util.rs:175](src/util.rs#L175)). Lints enforce the rest:
+  `unsafe_code = "forbid"`, clippy `pedantic`, `unwrap`/`expect` denied outside tests
+  ([Cargo.toml:73](Cargo.toml#L73)); CI runs fmt, clippy and tests on Linux, Windows and
+  (weekly) macOS.
+
+## What I'd do next
+
+- **Run the agent eval against a real model.** The harness and a capped real-model mode exist
+  ([docs/AGENT-EVAL.md](docs/AGENT-EVAL.md)), but the only recorded run uses a scripted fake
+  LLM, so it measures token spend, not answer quality.
+- **Hit the 100k-files-under-60-s cold-index goal.** Latest recorded runs are 91.8 s for Linux
+  alone and 179.6 s for Linux + rust-lang/rust + Kubernetes; the next step is fewer rows and a
+  smaller FTS index, or building FTS after the graph is queryable ([docs/SCALE.md](docs/SCALE.md)).
+- **Sub-second `watch` edits** by re-resolving only the affected edges instead of the whole
+  repo in memory (3.5–3.7 s today on Linux).
+- **Ground truth for C/C++**, which is extracted and resolved but not yet scored.
+- **Publish the package channels.** v0.1.2 ships as release archives with install scripts;
+  the scoop/winget/Homebrew/npm manifests in `packaging/` are written but not yet in a
+  bucket, tap or registry ([docs/INSTALL.md](docs/INSTALL.md)).
 
 ## How it works
 
@@ -330,8 +490,8 @@ token spend. **Read the numbers honestly:**
   `ANTHROPIC_API_KEY`; see the doc for the estimate-then-run commands and a proxy-enforced
   $5 cap).
 - **Content tokens favor codegraph, 0.55× of grep's**, on these scripted, well-aimed tool
-  paths. But the codegraph MCP server ships 10 tool schemas resent on every turn (~1.5k
-  tokens) against grep's 3 (~545), so **including schema overhead the codegraph arm's raw
+  paths. But the codegraph arm carries 10 tool schemas resent on every turn (~1.5k tokens: the
+  8 `codegraph_*` tools plus grep and read_file) against grep's 3 (~545), so **including schema overhead the codegraph arm's raw
   total is 1.35× grep's** for this question set — prompt caching would offset most of
   that in practice, but it isn't measured here.
 - Tokens reflect real tool output sizes along realistic tool-call paths (the proxy actually
@@ -398,6 +558,12 @@ error rates — read them before trusting an edge blindly, especially `likely` a
 - A handful of scoring artifacts remain even in the numbers above (e.g. 2 of the Go `impl`
   "false" pairs in the corpus are real cross-package implementations that scip-go itself
   doesn't record) — see [docs/ACCURACY.md](docs/ACCURACY.md) for the method and per-language results.
+
+- **Reproducing the benchmarks needs more than this repo.** 6 of the 16 accuracy-corpus
+  repos are the author's private tools (skipped on other machines, so a fresh run scores
+  only the 10 public repos), and the agent eval drives `evalrig`, a separate harness that is
+  not part of this repo. The agent eval has only been run against a scripted fake LLM (see
+  [Agent eval](#agent-eval)); there is no real-model result yet.
 
 See also [docs/COMPARISON.md](docs/COMPARISON.md) for how this stacks up against grep, ctags,
 LSP servers, SCIP/Sourcegraph and GitHub code search.

@@ -1,7 +1,6 @@
 # Source layout
 
-Moved verbatim from CLAUDE.md.
-
+What every file in the repo is for. Keep it current when files are added.
 
 ```
 queries/<lang>/tags.scm  tree-sitter tag queries (tags.scm conventions + @qualifier/@receiver/
@@ -9,6 +8,8 @@ queries/<lang>/tags.scm  tree-sitter tag queries (tags.scm conventions + @qualif
 src/main.rs      binary: clap parse, output mode, dispatch (anyhow; everything else is thiserror)
 src/cli.rs       clap derive definitions
 src/lib.rs       crate root (`unsafe_code = "forbid"`)
+src/error.rs     thiserror `Error` with the kit error codes and exit codes
+src/model.rs     shared enums/records: SymKind, EdgeKind, Confidence (exact/likely/name_only)
 src/lang.rs      Lang enum, grammars, compiled queries (OnceLock), thread-local parsers
 src/extract.rs   one file -> symbols (nesting, containers, docs, signatures, exported),
                  refs (call/ref/impl/inherit/value, incl. calls inside macro token trees),
@@ -19,6 +20,10 @@ src/infer.rs     extraction-time type hints for receiver calls (`x.foo()`): a sm
                  `Q:`/`A:` unwrap/await, `E:` element, `L` = unknown local) evaluated later
                  by resolve_types.rs — module doc has the full table, read it before touching
                  either file
+src/macros.rs    Rust `macro_rules!` expansion: same-file invocations are expanded textually
+                 (bounded, deduped) and extracted at the invocation site
+src/tsfix.rs     TS/TSX parse retry: separates signatures the grammar trips on, kept only
+                 when it lowers the ERROR count
 src/layout.rs    module-system units: Go import path (go.mod), Rust crate+module path,
                  Python dotted module, JS/TS path (incl. workspace packages); qualified-name
                  prefixes
@@ -47,6 +52,16 @@ tests/fixtures/{go,rust,ts}_infer/  typed-receiver resolution fixtures, asserted
 tests/graph.rs incremental.rs cli.rs resolve.rs   graph algorithms, re-index, binary + MCP
                  stdio + self-index, typed-receiver resolution
 tests/watch.rs   watcher: edit/create/delete/new repo reach the DB, concurrent writers, NDJSON
+tests/limits.rs  hostile input (thousand-call chains, 10k-deep generics) extracts in bounded time
+tests/security.rs  def/refs only show the file that was indexed: symlink swaps and edits are
+                 reported stale, never printed
+tests/common/mod.rs  index a fixture into a temp DB, stable graph dump for snapshots
+tests/snapshots/  insta snapshots of tests/lang.rs
+build.rs         bakes the short git commit into `codegraph version`
+Taskfile.yml     task runner: lint/test/release zip, bench:*, eval:*
+.github/workflows/  ci.yml (fmt, clippy, tests, release build + npm shim smoke on Linux/Windows,
+                 macOS weekly), release.yml (tag -> five archives + SHA256SUMS + attestation,
+                 draft release)
 bench/           standalone crate (`codegraph-bench`, own [workspace], not shipped): clones
                  the pinned corpus, builds SCIP ground truth, scores codegraph against it
                  (docs/ACCURACY.md has the method). bench/corpus.toml, bench/baseline/ (frozen

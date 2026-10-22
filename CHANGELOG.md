@@ -1,0 +1,69 @@
+# Changelog
+
+All notable changes to codegraph. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
+versions follow [SemVer](https://semver.org/).
+
+## [Unreleased]
+
+### Fixed
+- An index run that died between a repo's write commit and its resolve (Ctrl-C, a killed
+  `watch` or MCP server) left that repo with unresolved or missing edges until
+  `index --full`. The write transaction now resets the repo's `indexed_at`, and the next
+  run repairs it: a whole-repo resolve when edges are stored, a cold reload when a cold
+  load never got to insert them.
+- Config bounds: `max_file_kb` is capped at 4,194,304 (4 GiB) so the byte cap cannot
+  overflow, `threads` at 1024 (rayon would try to allocate a pool that size), and
+  `refresh_budget_ms` at 2^32-1. Out-of-range values are `usage` errors like other bad
+  config values.
+
+### Changed
+- README: reviewer-facing opening, a verified "try it" walkthrough, an architecture diagram,
+  design trade-offs and a what-next list; docs/PACKAGES.md covers every source and test file;
+  docs/COMPARISON.md numbers match docs/ACCURACY.md and docs/AGENT-EVAL.md.
+
+## [0.1.2] - 2026-10-20
+
+### Added
+- `codegraph watch` (notify-based, per-repo debounce, NDJSON with `--json`) and
+  `codegraph mcp --watch`; a resident resolver keeps a big repo's state in memory between
+  re-indexes (a one-line edit in Linux re-resolves in 3.5-3.7 s).
+- Typed-receiver resolution (`src/infer.rs` + `src/resolve_types.rs`): receiver calls resolve
+  through an inferred type; Go implicit interface satisfaction compares parameter types;
+  interface/trait/base-class dispatch annotated `[via Trait::method]` in `callers`/`impact`.
+- Same-file Rust `macro_rules!` expansion, TS/JS/Python/Rust names used as values, Rust
+  types in path-qualifier position, Python attribute reads of imported modules.
+- Accuracy benchmark against SCIP ground truth (`task bench:accuracy`, docs/ACCURACY.md) and
+  the grep-vs-codegraph agent eval (`task eval:agent`, docs/AGENT-EVAL.md).
+- Multi-platform release workflow (five archives, `SHA256SUMS`, SLSA build provenance),
+  `packaging/install.sh` and `install.ps1`, scoop/winget/Homebrew/npm manifests.
+- Hardening: per-file extraction time budgets and match limits (hostile nesting), bounded
+  MCP request lines (4 MiB), 256 KB response cap, UNC/device paths rejected lexically, path
+  arguments confined to the configured roots, credential files never indexed or read,
+  `def`/`refs` only show the exact file content that was indexed (symlink swaps and edits
+  are reported stale).
+
+### Changed
+- Callers recall 77.0% -> 99.5%, false call edges 13.8% -> 0.6%, refs recall 97.7% -> 99.2%
+  on the 16-repo corpus; confidence tiers calibrated (`exact` 99.9% correct).
+- Cold index of a 60k-file repo traced to SQLite I/O and fixed with bulk loads and deferred
+  index/FTS builds (Linux v6.12: 114-129 s -> 91.8 s); the whole `~/dev` cold index
+  7.0 s -> 4.7 s. Schema version 19.
+- CI: Linux + Windows on every push, macOS weekly; Rust 1.99 clippy clean.
+
+## [0.1.1] - 2026-09-25
+
+### Added
+- Tag-triggered release workflow (Windows zip).
+
+## [0.1.0] - 2026-09-25
+
+### Added
+- Initial release: tree-sitter symbol + call graph for Go, Rust, C, C++, TypeScript, TSX,
+  JavaScript and Python in SQLite; `index`, `find`, `def`, `refs`, `callers`, `callees`,
+  `outline`, `path`, `impact`, `hotspots`, `dot`, `status`, `config`; stdio MCP server with
+  read-only tools and per-call auto-refresh; kit `--json` envelope and exit codes.
+
+[Unreleased]: https://github.com/crowbett/codegraph/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/crowbett/codegraph/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/crowbett/codegraph/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/crowbett/codegraph/releases/tag/v0.1.0

@@ -82,7 +82,8 @@ What that does and does not show:
   how many turns a real model would take, nor wrong turns.
 - **Token counts are fake_llm's `chars / 4`** of all message contents, and fake_llm does **not**
   count tool schemas. A real model is billed for the system prompt + tool definitions on every
-  turn. The codegraph arm ships 10 tool schemas (~2,100 tokens) vs the grep arm's 3 (~530), so
+  turn. The codegraph arm ships 10 tool schemas (the 8 `codegraph_*` tools plus grep and read_file,
+  ~2,100 tokens) vs the grep arm's 3 (~530), so
   the results table also shows an estimate *including* schemas. On these short, well-aimed paths
   that fixed overhead outweighs the smaller tool results; prompt caching (the proxy marks the
   system prompt and tools with `cache_control` in Anthropic mode) only helps once the prefix is
