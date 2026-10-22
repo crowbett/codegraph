@@ -41,6 +41,8 @@ pub struct RepoStats {
     pub parsed: usize,
     /// Files removed from the graph.
     pub removed: usize,
+    /// Files that could not be read (kept as last indexed).
+    pub failed: usize,
     /// Resolution counters (when re-resolved).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolve: Option<ResolveStats>,
@@ -65,6 +67,9 @@ pub struct IndexStats {
     pub parse_errors: usize,
     /// Files left for next time because the budget ran out.
     pub pending: usize,
+    /// Files that exist but could not be read (locked, permission denied); their last
+    /// indexed state is kept.
+    pub failed: usize,
     /// Symbols in the graph after the run.
     pub symbols: i64,
     /// Non-import edges in the graph after the run.
@@ -94,10 +99,18 @@ struct Found {
 
 enum Outcome {
     Unchanged,
-    Touch { id: i64, mtime: i64, size: i64 },
+    Touch {
+        id: i64,
+        mtime: i64,
+        size: i64,
+    },
     Parsed(Box<(FileFacts, String)>),
     Pending,
+    /// Gone, over the cap, or unparseable: dropped from the graph.
     Failed,
+    /// Exists but could not be read right now (locked by an editor or a scanner,
+    /// permission denied): its last indexed state is kept.
+    Unreadable,
 }
 
 /// Find the repo root for a path: nearest ancestor with `.git`, stopping at `stop`.
@@ -627,8 +640,19 @@ fn index_repo(
         }
         // Bounded by the cap, checked on the open handle: the size the walk saw is
         // advisory (the file may have grown or been swapped since).
-        let Ok(bytes) = util::read_bounded(&f.abs, max_bytes) else {
-            return Outcome::Failed;
+        let bytes = match util::read_bounded(&f.abs, max_bytes) {
+            Ok(b) => b,
+            // Gone or too big: drop it. Anything else (a sharing violation from an
+            // editor or Defender, permission denied) is transient: keep what we have.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::FileTooLarge
+                ) =>
+            {
+                return Outcome::Failed;
+            }
+            Err(_) => return Outcome::Unreadable,
         };
         let hash = hash_hex(&bytes);
         if !opts.full {
@@ -667,6 +691,7 @@ fn index_repo(
         files: found.len(),
         parsed: 0,
         removed: 0,
+        failed: 0,
         resolve: None,
     };
     let present: HashSet<&str> = found.iter().map(|f| f.rel.as_str()).collect();
@@ -724,6 +749,12 @@ fn index_repo(
         res
     });
     write_result?;
+    if rs.failed > 0 {
+        eprintln!(
+            "codegraph: {name}: {} file(s) could not be read (locked or permission denied); kept as last indexed",
+            rs.failed
+        );
+    }
     stats.parse_ms += parse_wall;
     // Writing overlaps parsing: count the time the writer ran past the parsers, plus the
     // deletions and the commit below.
@@ -817,6 +848,10 @@ fn write_outcome(
             changes.touched = true;
         }
         Outcome::Pending => stats.pending += 1,
+        Outcome::Unreadable => {
+            stats.failed += 1;
+            rs.failed += 1;
+        }
         Outcome::Failed => {
             if f.size == u64::MAX {
                 stats.skipped_large += 1;

@@ -57,6 +57,11 @@ versions follow [SemVer](https://semver.org/).
   reset, `indexed_at` set) and committed, bumping SQLite's `data_version` and making the
   `watch`/`mcp --watch` resolver cache drop its state on every tick. A no-op refresh now
   rolls back and skips `set_indexed`; the repo upsert only writes when the name changed.
+- A file that could not be read during a refresh (held open without sharing by an
+  editor or Defender on Windows, permission denied) was deleted from the graph as if it
+  had vanished. Such files now keep their last indexed state; the run counts them
+  (`failed` in the summary and `--json`) and says so on stderr. Missing and oversize files
+  are still dropped.
 - Overlapping index roots (`~/dev` and `~/dev/go`) indexed every nested repo twice per run
   and flipped its name between `go/pulse` and `pulse`. A root inside another root is now
   skipped with one warning on stderr, repos are deduplicated by canonical path, and a repo

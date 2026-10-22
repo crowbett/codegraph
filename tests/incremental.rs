@@ -281,6 +281,76 @@ fn noop_refresh_does_not_write() {
     assert_ne!(other.data_version().unwrap(), v0, "touch must commit");
 }
 
+/// Lock `path` against reads (Windows: open with no sharing; Unix: mode 000). Returns
+/// the guard, or `None` when the platform cannot refuse us (root on Unix).
+#[allow(clippy::unnecessary_wraps)]
+fn lock_for_reading(path: &std::path::Path) -> Option<Box<dyn std::any::Any>> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let f = std::fs::File::options()
+            .read(true)
+            .share_mode(0)
+            .open(path)
+            .unwrap();
+        Some(Box::new(f))
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let before = std::fs::metadata(path).unwrap().permissions();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0)).unwrap();
+        if std::fs::File::open(path).is_ok() {
+            std::fs::set_permissions(path, before).unwrap();
+            return None;
+        }
+        struct Restore(std::path::PathBuf, std::fs::Permissions);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, self.1.clone());
+            }
+        }
+        Some(Box::new(Restore(path.to_path_buf(), before)))
+    }
+}
+
+/// A file that exists but cannot be read right now (an editor or scanner holding it,
+/// permission denied) keeps its symbols; it is counted and reported, not deleted.
+#[test]
+fn unreadable_files_keep_their_rows() {
+    let src = copy_fixture("go");
+    let db = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&db.path().join("g.db")).unwrap();
+    let root = src.path();
+    let first = reindex(&mut store, root, false);
+    assert_eq!(first.parsed, 3);
+    let symbols = count(&store, "SELECT count(*) FROM symbols");
+    // Make the file look changed so the next run has to read it.
+    let a = root.join("a/a.go");
+    let text = std::fs::read_to_string(&a).unwrap();
+    std::fs::write(
+        &a,
+        format!(
+            "{text}
+// touched
+"
+        ),
+    )
+    .unwrap();
+    let Some(guard) = lock_for_reading(&a) else {
+        eprintln!("skipping: cannot make a file unreadable here");
+        return;
+    };
+    let st = reindex(&mut store, root, false);
+    assert_eq!((st.parsed, st.failed, st.removed), (0, 1, 0), "{st:?}");
+    assert_eq!(count(&store, "SELECT count(*) FROM symbols"), symbols);
+    assert_eq!(count(&store, "SELECT count(*) FROM files"), 3);
+    drop(guard);
+    // Readable again: picked up as a normal change.
+    let st = reindex(&mut store, root, false);
+    assert_eq!((st.parsed, st.failed), (1, 0), "{st:?}");
+}
+
 #[test]
 fn secret_files_are_never_indexed() {
     let src = copy_fixture("python");

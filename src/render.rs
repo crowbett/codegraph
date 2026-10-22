@@ -532,6 +532,16 @@ pub fn index(st: &IndexStats, verbose: bool, s: Style) -> String {
             s.yellow(&format!("{} file(s) pending (time budget hit)", st.pending))
         );
     }
+    if st.failed > 0 {
+        let _ = writeln!(
+            out,
+            "{}",
+            s.yellow(&format!(
+                "{} file(s) could not be read (locked or permission denied); kept as last indexed",
+                st.failed
+            ))
+        );
+    }
     if st.parse_errors > 0 {
         let _ = writeln!(
             out,
