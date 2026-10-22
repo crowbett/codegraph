@@ -328,15 +328,7 @@ fn unreadable_files_keep_their_rows() {
     // Make the file look changed so the next run has to read it.
     let a = root.join("a/a.go");
     let text = std::fs::read_to_string(&a).unwrap();
-    std::fs::write(
-        &a,
-        format!(
-            "{text}
-// touched
-"
-        ),
-    )
-    .unwrap();
+    std::fs::write(&a, format!("{text}\n// touched\n")).unwrap();
     let Some(guard) = lock_for_reading(&a) else {
         eprintln!("skipping: cannot make a file unreadable here");
         return;
@@ -382,10 +374,7 @@ fn marker_file_change_reindexes_the_repo() {
 
     std::fs::write(
         root.join("go.mod"),
-        "module example.com/renamed
-
-go 1.22
-",
+        "module example.com/renamed\n\ngo 1.22\n",
     )
     .unwrap();
     let st = reindex(&mut store, root, false);
@@ -614,6 +603,50 @@ fn cached_resolve_matches_a_full_resolve() {
 
 /// Another connection writing the graph (a CLI `index` next to a running `watch`) makes
 /// the kept state stale: the next refresh must not use it.
+/// The resident resolver state is tagged with `PRAGMA data_version` as read inside its
+/// own write transaction. Reading it after the commit could absorb a foreign commit that
+/// landed in between and keep stale state; reading it inside must not make our own
+/// commits look foreign either: with no other writer the next edit is a cache hit.
+#[test]
+fn cached_resolve_version_is_taken_inside_its_own_write() {
+    let src = copy_fixture("go");
+    let root = src.path();
+    let db = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&db.path().join("g.db")).unwrap();
+    reindex(&mut store, root, false);
+    let mut cache = codegraph::resolve::ResolveCache::with_min_edges(0);
+    let b = root.join("b/b.go");
+    let edit = |from: &str, to: &str| {
+        let text = std::fs::read_to_string(&b).unwrap();
+        assert!(text.contains(from));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&b, text.replacen(from, to, 1)).unwrap();
+    };
+    edit("// Helper shares", "// Helper (1) shares");
+    refresh_cached(&mut store, root, &mut cache); // loads and keeps the repo
+    let v = store.data_version().unwrap();
+    // Our own resolve committed; the connection's version is unchanged by own writes,
+    // and the resident must agree with it: the next edit reuses the state.
+    edit("// Helper (1) shares", "// Helper (2) shares");
+    refresh_cached(&mut store, root, &mut cache);
+    assert_eq!(cache.hits(), 1, "own commits must not look foreign");
+    assert_eq!(store.data_version().unwrap(), v);
+    // A foreign commit after that is still seen as foreign.
+    let other = Store::open(store.path()).unwrap();
+    other
+        .conn()
+        .execute("UPDATE repos SET name = name || '!'", [])
+        .unwrap();
+    drop(other);
+    edit("// Helper (2) shares", "// Helper (3) shares");
+    refresh_cached(&mut store, root, &mut cache);
+    assert_eq!(
+        cache.hits(),
+        1,
+        "foreign commit must drop the resident state"
+    );
+}
+
 #[test]
 fn cached_resolve_ignores_state_another_writer_made_stale() {
     let src = copy_fixture("go");

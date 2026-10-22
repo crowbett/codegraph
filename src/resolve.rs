@@ -805,9 +805,9 @@ fn resolve_full(
     let mut ctx = load_ctx(store, repo_id, root)?;
     let (mut edges, implicit) = load_edges(store, repo_id, &ctx)?;
     crate::util::trace("resolve.load", t0);
-    let (stats, implicit) = resolve_and_write(store, repo_id, &mut ctx, &mut edges, &implicit, t0)?;
+    let (stats, implicit, data_version) =
+        resolve_and_write(store, repo_id, &mut ctx, &mut edges, &implicit, t0)?;
     if keep {
-        let data_version = store.data_version()?;
         return Ok((
             stats,
             Some(Resident {
@@ -826,7 +826,10 @@ fn resolve_full(
 
 /// Resolve `edges`, write the rows whose target changed plus the derived edges (replacing
 /// `implicit`), and bring the edges' stored values up to date in memory. Returns the
-/// stats and the ids of the new derived edges.
+/// stats, the ids of the new derived edges, and `PRAGMA data_version` as read inside the
+/// write transaction: the resident state is exactly as current as that snapshot, so a
+/// foreign commit landing right after ours is still noticed by the next check (a read
+/// after `commit` could absorb it and keep stale state).
 fn resolve_and_write(
     store: &mut Store,
     repo_id: i64,
@@ -834,7 +837,7 @@ fn resolve_and_write(
     edges: &mut [E],
     implicit: &[i64],
     t0: std::time::Instant,
-) -> Result<(ResolveStats, Vec<i64>)> {
+) -> Result<(ResolveStats, Vec<i64>, i64)> {
     let mut stats = ResolveStats::default();
     let outs = resolve_edges(ctx, edges, &mut stats, t0);
     crate::util::trace("resolve.pass2", t0);
@@ -868,9 +871,10 @@ fn resolve_and_write(
         }
     }
     let implicit = write_implicit_and_counts(&tx, repo_id, ctx, &mut stats)?;
+    let data_version: i64 = tx.query_row("PRAGMA data_version", [], |r| r.get(0))?;
     tx.commit()?;
     crate::util::trace("resolve.write", t0);
-    Ok((stats, implicit))
+    Ok((stats, implicit, data_version))
 }
 
 /// A repo's resolution state kept in memory between re-indexes (`watch`, MCP refresh),
@@ -1085,10 +1089,10 @@ fn resolve_changed(
     r.ctx.replace_file_syms(&changed_fi, new_syms);
     r.ctx.reset_derived();
     crate::util::trace("resolve.splice", t0);
-    let (stats, implicit) =
+    let (stats, implicit, data_version) =
         resolve_and_write(store, r.repo_id, &mut r.ctx, &mut r.edges, &r.implicit, t0)?;
     r.implicit = implicit;
-    r.data_version = store.data_version()?;
+    r.data_version = data_version;
     Ok(Some((stats, r)))
 }
 /// A file's freshly extracted references, not stored yet (bulk loads).
