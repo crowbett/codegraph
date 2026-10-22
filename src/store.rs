@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS repos(
     name TEXT NOT NULL,
     root TEXT NOT NULL UNIQUE,
     indexed_at INTEGER NOT NULL DEFAULT 0,
+    -- Unix time the last write transaction began; with indexed_at = 0 it tells a run
+    -- that is still in progress on another connection from one that died.
+    write_started INTEGER NOT NULL DEFAULT 0,
     -- Written by each resolve, so status and index summaries never scan edges.
     symbols INTEGER NOT NULL DEFAULT 0,
     edges INTEGER NOT NULL DEFAULT 0,
@@ -333,17 +336,7 @@ impl Store {
 
     /// Insert or rename a repo; returns its id.
     pub fn upsert_repo(&self, name: &str, root: &Path) -> Result<i64> {
-        let root_s = root.to_string_lossy();
-        self.conn.execute(
-            "INSERT INTO repos(name, root) VALUES (?1, ?2)
-             ON CONFLICT(root) DO UPDATE SET name = excluded.name",
-            params![name, root_s],
-        )?;
-        Ok(self
-            .conn
-            .query_row("SELECT id FROM repos WHERE root = ?1", [root_s], |r| {
-                r.get(0)
-            })?)
+        upsert_repo(&self.conn, name, root)
     }
 
     /// All repos.
@@ -384,51 +377,83 @@ impl Store {
         Ok(())
     }
 
-    /// When a repo was last indexed: 0 when it never was, or when its last run died
-    /// between the write transaction and the resolve (see [`begin_repo_write`]).
-    pub fn repo_indexed_at(&self, id: i64) -> Result<i64> {
-        Ok(self
-            .conn
-            .query_row("SELECT indexed_at FROM repos WHERE id = ?1", [id], |r| {
-                r.get(0)
-            })?)
-    }
-
-    /// Whether any edge of the repo is stored.
-    pub fn repo_has_edges(&self, id: i64) -> Result<bool> {
-        Ok(self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM edges WHERE repo_id = ?1)",
-            [id],
-            |r| r.get(0),
-        )?)
-    }
-
     /// Files of a repo keyed by relative path.
     pub fn repo_files(&self, repo_id: i64) -> Result<HashMap<String, FileRow>> {
-        let mut st = self
-            .conn
-            .prepare_cached("SELECT id, path, hash, mtime, size FROM files WHERE repo_id = ?1")?;
-        let rows = st.query_map([repo_id], |r| {
-            Ok((
-                r.get::<_, String>(1)?,
-                FileRow {
-                    id: r.get(0)?,
-                    hash: r.get(2)?,
-                    mtime: r.get(3)?,
-                    size: r.get(4)?,
-                },
-            ))
-        })?;
-        Ok(rows.collect::<rusqlite::Result<HashMap<_, _>>>()?)
+        repo_files(&self.conn, repo_id)
     }
 }
 
-/// Start a repo's write transaction: reset `indexed_at` so that, if the process dies
-/// before the resolve that follows the commit, the next run sees an unfinished repo
-/// ([`Store::repo_indexed_at`] is 0) and repairs it. `wipe_files` drops every stored file
-/// (a cold load whose edges never made it): the repo is then loaded cold again.
-pub fn begin_repo_write(tx: &Connection, repo_id: i64, wipe_files: bool) -> Result<()> {
-    tx.execute("UPDATE repos SET indexed_at = 0 WHERE id = ?1", [repo_id])?;
+/// Insert or rename a repo (on a connection or an open transaction); returns its id.
+pub fn upsert_repo(conn: &Connection, name: &str, root: &Path) -> Result<i64> {
+    let root_s = root.to_string_lossy();
+    conn.execute(
+        "INSERT INTO repos(name, root) VALUES (?1, ?2)
+         ON CONFLICT(root) DO UPDATE SET name = excluded.name",
+        params![name, root_s],
+    )?;
+    Ok(
+        conn.query_row("SELECT id FROM repos WHERE root = ?1", [root_s], |r| {
+            r.get(0)
+        })?,
+    )
+}
+
+/// Files of a repo keyed by relative path (on a connection or an open transaction).
+pub fn repo_files(conn: &Connection, repo_id: i64) -> Result<HashMap<String, FileRow>> {
+    let mut st =
+        conn.prepare_cached("SELECT id, path, hash, mtime, size FROM files WHERE repo_id = ?1")?;
+    let rows = st.query_map([repo_id], |r| {
+        Ok((
+            r.get::<_, String>(1)?,
+            FileRow {
+                id: r.get(0)?,
+                hash: r.get(2)?,
+                mtime: r.get(3)?,
+                size: r.get(4)?,
+            },
+        ))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<HashMap<_, _>>>()?)
+}
+
+/// A write that began this long ago with `indexed_at` still 0 is taken for dead (the
+/// process died between its write commit and its resolve) rather than in progress on
+/// another connection. Resolving a huge repo takes well under this.
+pub const STALE_WRITE_SECS: i64 = 900;
+
+/// Whether the repo's last run died before finishing: stored files exist, `indexed_at`
+/// is 0 (reset by [`begin_repo_write`], set again after the resolve) and the write began
+/// more than [`STALE_WRITE_SECS`] ago. A recent write with `indexed_at = 0` is another
+/// connection mid-run (between its commit and its resolve), not a casualty: wiping it
+/// would delete file rows that its resolve is about to attach edges to.
+pub fn repo_write_is_dead(conn: &Connection, repo_id: i64, now: i64) -> Result<bool> {
+    let (indexed_at, started): (i64, i64) = conn.query_row(
+        "SELECT indexed_at, write_started FROM repos WHERE id = ?1",
+        [repo_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    Ok(indexed_at == 0 && now - started > STALE_WRITE_SECS)
+}
+
+/// Whether any edge of the repo is stored.
+pub fn repo_has_edges(conn: &Connection, repo_id: i64) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM edges WHERE repo_id = ?1)",
+        [repo_id],
+        |r| r.get(0),
+    )?)
+}
+
+/// Start a repo's write transaction: reset `indexed_at` and stamp `write_started = now`
+/// so that, if the process dies before the resolve that follows the commit, a later run
+/// sees an unfinished, stale repo ([`repo_write_is_dead`]) and repairs it. `wipe_files`
+/// drops every stored file (a cold load whose edges never made it): the repo is then
+/// loaded cold again.
+pub fn begin_repo_write(tx: &Connection, repo_id: i64, wipe_files: bool, now: i64) -> Result<()> {
+    tx.execute(
+        "UPDATE repos SET indexed_at = 0, write_started = ?2 WHERE id = ?1",
+        [repo_id, now],
+    )?;
     if wipe_files {
         tx.execute("DELETE FROM files WHERE repo_id = ?1", [repo_id])?;
     }

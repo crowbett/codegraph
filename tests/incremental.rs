@@ -150,7 +150,7 @@ fn interrupted_runs_are_repaired_by_the_next_run() {
     // A cold load that died before its edge insert: files and symbols, no edges.
     store
         .conn()
-        .execute_batch("DELETE FROM edges; UPDATE repos SET indexed_at = 0")
+        .execute_batch("DELETE FROM edges; UPDATE repos SET indexed_at = 0, write_started = 0")
         .unwrap();
     let repaired = reindex(&mut store, root, false);
     assert_eq!((repaired.parsed, repaired.unchanged), (3, 0));
@@ -163,7 +163,7 @@ fn interrupted_runs_are_repaired_by_the_next_run() {
         .conn()
         .execute_batch(
             "UPDATE edges SET to_symbol = NULL, confidence = NULL WHERE kind != 'import';
-             UPDATE repos SET indexed_at = 0",
+             UPDATE repos SET indexed_at = 0, write_started = 0",
         )
         .unwrap();
     let repaired = reindex(&mut store, root, false);
@@ -178,6 +178,63 @@ fn interrupted_runs_are_repaired_by_the_next_run() {
     // A finished repo is left alone.
     let again = reindex(&mut store, root, false);
     assert!(again.changed_repos.is_empty(), "{again:?}");
+}
+
+/// `indexed_at = 0` alone cannot tell a dead run from one that another connection is in
+/// the middle of (between its write commit and its resolve). Only a write that began
+/// long ago is repaired; a recent one is left for its owner to finish, so its file rows
+/// are not deleted under the edges its resolve is about to insert.
+#[test]
+fn a_write_in_progress_elsewhere_is_not_mistaken_for_a_dead_run() {
+    let src = copy_fixture("go");
+    let db = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&db.path().join("g.db")).unwrap();
+    let root = src.path();
+    let first = reindex(&mut store, root, false);
+    assert_eq!(first.parsed, 3);
+    let file_ids = |store: &Store| -> Vec<i64> {
+        let mut st = store
+            .conn()
+            .prepare("SELECT id FROM files ORDER BY id")
+            .unwrap();
+        st.query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let ids = file_ids(&store);
+
+    // Another connection committed its write seconds ago and has not resolved yet.
+    let now = codegraph::util::now_unix();
+    store
+        .conn()
+        .execute(
+            "UPDATE repos SET indexed_at = 0, write_started = ?1",
+            [now - 5],
+        )
+        .unwrap();
+    store.conn().execute_batch("DELETE FROM edges").unwrap();
+    let st = reindex(&mut store, root, false);
+    assert_eq!((st.parsed, st.unchanged), (0, 3), "{st:?}");
+    assert_eq!(file_ids(&store), ids, "file rows must survive");
+    assert_eq!(
+        count(&store, "SELECT count(*) FROM edges"),
+        0,
+        "not repaired"
+    );
+
+    // The same state, but the write began long ago: dead, repaired by a cold reload.
+    store
+        .conn()
+        .execute(
+            "UPDATE repos SET indexed_at = 0, write_started = ?1",
+            [now - codegraph::store::STALE_WRITE_SECS - 1],
+        )
+        .unwrap();
+    let st = reindex(&mut store, root, false);
+    assert_eq!((st.parsed, st.unchanged), (3, 0), "{st:?}");
+    assert!(count(&store, "SELECT count(*) FROM edges") > 0);
+    assert!(store.repos().unwrap()[0].indexed_at > 0);
 }
 
 #[test]

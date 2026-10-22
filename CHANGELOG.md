@@ -42,6 +42,12 @@ versions follow [SemVer](https://semver.org/).
   the release profile unwinds again, a parser panic on one file is caught in the indexer
   (logged, file skipped), and a parser thread that dies for any other reason fails the run
   instead of committing a partial repo.
+- The "last run died before its resolve" repair keyed on `indexed_at = 0` alone, which is
+  also the state of a run in progress on another connection (an MCP refresh during a CLI
+  `index`): the refresh wiped the repo's file rows and the other run then attached its
+  edges to reused ids. The write transaction now stamps `repos.write_started`; a repo is
+  repaired only when that stamp is older than 15 minutes, and the check runs inside the
+  (IMMEDIATE) write transaction.
 - Overlapping index roots (`~/dev` and `~/dev/go`) indexed every nested repo twice per run
   and flipped its name between `go/pulse` and `pulse`. A root inside another root is now
   skipped with one warning on stderr, repos are deduplicated by canonical path, and a repo

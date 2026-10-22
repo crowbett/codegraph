@@ -579,19 +579,26 @@ fn index_repo(
     let t0 = Instant::now();
     let found = classify(repo_root, files, cfg);
     util::trace("index.classify", t0);
-    let repo_id = store.upsert_repo(name, repo_root)?;
-    let mut existing = store.repo_files(repo_id)?;
+    // The write lock is taken up front (IMMEDIATE), so the state read below cannot
+    // change under us before our own `begin_repo_write`.
+    let now = util::now_unix();
+    let tx = store
+        .conn_mut()
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let repo_id = store::upsert_repo(&tx, name, repo_root)?;
+    let mut existing = store::repo_files(&tx, repo_id)?;
     util::trace("index.repo_files", t0);
     // The last run of this repo died between its write commit and its resolve
-    // (`indexed_at` is reset inside the write transaction and set after the resolve):
+    // (`indexed_at` is reset inside the write transaction and set after the resolve;
+    // a recent reset is another connection still at work, see `repo_write_is_dead`):
     // its edges are unresolved or dangling, or, after a cold load, were never inserted.
     // With edges stored a whole-repo resolve repairs it; without any, the stored files
     // are dropped and the repo is loaded cold again (a budgeted run then converges, the
     // files it did not reach are simply new next time).
     let mut repair_resolve = false;
     let mut wipe = false;
-    if !existing.is_empty() && store.repo_indexed_at(repo_id)? == 0 {
-        if store.repo_has_edges(repo_id)? {
+    if !existing.is_empty() && store::repo_write_is_dead(&tx, repo_id, now)? {
+        if store::repo_has_edges(&tx, repo_id)? {
             repair_resolve = true;
         } else {
             wipe = true;
@@ -673,8 +680,7 @@ fn index_repo(
     // the parsers, and a bounded channel caps how many parsed files sit in memory.
     let (sender, receiver) = std::sync::mpsc::sync_channel::<(usize, Outcome)>(512);
     let mut parse_wall = 0u128;
-    let tx = store.conn_mut().transaction()?;
-    store::begin_repo_write(&tx, repo_id, wipe)?;
+    store::begin_repo_write(&tx, repo_id, wipe, now)?;
     let write_result: Result<()> = std::thread::scope(|scope| {
         let producer = scope.spawn(|| {
             found
