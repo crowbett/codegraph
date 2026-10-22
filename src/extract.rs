@@ -1641,16 +1641,26 @@ fn signature_line(node: Node<'_>, src: &[u8], kind: SymKind) -> String {
         .map_or(src.len(), |i| start + i);
     let line = String::from_utf8_lossy(&src[line_start..line_end]);
     let t = line.trim().trim_end_matches('{').trim_end();
-    if matches!(kind, SymKind::Const | SymKind::Var) || t.starts_with("#define") {
+    if matches!(kind, SymKind::Const | SymKind::Var) || define_rest(t).is_some() {
         return clip(&strip_value(t), MAX_SIG);
     }
     clip(t, MAX_SIG)
 }
 
+/// What follows `#define` in a preprocessor definition, allowing the spaces the
+/// preprocessor allows (`#  define X`, `# define X`); `None` for anything else.
+fn define_rest(decl: &str) -> Option<&str> {
+    let rest = decl
+        .strip_prefix('#')?
+        .trim_start()
+        .strip_prefix("define")?;
+    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then_some(rest)
+}
+
 /// Drop a declaration's initializer: everything from the first `=` (`:=`), or after
-/// the macro name of a `#define`.
+/// the macro name of a `#define` (rebuilt as `#define NAME …`, however it was spaced).
 fn strip_value(decl: &str) -> String {
-    if let Some(rest) = decl.strip_prefix("#define") {
+    if let Some(rest) = define_rest(decl) {
         let rest = rest.trim_start();
         // The name token ends at whitespace; a function-like macro's parameter list
         // (which may hold spaces) belongs to the name.
@@ -1662,7 +1672,7 @@ fn strip_value(decl: &str) -> String {
             None => rest.len(),
         };
         return match rest[name_end..].trim() {
-            "" => decl.to_string(),
+            "" => format!("#define {}", &rest[..name_end]),
             _ => format!("#define {} …", &rest[..name_end]),
         };
     }
@@ -2660,6 +2670,16 @@ const Max = 3
             "#define PAIR(a, b) …"
         );
         assert_eq!(strip_value("#define FLAG"), "#define FLAG");
+        // The preprocessor allows spaces after `#`; the secret must still go.
+        assert_eq!(strip_value("#  define TOKEN \"x\""), "#define TOKEN …");
+        assert_eq!(strip_value("# define FLAG"), "#define FLAG");
+        assert_eq!(strip_value("#defined = 1"), "#defined = …");
+        let f = extract(
+            Lang::C,
+            format!("#  define TOKEN \"{secret}\"\n").as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(f.symbols[0].signature, "#define TOKEN …");
         assert_eq!(strip_value("TOKEN: str = \"x\""), "TOKEN: str = …");
         assert_eq!(strip_value("x := load()"), "x = …");
         assert_eq!(strip_value("var x int"), "var x int");

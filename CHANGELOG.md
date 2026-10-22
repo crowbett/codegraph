@@ -31,7 +31,7 @@ versions follow [SemVer](https://semver.org/).
   per-repo counts; the exact, qualified, prefix, substring and doc tiers still run).
 - Constant, variable and `#define` signatures no longer carry their initializer:
   `API_KEY = "sk_live_..."` is stored and shown as `API_KEY = …`, `#define TOKEN "x"` as
-  `#define TOKEN …`, so a secret literal in source never reaches `find`, `outline`, `impact`
+  `#define TOKEN …` (also when spaced as `#  define`), so a secret literal in source never reaches `find`, `outline`, `impact`
   or the MCP tools. Schema version 21.
 
 ### Fixed
@@ -41,7 +41,8 @@ versions follow [SemVer](https://semver.org/).
   on every refresh, and debug builds silently dropped the file. The scan is bounds-checked,
   the release profile unwinds again, a parser panic on one file is caught in the indexer
   (logged, file skipped), and a parser thread that dies for any other reason fails the run
-  instead of committing a partial repo.
+  instead of committing a partial repo. On-the-fly `outline` contains a parser panic the
+  same way (`internal` error for that file, server stays up).
 - The "last run died before its resolve" repair keyed on `indexed_at = 0` alone, which is
   also the state of a run in progress on another connection (an MCP refresh during a CLI
   `index`): the refresh wiped the repo's file rows and the other run then attached its
