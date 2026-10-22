@@ -29,6 +29,10 @@ versions follow [SemVer](https://semver.org/).
   256 bytes are now rejected (`-32602` over MCP, a usage error on the CLI), and the fuzzy
   tier is skipped when the searched repos hold more than 300,000 symbols (from the stored
   per-repo counts; the exact, qualified, prefix, substring and doc tiers still run).
+- Constant, variable and `#define` signatures no longer carry their initializer:
+  `API_KEY = "sk_live_..."` is stored and shown as `API_KEY = …`, `#define TOKEN "x"` as
+  `#define TOKEN …`, so a secret literal in source never reaches `find`, `outline`, `impact`
+  or the MCP tools. Schema version 20 (existing graphs are rebuilt on first use).
 
 ### Fixed
 - Overlapping index roots (`~/dev` and `~/dev/go`) indexed every nested repo twice per run

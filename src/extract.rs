@@ -1625,7 +1625,11 @@ fn doc_for<'t>(lang: Lang, nav: &Nav<'t>, node: Node<'t>, src: &[u8]) -> Option<
     first_doc_line(block)
 }
 
-fn signature_line(node: Node<'_>, src: &[u8]) -> String {
+/// The definition's source line, trimmed. For constants and variables the value is
+/// never kept: `API_KEY = "sk_live_..."` becomes `API_KEY = …` and `#define TOKEN "x"`
+/// becomes `#define TOKEN …`, since signatures are stored and served by find/outline/
+/// impact (the initializer is also no part of the API).
+fn signature_line(node: Node<'_>, src: &[u8], kind: SymKind) -> String {
     let start = node.start_byte();
     let line_start = src[..start]
         .iter()
@@ -1637,7 +1641,38 @@ fn signature_line(node: Node<'_>, src: &[u8]) -> String {
         .map_or(src.len(), |i| start + i);
     let line = String::from_utf8_lossy(&src[line_start..line_end]);
     let t = line.trim().trim_end_matches('{').trim_end();
+    if matches!(kind, SymKind::Const | SymKind::Var) || t.starts_with("#define") {
+        return clip(&strip_value(t), MAX_SIG);
+    }
     clip(t, MAX_SIG)
+}
+
+/// Drop a declaration's initializer: everything from the first `=` (`:=`), or after
+/// the macro name of a `#define`.
+fn strip_value(decl: &str) -> String {
+    if let Some(rest) = decl.strip_prefix("#define") {
+        let rest = rest.trim_start();
+        // The name token ends at whitespace; a function-like macro's parameter list
+        // (which may hold spaces) belongs to the name.
+        let name_end = match rest.find(|c: char| c.is_whitespace() || c == '(') {
+            Some(i) if rest[i..].starts_with('(') => {
+                rest[i..].find(')').map_or(rest.len(), |j| i + j + 1)
+            }
+            Some(i) => i,
+            None => rest.len(),
+        };
+        return match rest[name_end..].trim() {
+            "" => decl.to_string(),
+            _ => format!("#define {} …", &rest[..name_end]),
+        };
+    }
+    match decl.find('=') {
+        Some(i) => {
+            let head = decl[..i].trim_end_matches(':').trim_end();
+            format!("{head} = …")
+        }
+        None => decl.to_string(),
+    }
 }
 
 fn has_child_kind(node: Node<'_>, kind: &str) -> bool {
@@ -1864,7 +1899,7 @@ fn build_symbols<'t>(
         let sp = d.node.start_position();
         let ep = d.node.end_position();
         let doc = doc_for(lang, nav, d.node, src);
-        let signature = signature_line(d.node, src);
+        let signature = signature_line(d.node, src, kind);
         facts.symbols.push(RawSymbol {
             name,
             kind,
@@ -2569,6 +2604,65 @@ const Max = 3
         assert_eq!(calls, ["s.load", "fmt.Println", "x.Helper"]);
         assert_eq!(f.imports.len(), 2);
         assert_eq!(f.imports[1].bindings[0].local, "x");
+    }
+
+    /// Constant and variable initializers (where secrets live) are never stored.
+    #[test]
+    fn const_signatures_drop_the_value() {
+        let secret = "not-a-real-secret-0123456789abcdef";
+        let cases: Vec<(Lang, String, &str)> = vec![
+            (
+                Lang::Go,
+                format!("package x\n\nconst Key = \"{secret}\"\nvar Token string = \"{secret}\"\n"),
+                "const Key = …",
+            ),
+            (
+                Lang::Python,
+                format!("API_KEY = \"{secret}\"\nTOKEN: str = \"{secret}\"\n"),
+                "API_KEY = …",
+            ),
+            (
+                Lang::Rust,
+                format!(
+                    "pub const KEY: &str = \"{secret}\";\npub static TOKEN: &str = \"{secret}\";\n"
+                ),
+                "pub const KEY: &str = …",
+            ),
+            (
+                Lang::TypeScript,
+                format!("export const API_KEY = \"{secret}\";\n"),
+                "export const API_KEY = …",
+            ),
+            (
+                Lang::C,
+                format!(
+                    "#define SECRET \"{secret}\"\n#define PAIR(a, b) \"{secret}\"\n#define FLAG\n"
+                ),
+                "#define SECRET …",
+            ),
+        ];
+        for (lang, src, first) in cases {
+            let f = extract(lang, src.as_bytes()).unwrap();
+            assert!(!f.symbols.is_empty(), "{lang:?}");
+            assert_eq!(f.symbols[0].signature, first, "{lang:?}");
+            for s in &f.symbols {
+                assert!(
+                    !s.signature.contains(secret)
+                        && !s.doc.as_deref().unwrap_or("").contains(secret),
+                    "{lang:?}: {} leaked the value: {}",
+                    s.name,
+                    s.signature
+                );
+            }
+        }
+        assert_eq!(
+            strip_value("#define PAIR(a, b) \"x\""),
+            "#define PAIR(a, b) …"
+        );
+        assert_eq!(strip_value("#define FLAG"), "#define FLAG");
+        assert_eq!(strip_value("TOKEN: str = \"x\""), "TOKEN: str = …");
+        assert_eq!(strip_value("x := load()"), "x = …");
+        assert_eq!(strip_value("var x int"), "var x int");
     }
 
     #[test]
