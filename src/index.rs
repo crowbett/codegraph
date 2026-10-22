@@ -335,6 +335,61 @@ pub fn index_roots(
     Ok(stats)
 }
 
+/// The path a directory is compared by: canonical (links resolved, case as on disk)
+/// when it exists, else absolute.
+fn canonical_or_absolute(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).map_or_else(|_| util::absolute(p), util::strip_verbatim)
+}
+
+/// Roots to walk, in the given order, with duplicates and roots nested inside another
+/// root dropped: the outer walk already covers them, and walking both would index each
+/// nested repo twice with two different names. Returns the kept roots (absolute) and
+/// one warning line when anything was dropped.
+fn plan_roots(roots: &[PathBuf]) -> Result<(Vec<PathBuf>, Option<String>)> {
+    let mut abs = Vec::with_capacity(roots.len());
+    for root in roots {
+        let root = util::absolute(root);
+        if !root.is_dir() {
+            return Err(Error::NotFound(format!(
+                "index root {} does not exist",
+                root.display()
+            )));
+        }
+        let canon = canonical_or_absolute(&root);
+        abs.push((root, canon));
+    }
+    let mut kept: Vec<PathBuf> = Vec::new();
+    let mut dropped: Vec<String> = Vec::new();
+    for (i, (root, canon)) in abs.iter().enumerate() {
+        // Nested inside another root (which is kept whatever its position), or a
+        // repeat of an earlier one.
+        let outer = abs.iter().enumerate().find(|(j, (_, other))| {
+            *j != i
+                && match util::rel_under(other, canon) {
+                    Some(rel) if rel.is_empty() => *j < i,
+                    Some(_) => true,
+                    None => false,
+                }
+        });
+        if let Some((_, (outer_root, _))) = outer {
+            dropped.push(format!(
+                "{} is inside {}",
+                util::slash(root),
+                util::slash(outer_root)
+            ));
+        } else {
+            kept.push(root.clone());
+        }
+    }
+    let warning = (!dropped.is_empty()).then(|| {
+        format!(
+            "index roots overlap ({}): nested repos are indexed once, named relative to the outermost root",
+            dropped.join("; ")
+        )
+    });
+    Ok((kept, warning))
+}
+
 fn index_roots_inner(
     store: &mut Store,
     cfg: &Config,
@@ -344,31 +399,34 @@ fn index_roots_inner(
     stats: &mut IndexStats,
     seen_repos: &mut HashSet<PathBuf>,
 ) -> Result<()> {
-    for root in roots {
-        let root = util::absolute(root);
-        if !root.is_dir() {
-            return Err(Error::NotFound(format!(
-                "index root {} does not exist",
-                root.display()
-            )));
-        }
+    let (roots, warning) = plan_roots(roots)?;
+    if let Some(w) = warning {
+        eprintln!("codegraph: warning: {w}");
+    }
+    // Repos already indexed this run, by canonical path: two roots can still reach one
+    // repo through a link.
+    let mut seen_canon: HashSet<PathBuf> = HashSet::new();
+    for root in &roots {
         let t0 = Instant::now();
-        let files = walk(&root, cfg);
+        let files = walk(root, cfg);
         util::trace("index.walk", t0);
-        let groups = group_repos(&root, files);
+        let groups = group_repos(root, files);
         util::trace("index.group_repos", t0);
         let mut repos: Vec<_> = groups.into_iter().collect();
         repos.sort_by(|a, b| a.0.cmp(&b.0));
         for (repo_root, files) in repos {
+            if !seen_canon.insert(canonical_or_absolute(&repo_root)) {
+                continue;
+            }
             seen_repos.insert(repo_root.clone());
-            let name = repo_name(&root, &repo_root);
+            let name = repo_name(root, &repo_root);
             index_repo(
                 store, cfg, &name, &repo_root, files, opts, start, stats, None,
             )?;
         }
         // Repos under this root that no longer have any source files.
         for r in store.repos()? {
-            if util::rel_under(&root, &r.root).is_some() && !seen_repos.contains(&r.root) {
+            if util::rel_under(root, &r.root).is_some() && !seen_repos.contains(&r.root) {
                 let n = store.conn().query_row(
                     "SELECT count(*) FROM files WHERE repo_id = ?1",
                     [r.id],
@@ -729,5 +787,55 @@ mod tests {
         );
         assert_eq!(find_repo(&root.join("loose"), root, &mut memo), root);
         assert_eq!(repo_name(root, &root.join("a")), "a");
+    }
+
+    #[test]
+    fn overlapping_roots_index_nested_repos_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let outer = dir.path().join("dev");
+        let inner = outer.join("go");
+        let repo = inner.join("pulse");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join("p.go"), "package pulse\nfunc Beat() {}\n").unwrap();
+
+        // The planner keeps the outermost root whatever the order, drops the nested one
+        // and repeats, and warns once.
+        let (kept, warn) = plan_roots(&[inner.clone(), outer.clone(), inner.clone()]).unwrap();
+        assert_eq!(kept, [util::absolute(&outer)]);
+        let warn = warn.unwrap();
+        assert!(warn.starts_with("index roots overlap ("), "{warn}");
+        assert!(warn.contains("is inside"), "{warn}");
+        let (kept, warn) = plan_roots(std::slice::from_ref(&outer)).unwrap();
+        assert_eq!(kept, [util::absolute(&outer)]);
+        assert!(warn.is_none());
+        assert!(plan_roots(&[dir.path().join("missing")]).is_err());
+
+        let mut store = Store::open(&dir.path().join("g.db")).unwrap();
+        let cfg = Config {
+            roots: Vec::new(),
+            ..Config::default()
+        };
+        let repos = |store: &Store| -> Vec<(String, PathBuf)> {
+            store
+                .repos()
+                .unwrap()
+                .into_iter()
+                .map(|r| (r.name, r.root))
+                .collect()
+        };
+        let expected = vec![("go/pulse".to_string(), util::absolute(&repo))];
+        // Outer first, inner first, and a second run: one repo, one name.
+        for roots in [
+            vec![outer.clone(), inner.clone()],
+            vec![inner.clone(), outer.clone()],
+            vec![outer.clone(), inner.clone()],
+        ] {
+            let st = index_roots(&mut store, &cfg, &roots, &IndexOptions::default()).unwrap();
+            assert_eq!(st.repos, 1, "{roots:?}");
+            assert_eq!(st.files, 1, "{roots:?}");
+            assert_eq!(repos(&store), expected, "{roots:?}");
+        }
+        let st = index_roots(&mut store, &cfg, &[outer], &IndexOptions::default()).unwrap();
+        assert_eq!((st.parsed, st.unchanged), (0, 1));
     }
 }

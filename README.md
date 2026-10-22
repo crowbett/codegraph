@@ -386,7 +386,9 @@ Neither ships in the binary. [docs/PACKAGES.md](docs/PACKAGES.md) says what ever
 
 1. **Walk**: the `ignore` crate walks each root (respecting `.gitignore` and `skip_dirs`).
    A file belongs to its nearest ancestor holding `.git`. `.h` is treated as C++ when its
-   directory has C++ sources and no `.c` files.
+   directory has C++ sources and no `.c` files. A root inside another root (`~/dev` and
+   `~/dev/go`) is skipped with a warning: the outer walk already covers it, and every repo
+   is named relative to its outermost root.
 2. **Change detection**: a file is skipped when its mtime and size match the stored row,
    otherwise it is hashed with xxh3. An unchanged hash only updates the mtime.
 3. **Extract** (rayon, one parser per thread): the tag query captures definitions,
