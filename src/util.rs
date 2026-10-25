@@ -1,7 +1,7 @@
 //! Small path and time helpers.
 
 use std::path::{Component, Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 /// Make `p` absolute against the current directory and lexically normalize it
 /// (no filesystem access, no `\\?\` prefixes).
@@ -319,10 +319,8 @@ pub(crate) fn try_symlink_dir(target: &Path, link: &Path) -> bool {
 pub fn process_token() -> &'static str {
     static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     TOKEN.get_or_init(|| {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.subsec_nanos());
-        format!("{}:{:08x}", std::process::id(), nanos ^ 0x9e37_79b9)
+        let nanos = crate::clock::since_epoch().subsec_nanos();
+        format!("{}:{:08x}", pid(), nanos ^ 0x9e37_79b9)
     })
 }
 
@@ -330,7 +328,7 @@ pub fn process_token() -> &'static str {
 /// elsewhere). `None` when that could not be determined. Only used on the rare path
 /// that decides whether another indexer died mid-run.
 pub fn process_alive(pid: u32) -> Option<bool> {
-    if pid == std::process::id() {
+    if pid == self::pid() {
         return Some(true);
     }
     #[cfg(windows)]
@@ -369,9 +367,24 @@ pub fn is_secret_file(name: &str) -> bool {
 
 /// Seconds since the Unix epoch.
 pub fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
+    crate::clock::since_epoch().as_secs() as i64
+}
+
+/// This process's id (0 on wasm32, which has no processes).
+pub fn pid() -> u32 {
+    #[cfg(not(target_arch = "wasm32"))]
+    return std::process::id();
+    #[cfg(target_arch = "wasm32")]
+    return 0;
+}
+
+/// Drop `v` on another thread so the caller does not wait while a big graph is freed
+/// (seconds for millions of symbols). Inline on wasm32, which has no threads.
+pub fn drop_in_background<T: Send + 'static>(v: T) {
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::spawn(move || drop(v));
+    #[cfg(target_arch = "wasm32")]
+    drop(v);
 }
 
 /// A file's mtime in nanoseconds since the epoch (0 when unavailable).
@@ -405,7 +418,7 @@ pub fn format_unix(ts: i64) -> String {
 }
 
 /// `CODEGRAPH_TRACE=1`: print phase timings to stderr (profiling large indexes).
-pub fn trace(what: &str, since: std::time::Instant) {
+pub fn trace(what: &str, since: crate::clock::Instant) {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if *ON.get_or_init(|| std::env::var_os("CODEGRAPH_TRACE").is_some()) {
         eprintln!("[trace] {what}: {:.2?}", since.elapsed());

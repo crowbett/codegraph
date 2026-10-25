@@ -1,56 +1,41 @@
-//! Browser bridge for codegraph: indexes bundled in-memory sources with the real
-//! tree-sitter extractor and answers callers (docs/demo-contract.md ABI).
+//! Browser bridge for codegraph (the site's docs/demo-contract.md ABI, no imports):
+//! [`codegraph::webdemo`] indexes its bundled sample into an in-memory SQLite graph with
+//! codegraph's real indexer and resolver and answers `sample`, `callers` and `callees`.
 
-use codegraph::extract::extract;
-use codegraph::lang::Lang;
-use codegraph::model::EdgeKind;
-use serde_json::{json, Value};
+#[cfg(target_arch = "wasm32")]
+mod sys;
+
 use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
+use std::cell::OnceCell;
 
-const SAMPLE: &[(&str, &str)] = &[
-    (
-        "main.go",
-        "package main\n\nfunc main() {\n\trun()\n}\n\nfunc run() {\n\tparse()\n\tparse()\n}\n",
-    ),
-    (
-        "parse.go",
-        "package main\n\nfunc parse() int {\n\treturn tokenize()\n}\n\nfunc tokenize() int {\n\treturn 1\n}\n",
-    ),
-];
+use codegraph::webdemo::Demo;
+use serde_json::{json, Value};
 
-/// Name-based callers over `extract` output (the SQL resolver is not in this build).
+thread_local! {
+    static DEMO: OnceCell<Result<Demo, String>> = const { OnceCell::new() };
+}
+
+/// Answer one call; the sample is indexed on the first.
 pub fn handle(method: &str, params: &[u8]) -> Value {
-    match method {
-        "callers" => {
-            let p: Value = serde_json::from_slice(params).unwrap_or(Value::Null);
-            let Some(target) = p["symbol"].as_str() else {
-                return json!({ "error": "params: symbol required" });
-            };
-            let mut out = Vec::new();
-            for (path, src) in SAMPLE {
-                let Some(lang) = Lang::from_path(std::path::Path::new(path)) else {
-                    continue;
-                };
-                let facts = match extract(lang, src.as_bytes()) {
-                    Ok(f) => f,
-                    Err(e) => return json!({ "error": format!("{path}: {e}") }),
-                };
-                for r in &facts.refs {
-                    if r.kind == EdgeKind::Call && r.name == target {
-                        let from = r.from.map(|i| facts.symbols[i].local_qname.clone());
-                        out.push(json!({ "from": from, "file": path, "line": r.line }));
-                    }
-                }
-            }
-            json!({ "symbol": target, "callers": out })
-        }
-        _ => json!({ "error": format!("unknown method {method}") }),
+    DEMO.with(
+        |d| match d.get_or_init(|| Demo::new().map_err(|e| e.to_string())) {
+            Ok(demo) => demo.handle(method, params),
+            Err(e) => json!({ "error": format!("indexing the sample: {e}") }),
+        },
+    )
+}
+
+fn layout(len: usize) -> Layout {
+    match Layout::from_size_align(len.max(1), 1) {
+        Ok(l) => l,
+        Err(_) => std::process::abort(),
     }
 }
 
 #[no_mangle]
 pub extern "C" fn demo_alloc(len: usize) -> *mut u8 {
-    let layout = Layout::from_size_align(len.max(1), 1).unwrap();
+    let layout = layout(len);
+    // SAFETY: the layout has a non-zero size.
     let p = unsafe { alloc(layout) };
     if p.is_null() {
         handle_alloc_error(layout);
@@ -62,7 +47,7 @@ pub extern "C" fn demo_alloc(len: usize) -> *mut u8 {
 /// `ptr` and `len` must come from `demo_alloc` or `demo_call`.
 #[no_mangle]
 pub unsafe extern "C" fn demo_free(ptr: *mut u8, len: usize) {
-    unsafe { dealloc(ptr, Layout::from_size_align(len.max(1), 1).unwrap()) }
+    unsafe { dealloc(ptr, layout(len)) }
 }
 
 /// # Safety

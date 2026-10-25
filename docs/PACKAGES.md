@@ -7,7 +7,9 @@ queries/<lang>/tags.scm  tree-sitter tag queries (tags.scm conventions + @qualif
                          @decl/@impl_for/@import/@export/@package). typescript/jsx.scm is appended for .tsx
 src/main.rs      binary: clap parse, output mode, dispatch (anyhow; everything else is thiserror)
 src/cli.rs       clap derive definitions
-src/lib.rs       crate root (`unsafe_code = "forbid"`)
+src/lib.rs       crate root (`unsafe_code = "forbid"`). Features: `graph` (store, index, resolve,
+                 query; what wasm32 builds) and `native` (default: graph + CLI, MCP, watcher)
+src/clock.rs     Instant / Unix time that also work on wasm32 (zero elapsed, fixed time)
 src/error.rs     thiserror `Error` with the kit error codes and exit codes
 src/model.rs     shared enums/records: SymKind, EdgeKind, Confidence (exact/likely/name_only)
 src/lang.rs      Lang enum, grammars, compiled queries (OnceLock), thread-local parsers
@@ -30,7 +32,8 @@ src/layout.rs    module-system units: Go import path (go.mod), Rust crate+module
 src/store.rs     SQLite schema (repos/files/symbols/edges + FTS5 trigram), file replace,
                  SCHEMA_VERSION
 src/index.rs     walk roots (ignore crate), repo detection (.git), mtime/size -> xxh3 change
-                 detection, rayon parse, per-repo transaction, then resolve
+                 detection, rayon parse, per-repo transaction, then resolve; index_sources
+                 runs the same cold path on in-memory files (no filesystem)
 src/resolve.rs   per-repo resolution: import scopes, qualifier rules, confidence, Go implicit
                  interface satisfaction; `#[path = "resolve_types.rs"] mod types` for typed
                  receivers
@@ -47,6 +50,14 @@ src/watch.rs     `watch` / `mcp --watch`: notify events -> path filter -> per-re
                  (resolve::ResolveCache): an edit splices in the re-parsed files and
                  re-resolves without reloading the repo; `CODEGRAPH_VERIFY_RESIDENT=1` checks
                  each such resolve against a whole-repo one
+src/webdemo.rs   the browser demo's logic: index the bundled sample in memory
+                 (index::index_sources) and answer sample/callers/callees as JSON; its tests
+                 check it against a disk index of the same files and sample/answers.json
+crates/codegraph-web/  wasm32-unknown-unknown cdylib for the site's demo (own workspace and
+                 lockfile): demo_alloc/demo_call/demo_free ABI over webdemo, src/sys.rs (the
+                 libc bits and no-file VFS bundled SQLite needs), libc/include headers,
+                 vendored tree-sitter-language (libc shims emptied), sample/ (the indexed
+                 crate + answers.json), check.mjs (0 imports, answers match native)
 tests/fixtures/<lang>/  mini projects; tests/lang.rs snapshots them (insta) + asserts resolution
 tests/fixtures/{go,rust,ts}_infer/  typed-receiver resolution fixtures, asserted in tests/resolve.rs
 tests/graph.rs incremental.rs cli.rs resolve.rs   graph algorithms, re-index, binary + MCP

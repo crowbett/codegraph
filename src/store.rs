@@ -318,7 +318,7 @@ impl Store {
 
     /// Rebuild the symbol search index from `symbols` and restore the row triggers.
     pub fn resume_fts(&self) -> Result<()> {
-        let t0 = std::time::Instant::now();
+        let t0 = crate::clock::Instant::now();
         let tx = self.conn.unchecked_transaction()?;
         tx.execute_batch("INSERT INTO symbols_fts(symbols_fts) VALUES ('rebuild');")?;
         crate::util::trace("index.fts_rebuild", t0);
@@ -464,7 +464,7 @@ pub fn repo_write_is_dead(conn: &Connection, repo_id: i64, now: i64) -> Result<b
     }
     let pid = owner.split(':').next().and_then(|p| p.parse::<u32>().ok());
     let live =
-        pid.is_some_and(|p| p != std::process::id() && crate::util::process_alive(p) == Some(true));
+        pid.is_some_and(|p| p != crate::util::pid() && crate::util::process_alive(p) == Some(true));
     if live {
         return Ok(age > MAX_LIVE_OWNER_SECS);
     }

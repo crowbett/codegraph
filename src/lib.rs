@@ -4,15 +4,16 @@
 //! with per-language tag queries, [`store`] writes symbols and unresolved edges to
 //! SQLite, [`resolve`] links edges to symbols per repo, and [`query`] answers
 //! find / def / refs / callers / callees / outline / path / impact / hotspots.
+//! [`webdemo`] runs that pipeline on a bundled sample in memory for the wasm32 build.
 
 #[cfg(feature = "native")]
 pub mod cli;
-#[cfg(feature = "native")]
-pub mod config;
 pub mod clock;
+#[cfg(feature = "graph")]
+pub mod config;
 pub mod error;
 pub mod extract;
-#[cfg(feature = "native")]
+#[cfg(feature = "graph")]
 pub mod index;
 pub(crate) mod infer;
 pub mod lang;
@@ -23,18 +24,20 @@ pub mod mcp;
 pub mod model;
 #[cfg(feature = "native")]
 pub mod output;
-#[cfg(feature = "native")]
+#[cfg(feature = "graph")]
 pub mod query;
 #[cfg(feature = "native")]
 pub mod render;
-#[cfg(feature = "native")]
+#[cfg(feature = "graph")]
 pub mod resolve;
-#[cfg(feature = "native")]
+#[cfg(feature = "graph")]
 pub mod store;
 pub(crate) mod tsfix;
 pub mod util;
 #[cfg(feature = "native")]
 pub mod watch;
+#[cfg(feature = "graph")]
+pub mod webdemo;
 
 /// Crate version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

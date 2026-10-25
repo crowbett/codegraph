@@ -39,6 +39,18 @@ Smoke against a throwaway data dir (never the real `~/.config/kit`):
 $env:KIT_DATA_DIR = "$env:TEMP\cg" ; .\target\release\codegraph.exe index $env:USERPROFILE\dev -v
 ```
 
+Browser demo (`crates/codegraph-web`, built by the site from a pinned commit; macOS with
+Homebrew `llvm` for `llvm-ar`, toolchain from its `rust-toolchain.toml`):
+
+```sh
+cd crates/codegraph-web && cargo build --release --target wasm32-unknown-unknown
+node check.mjs target/wasm32-unknown-unknown/release/codegraph_web.wasm sample/answers.json
+```
+
+`check.mjs` fails on any wasm import or on an answer that differs from native codegraph's
+(`src/webdemo.rs` tests keep `sample/answers.json` current; after a resolver or sample
+change run `UPDATE_ANSWERS=1 cargo test webdemo` and review the diff).
+
 ## Rules
 
 - Library code uses `crate::error::Error` (thiserror); only `main.rs` uses anyhow. No

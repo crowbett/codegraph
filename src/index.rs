@@ -5,11 +5,12 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use rayon::prelude::*;
 use serde::Serialize;
 
+use crate::clock::Instant;
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::extract::{self, FileFacts};
@@ -725,22 +726,7 @@ fn index_repo(
                 }
             }
         }
-        // A parser bug on one hostile file must not take the whole run (or the MCP
-        // server) down: the panic is caught here and the file is dropped from the graph.
-        let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            extract::extract(f.lang, &bytes)
-        }));
-        match parsed {
-            Ok(Ok(facts)) => Outcome::Parsed(Box::new((facts, hash))),
-            Ok(Err(_)) => Outcome::Failed,
-            Err(_) => {
-                eprintln!(
-                    "codegraph: parser panicked on {}; file skipped",
-                    util::slash(&f.abs)
-                );
-                Outcome::Failed
-            }
-        }
+        parse(f, &bytes, hash)
     };
 
     let mut layout = Layout::new(repo_root);
@@ -886,6 +872,121 @@ fn index_repo(
         stats.changed_repos.push(rs);
     }
     resolve_succeeded(repo_root);
+    store.set_indexed(repo_id, util::now_unix())?;
+    Ok(())
+}
+
+/// Parse one file. A parser bug on one hostile file must not take the whole run (or the
+/// MCP server) down: the panic is caught here and the file is dropped from the graph.
+fn parse(f: &Found, bytes: &[u8], hash: String) -> Outcome {
+    let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        extract::extract(f.lang, bytes)
+    }));
+    match parsed {
+        Ok(Ok(facts)) => Outcome::Parsed(Box::new((facts, hash))),
+        Ok(Err(_)) => Outcome::Failed,
+        Err(_) => {
+            eprintln!(
+                "codegraph: parser panicked on {}; file skipped",
+                util::slash(&f.abs)
+            );
+            Outcome::Failed
+        }
+    }
+}
+
+/// Index in-memory sources as one new repo named `name` at `root`, through the steps a
+/// cold `index` of the same files on disk takes (classify, parse, write, resolve, search
+/// index), for hosts without a filesystem (the wasm32 browser demo). `files` are
+/// (repo-relative path, content). Module-layout files (`go.mod`, `Cargo.toml`,
+/// `package.json`, `tsconfig.json`) are read from disk under `root` as usual, so on wasm32
+/// they are absent. Fails if the graph already has a repo at `root`.
+pub fn index_sources(
+    store: &mut Store,
+    name: &str,
+    root: &Path,
+    files: &[(&str, &[u8])],
+) -> Result<IndexStats> {
+    let start = Instant::now();
+    let mut stats = IndexStats::default();
+    if store.repos()?.iter().any(|r| r.root == root) {
+        return Err(Error::Usage(format!(
+            "{} is already indexed",
+            util::slash(root)
+        )));
+    }
+    let empty = store
+        .conn()
+        .query_row("SELECT count(*) FROM files", [], |r| r.get::<_, i64>(0))?
+        == 0;
+    store.suspend_fts(empty)?;
+    let result = index_sources_inner(store, name, root, files, &mut stats);
+    let resumed = store.resume_fts();
+    result?;
+    resumed?;
+    finish(store, &mut stats, start)?;
+    Ok(stats)
+}
+
+fn index_sources_inner(
+    store: &mut Store,
+    name: &str,
+    root: &Path,
+    files: &[(&str, &[u8])],
+    stats: &mut IndexStats,
+) -> Result<()> {
+    let content: HashMap<PathBuf, &[u8]> =
+        files.iter().map(|(rel, b)| (root.join(rel), *b)).collect();
+    let entries: Vec<Entry> = files
+        .iter()
+        .map(|(rel, b)| (root.join(rel), b.len() as u64, 0))
+        .collect();
+    let found = classify(root, entries, &Config::default());
+    let now = util::now_unix();
+    let tx = store
+        .conn_mut()
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let repo_id = store::upsert_repo(&tx, name, root)?;
+    store::set_repo_markers(&tx, repo_id, &markers_signature(root, &[]))?;
+    stats.repos += 1;
+    stats.files += found.len();
+    let mut layout = Layout::new(root);
+    let mut rs = RepoStats {
+        name: name.to_string(),
+        root: util::slash(root),
+        files: found.len(),
+        parsed: 0,
+        removed: 0,
+        failed: 0,
+        resolve: None,
+    };
+    let existing = HashMap::new();
+    let mut pending = Vec::new();
+    let mut changes = Changes::default();
+    store::begin_repo_write(&tx, repo_id, false, now)?;
+    for f in &found {
+        let outcome = match content.get(&f.abs) {
+            Some(b) if f.size != u64::MAX => parse(f, b, hash_hex(b)),
+            _ => Outcome::Failed,
+        };
+        write_outcome(
+            &tx,
+            repo_id,
+            f,
+            outcome,
+            &existing,
+            &mut layout,
+            &mut rs,
+            stats,
+            Some(&mut pending),
+            &mut changes,
+        )?;
+    }
+    store::restamp_write_started(&tx, repo_id, util::now_unix())?;
+    tx.commit()?;
+    stats.parsed += rs.parsed;
+    rs.resolve = Some(resolve::resolve_and_insert(store, repo_id, root, pending)?);
+    stats.changed_repos.push(rs);
     store.set_indexed(repo_id, util::now_unix())?;
     Ok(())
 }

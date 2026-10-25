@@ -19,7 +19,7 @@ pub enum Error {
         source: std::io::Error,
     },
     /// SQLite failure.
-    #[cfg(feature = "native")]
+    #[cfg(feature = "graph")]
     #[error("database: {0}")]
     Db(#[from] rusqlite::Error),
     /// A tree-sitter query failed to compile (a bug in `queries/`).
@@ -54,7 +54,7 @@ impl Error {
             }
             Self::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound => "not_found",
             Self::Io { .. } => "io",
-            #[cfg(feature = "native")]
+            #[cfg(feature = "graph")]
             Self::Db(_) => "database",
             Self::Query { .. } | Self::Internal(_) => "internal",
         }
@@ -97,6 +97,8 @@ mod tests {
                 "permission_denied",
                 4,
             ),
+            #[cfg(feature = "graph")]
+            (Error::Db(rusqlite::Error::InvalidQuery), "database", 1),
         ];
         for (err, code, exit) in cases {
             assert_eq!(err.code(), code, "{err:?}");
