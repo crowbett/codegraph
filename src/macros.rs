@@ -21,7 +21,7 @@
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use crate::clock::Instant;
 
 use tree_sitter::Node;
 

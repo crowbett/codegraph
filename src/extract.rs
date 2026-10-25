@@ -5,12 +5,13 @@
 //! Everything here is file-local; cross-file resolution happens in [`crate::resolve`].
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, QueryCursor};
 
+use crate::clock::Instant;
 use crate::error::Result;
 use crate::infer::{Infer, Nav};
 use crate::lang::Lang;
@@ -813,7 +814,7 @@ fn extract_inner(
         });
         let arg = if lang == Lang::Rust
             && r.kind == EdgeKind::Call
-            && (ufcs || crate::resolve::TRAIT_OVERLOADS.contains(&name.as_str()))
+            && (ufcs || crate::model::TRAIT_OVERLOADS.contains(&name.as_str()))
         {
             infer.arg_hint(r.name)
         } else {

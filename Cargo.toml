@@ -20,17 +20,18 @@ path = "src/lib.rs"
 [[bin]]
 name = "codegraph"
 path = "src/main.rs"
+required-features = ["native"]
 doc = false
 
 [dependencies]
-anyhow = "1.0.104"
-clap = { version = "4.6.7", features = ["derive", "wrap_help"] }
-ctrlc = "3.5.2"
-ignore = "0.4.33"
-mimalloc = { version = "0.1", default-features = false }
-notify = "8.2.0"
-rayon = "1.12.0"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+anyhow = { version = "1.0.104", optional = true }
+clap = { optional = true, version = "4.6.7", features = ["derive", "wrap_help"] }
+ctrlc = { version = "3.5.2", optional = true }
+ignore = { version = "0.4.33", optional = true }
+mimalloc = { optional = true, version = "0.1", default-features = false }
+notify = { version = "8.2.0", optional = true }
+rayon = { version = "1.12.0", optional = true }
+rusqlite = { optional = true, version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 streaming-iterator = "0.1.9"
@@ -45,6 +46,10 @@ tree-sitter-python = "0.25.0"
 tree-sitter-rust = "0.24.2"
 tree-sitter-typescript = "0.23.2"
 xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
+
+[features]
+default = ["native"]
+native = ["dep:anyhow","dep:clap","dep:ctrlc","dep:ignore","dep:mimalloc","dep:notify","dep:rayon","dep:rusqlite"]
 
 [dev-dependencies]
 insta = "1.48.0"

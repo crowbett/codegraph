@@ -5,24 +5,35 @@
 //! SQLite, [`resolve`] links edges to symbols per repo, and [`query`] answers
 //! find / def / refs / callers / callees / outline / path / impact / hotspots.
 
+#[cfg(feature = "native")]
 pub mod cli;
+#[cfg(feature = "native")]
 pub mod config;
+pub mod clock;
 pub mod error;
 pub mod extract;
+#[cfg(feature = "native")]
 pub mod index;
 pub(crate) mod infer;
 pub mod lang;
 pub mod layout;
 mod macros;
+#[cfg(feature = "native")]
 pub mod mcp;
 pub mod model;
+#[cfg(feature = "native")]
 pub mod output;
+#[cfg(feature = "native")]
 pub mod query;
+#[cfg(feature = "native")]
 pub mod render;
+#[cfg(feature = "native")]
 pub mod resolve;
+#[cfg(feature = "native")]
 pub mod store;
 pub(crate) mod tsfix;
 pub mod util;
+#[cfg(feature = "native")]
 pub mod watch;
 
 /// Crate version.

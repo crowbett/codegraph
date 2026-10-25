@@ -229,3 +229,27 @@ mod tests {
         assert!(SymKind::parse_filter("nope").is_none());
     }
 }
+
+/// Rust std-trait methods a type commonly implements several times (once per type
+/// parameter of the trait), so a name alone cannot pick the impl.
+pub(crate) const TRAIT_OVERLOADS: &[&str] = &[
+    "from",
+    "try_from",
+    "into",
+    "try_into",
+    "from_iter",
+    "extend",
+    "eq",
+    "ne",
+    "partial_cmp",
+    "cmp",
+    "add",
+    "sub",
+    "mul",
+    "div",
+    "index",
+    "index_mut",
+    "as_ref",
+    "as_mut",
+    "borrow",
+];

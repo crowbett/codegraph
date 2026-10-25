@@ -30,29 +30,7 @@ use crate::store::Store;
 #[path = "resolve_types.rs"]
 mod types;
 
-/// Rust std-trait methods a type commonly implements several times (once per type
-/// parameter of the trait), so a name alone cannot pick the impl.
-pub(crate) const TRAIT_OVERLOADS: &[&str] = &[
-    "from",
-    "try_from",
-    "into",
-    "try_into",
-    "from_iter",
-    "extend",
-    "eq",
-    "ne",
-    "partial_cmp",
-    "cmp",
-    "add",
-    "sub",
-    "mul",
-    "div",
-    "index",
-    "index_mut",
-    "as_ref",
-    "as_mut",
-    "borrow",
-];
+pub(crate) use crate::model::TRAIT_OVERLOADS;
 
 /// Rust primitive types (a path qualifier naming one is never a module).
 const RUST_PRIMITIVES: &[&str] = &[

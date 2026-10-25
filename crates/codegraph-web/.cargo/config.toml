@@ -1,0 +1,3 @@
+[env]
+CPATH = { value = "vendor/tree-sitter-language/wasm/include", relative = true }
+AR_wasm32_unknown_unknown = "/opt/homebrew/opt/llvm/bin/llvm-ar"
