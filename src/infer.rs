@@ -91,7 +91,9 @@
 use std::cell::{Cell, OnceCell};
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use crate::clock::Instant;
 
 use tree_sitter::Node;
 

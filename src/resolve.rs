@@ -30,29 +30,7 @@ use crate::store::Store;
 #[path = "resolve_types.rs"]
 mod types;
 
-/// Rust std-trait methods a type commonly implements several times (once per type
-/// parameter of the trait), so a name alone cannot pick the impl.
-pub(crate) const TRAIT_OVERLOADS: &[&str] = &[
-    "from",
-    "try_from",
-    "into",
-    "try_into",
-    "from_iter",
-    "extend",
-    "eq",
-    "ne",
-    "partial_cmp",
-    "cmp",
-    "add",
-    "sub",
-    "mul",
-    "div",
-    "index",
-    "index_mut",
-    "as_ref",
-    "as_mut",
-    "borrow",
-];
+pub(crate) use crate::model::TRAIT_OVERLOADS;
 
 /// Rust primitive types (a path qualifier naming one is never a module).
 const RUST_PRIMITIVES: &[&str] = &[
@@ -801,7 +779,7 @@ fn resolve_full(
     root: &Path,
     keep: bool,
 ) -> Result<(ResolveStats, Option<Resident>)> {
-    let t0 = std::time::Instant::now();
+    let t0 = crate::clock::Instant::now();
     let mut ctx = load_ctx(store, repo_id, root)?;
     let (mut edges, implicit) = load_edges(store, repo_id, &ctx)?;
     crate::util::trace("resolve.load", t0);
@@ -820,7 +798,7 @@ fn resolve_full(
         ));
     }
     // Freeing millions of symbols and edges takes seconds; the caller doesn't wait for it.
-    std::thread::spawn(move || drop((ctx, edges)));
+    crate::util::drop_in_background((ctx, edges));
     Ok((stats, None))
 }
 
@@ -836,7 +814,7 @@ fn resolve_and_write(
     ctx: &mut Ctx,
     edges: &mut [E],
     implicit: &[i64],
-    t0: std::time::Instant,
+    t0: crate::clock::Instant,
 ) -> Result<(ResolveStats, Vec<i64>, i64)> {
     let mut stats = ResolveStats::default();
     let outs = resolve_edges(ctx, edges, &mut stats, t0);
@@ -923,7 +901,7 @@ impl ResolveCache {
     /// Forget the kept state (after writes this cache did not see, like a root rescan).
     pub fn clear(&mut self) {
         if let Some(r) = self.resident.take() {
-            std::thread::spawn(move || drop(r));
+            crate::util::drop_in_background(r);
         }
     }
 
@@ -977,7 +955,7 @@ pub fn resolve_with_cache(
                 return Ok(stats);
             }
         } else {
-            std::thread::spawn(move || drop(r));
+            crate::util::drop_in_background(r);
         }
     }
     let (stats, r) = resolve_full(store, repo_id, root, true)?;
@@ -985,7 +963,7 @@ pub fn resolve_with_cache(
         if r.edges.len() >= cache.min_edges {
             cache.resident = Some(r);
         } else {
-            std::thread::spawn(move || drop(r));
+            crate::util::drop_in_background(r);
         }
     }
     Ok(stats)
@@ -999,7 +977,7 @@ fn resolve_changed(
     mut r: Resident,
     changed: &[(i64, i64)],
 ) -> Result<Option<(ResolveStats, Resident)>> {
-    let t0 = std::time::Instant::now();
+    let t0 = crate::clock::Instant::now();
     let old_idx: HashMap<i64, usize> = r
         .ctx
         .files
@@ -1116,7 +1094,7 @@ pub fn resolve_and_insert(
     root: &Path,
     mut pending: Vec<Pending>,
 ) -> Result<ResolveStats> {
-    let t0 = std::time::Instant::now();
+    let t0 = crate::clock::Instant::now();
     let mut ctx = load_ctx(store, repo_id, root)?;
     let file_idx: HashMap<i64, usize> = ctx
         .files
@@ -1236,7 +1214,7 @@ pub fn resolve_and_insert(
     write_implicit_and_counts(&tx, repo_id, &ctx, &mut stats)?;
     tx.commit()?;
     crate::util::trace("resolve.write", t0);
-    std::thread::spawn(move || drop((ctx, edges)));
+    crate::util::drop_in_background((ctx, edges));
     Ok(stats)
 }
 
@@ -1266,7 +1244,7 @@ fn resolve_edges(
     ctx: &mut Ctx,
     edges: &[E],
     stats: &mut ResolveStats,
-    t0: std::time::Instant,
+    t0: crate::clock::Instant,
 ) -> Vec<Out> {
     let mut outs = vec![Out::default(); edges.len()];
     let mut scopes: Vec<Scope> = (0..ctx.files.len()).map(|_| Scope::default()).collect();
@@ -1748,7 +1726,7 @@ fn sym_tables(syms: &[S], nfiles: usize) -> SymTables {
 }
 /// The repo's files and symbols, with their lookup tables.
 fn load_ctx(store: &Store, repo_id: i64, root: &Path) -> Result<Ctx> {
-    let t0 = std::time::Instant::now();
+    let t0 = crate::clock::Instant::now();
     let conn = store.conn();
     let mut files = Vec::new();
     let mut file_idx: HashMap<i64, usize> = HashMap::new();
@@ -1865,7 +1843,7 @@ fn load_ctx(store: &Store, repo_id: i64, root: &Path) -> Result<Ctx> {
 
 /// The repo's stored edges, and the ids of the derived edges the previous resolve wrote.
 fn load_edges(store: &Store, repo_id: i64, ctx: &Ctx) -> Result<(Vec<E>, Vec<i64>)> {
-    let t0 = std::time::Instant::now();
+    let t0 = crate::clock::Instant::now();
     let path = store.path().to_path_buf();
     let file_idx: HashMap<i64, usize> = ctx
         .files

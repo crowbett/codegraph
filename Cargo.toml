@@ -20,17 +20,20 @@ path = "src/lib.rs"
 [[bin]]
 name = "codegraph"
 path = "src/main.rs"
+required-features = ["native"]
 doc = false
 
 [dependencies]
-anyhow = "1.0.104"
-clap = { version = "4.6.7", features = ["derive", "wrap_help"] }
-ctrlc = "3.5.2"
-ignore = "0.4.33"
-mimalloc = { version = "0.1", default-features = false }
-notify = "8.2.0"
-rayon = "1.12.0"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+anyhow = { version = "1.0.104", optional = true }
+clap = { optional = true, version = "4.6.7", features = ["derive", "wrap_help"] }
+ctrlc = { version = "3.5.2", optional = true }
+ignore = { version = "0.4.33", optional = true }
+mimalloc = { optional = true, version = "0.1", default-features = false }
+notify = { version = "8.2.0", optional = true }
+rayon = { version = "1.12.0", optional = true }
+# No `ffi-sqlite-wasm-rs` (a default): on wasm32 the bundled C SQLite is linked instead of
+# sqlite-wasm-rs, which needs wasm-bindgen imports (crates/codegraph-web).
+rusqlite = { optional = true, version = "0.40.2", default-features = false, features = ["bundled", "cache"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 streaming-iterator = "0.1.9"
@@ -45,6 +48,13 @@ tree-sitter-python = "0.25.0"
 tree-sitter-rust = "0.24.2"
 tree-sitter-typescript = "0.23.2"
 xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
+
+[features]
+default = ["native"]
+# The graph (SQLite store, resolver, queries, indexer) without the CLI, MCP server and
+# watcher: what the wasm32 browser demo (crates/codegraph-web) builds.
+graph = ["dep:ignore", "dep:rayon", "dep:rusqlite"]
+native = ["graph", "dep:anyhow", "dep:clap", "dep:ctrlc", "dep:mimalloc", "dep:notify"]
 
 [dev-dependencies]
 insta = "1.48.0"

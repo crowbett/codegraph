@@ -19,9 +19,9 @@
 //! textual scope (a macro redefined further down expands with its last definition
 //! everywhere in the file).
 
+use crate::clock::Instant;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
 
 use tree_sitter::Node;
 

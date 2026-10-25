@@ -55,6 +55,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
+      - name: clippy (graph only, what the wasm demo builds)
+        run: cargo clippy --lib --no-default-features --features graph -- -D warnings
       - name: test
         run: cargo test --all-targets
       - name: release build

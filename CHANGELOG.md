@@ -5,6 +5,13 @@ versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `crates/codegraph-web`: the indexer, resolver and queries built for
+  `wasm32-unknown-unknown` with no imports (bundled SQLite on an in-memory, no-file VFS),
+  for a browser demo that indexes a bundled sample and answers callers/callees.
+  `index::index_sources` indexes in-memory files through the cold-index path; a `graph`
+  feature builds the library without the CLI, MCP server and watcher.
+
 ### Security
 - Path arguments never follow a link inside a root. `confine` used `canonicalize`, which
   follows symlinks and junctions before the root check, so a link planted in a cloned repo

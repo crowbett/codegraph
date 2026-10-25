@@ -1,0 +1,1470 @@
+{
+  "calls": {
+    "src/log.rs:11": {
+      "callees": {
+        "depth": 1,
+        "direction": "callees",
+        "nodes": 2,
+        "roots": [
+          {
+            "children": [
+              {
+                "external": "self.lines.push",
+                "site": "/sample/src/log.rs:12"
+              },
+              {
+                "external": "line.to_string",
+                "site": "/sample/src/log.rs:12"
+              }
+            ],
+            "end_line": 13,
+            "file": "/sample/src/log.rs",
+            "id": 24,
+            "kind": "method",
+            "line": 11,
+            "name": "write",
+            "qname": "log::Stdout::write",
+            "repo": "sample",
+            "signature": "fn write(&mut self, line: &str)"
+          }
+        ]
+      },
+      "callers": {
+        "depth": 1,
+        "direction": "callers",
+        "nodes": 3,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "exact",
+                "end_line": 30,
+                "file": "/sample/src/main.rs",
+                "id": 5,
+                "kind": "function",
+                "line": 11,
+                "name": "main",
+                "qname": "main",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:26"
+              },
+              {
+                "confidence": "exact",
+                "end_line": 26,
+                "file": "/sample/src/log.rs",
+                "id": 26,
+                "kind": "function",
+                "line": 24,
+                "name": "report",
+                "qname": "log::report",
+                "repo": "sample",
+                "site": "/sample/src/log.rs:25",
+                "via": "log::Sink::write"
+              },
+              {
+                "confidence": "exact",
+                "end_line": 44,
+                "file": "/sample/src/main.rs",
+                "id": 6,
+                "kind": "function",
+                "line": 32,
+                "name": "run",
+                "qname": "run",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:36",
+                "sites": 2,
+                "via": "log::Sink::write"
+              }
+            ],
+            "end_line": 13,
+            "file": "/sample/src/log.rs",
+            "id": 24,
+            "kind": "method",
+            "line": 11,
+            "name": "write",
+            "qname": "log::Stdout::write",
+            "repo": "sample",
+            "signature": "fn write(&mut self, line: &str)"
+          }
+        ]
+      }
+    },
+    "src/log.rs:17": {
+      "callees": {
+        "depth": 1,
+        "direction": "callees",
+        "nodes": 1,
+        "roots": [
+          {
+            "children": [
+              {
+                "external": "self.lines.drain",
+                "site": "/sample/src/log.rs:18"
+              }
+            ],
+            "end_line": 21,
+            "file": "/sample/src/log.rs",
+            "id": 25,
+            "kind": "method",
+            "line": 17,
+            "name": "flush",
+            "qname": "log::Stdout::flush",
+            "repo": "sample",
+            "signature": "pub fn flush(&mut self)"
+          }
+        ]
+      },
+      "callers": {
+        "depth": 1,
+        "direction": "callers",
+        "nodes": 1,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "exact",
+                "end_line": 30,
+                "file": "/sample/src/main.rs",
+                "id": 5,
+                "kind": "function",
+                "line": 11,
+                "name": "main",
+                "qname": "main",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:29"
+              }
+            ],
+            "end_line": 21,
+            "file": "/sample/src/log.rs",
+            "id": 25,
+            "kind": "method",
+            "line": 17,
+            "name": "flush",
+            "qname": "log::Stdout::flush",
+            "repo": "sample",
+            "signature": "pub fn flush(&mut self)"
+          }
+        ]
+      }
+    },
+    "src/log.rs:2": {
+      "callees": {
+        "depth": 1,
+        "direction": "callees",
+        "nodes": 0,
+        "roots": [
+          {
+            "end_line": 2,
+            "file": "/sample/src/log.rs",
+            "id": 22,
+            "kind": "method",
+            "line": 2,
+            "name": "write",
+            "qname": "log::Sink::write",
+            "repo": "sample",
+            "signature": "fn write(&mut self, line: &str);"
+          }
+        ]
+      },
+      "callers": {
+        "depth": 1,
+        "direction": "callers",
+        "nodes": 2,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "exact",
+                "end_line": 26,
+                "file": "/sample/src/log.rs",
+                "id": 26,
+                "kind": "function",
+                "line": 24,
+                "name": "report",
+                "qname": "log::report",
+                "repo": "sample",
+                "site": "/sample/src/log.rs:25"
+              },
+              {
+                "confidence": "exact",
+                "end_line": 44,
+                "file": "/sample/src/main.rs",
+                "id": 6,
+                "kind": "function",
+                "line": 32,
+                "name": "run",
+                "qname": "run",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:36",
+                "sites": 2
+              }
+            ],
+            "end_line": 2,
+            "file": "/sample/src/log.rs",
+            "id": 22,
+            "kind": "method",
+            "line": 2,
+            "name": "write",
+            "qname": "log::Sink::write",
+            "repo": "sample",
+            "signature": "fn write(&mut self, line: &str);"
+          }
+        ]
+      }
+    },
+    "src/log.rs:24": {
+      "callees": {
+        "depth": 1,
+        "direction": "callees",
+        "nodes": 1,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "exact",
+                "end_line": 2,
+                "file": "/sample/src/log.rs",
+                "id": 22,
+                "kind": "method",
+                "line": 2,
+                "name": "write",
+                "qname": "log::Sink::write",
+                "repo": "sample",
+                "site": "/sample/src/log.rs:25"
+              }
+            ],
+            "end_line": 26,
+            "file": "/sample/src/log.rs",
+            "id": 26,
+            "kind": "function",
+            "line": 24,
+            "name": "report",
+            "qname": "log::report",
+            "repo": "sample",
+            "signature": "pub fn report(out: &mut dyn Sink, err: &str)"
+          }
+        ]
+      },
+      "callers": {
+        "depth": 1,
+        "direction": "callers",
+        "nodes": 2,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "exact",
+                "end_line": 30,
+                "file": "/sample/src/main.rs",
+                "id": 5,
+                "kind": "function",
+                "line": 11,
+                "name": "main",
+                "qname": "main",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:19"
+              },
+              {
+                "confidence": "exact",
+                "end_line": 44,
+                "file": "/sample/src/main.rs",
+                "id": 6,
+                "kind": "function",
+                "line": 32,
+                "name": "run",
+                "qname": "run",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:37"
+              }
+            ],
+            "end_line": 26,
+            "file": "/sample/src/log.rs",
+            "id": 26,
+            "kind": "function",
+            "line": 24,
+            "name": "report",
+            "qname": "log::report",
+            "repo": "sample",
+            "signature": "pub fn report(out: &mut dyn Sink, err: &str)"
+          }
+        ]
+      }
+    },
+    "src/main.rs:11": {
+      "callees": {
+        "depth": 1,
+        "direction": "callees",
+        "nodes": 11,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "exact",
+                "end_line": 12,
+                "file": "/sample/src/store.rs",
+                "id": 15,
+                "kind": "method",
+                "line": 10,
+                "name": "new",
+                "qname": "store::Store::new",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:12"
+              },
+              {
+                "external": "Stdout.default",
+                "site": "/sample/src/main.rs:13"
+              },
+              {
+                "external": "Vec.new",
+                "site": "/sample/src/main.rs:14"
+              },
+              {
+                "external": "SCRIPT.lines",
+                "site": "/sample/src/main.rs:15"
+              },
+              {
+                "confidence": "likely",
+                "end_line": 28,
+                "file": "/sample/src/parse.rs",
+                "id": 10,
+                "kind": "function",
+                "line": 19,
+                "name": "parse_line",
+                "qname": "parse::parse_line",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:16"
+              },
+              {
+                "confidence": "exact",
+                "end_line": 44,
+                "file": "/sample/src/main.rs",
+                "id": 6,
+                "kind": "function",
+                "line": 32,
+                "name": "run",
+                "qname": "run",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:17"
+              },
+              {
+                "confidence": "exact",
+                "end_line": 26,
+                "file": "/sample/src/log.rs",
+                "id": 26,
+                "kind": "function",
+                "line": 24,
+                "name": "report",
+                "qname": "log::report",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:19"
+              },
+              {
+                "external": "errors.push",
+                "site": "/sample/src/main.rs:20"
+              },
+              {
+                "external": "e.is_fatal",
+                "site": "/sample/src/main.rs:25"
+              },
+              {
+                "confidence": "exact",
+                "end_line": 13,
+                "file": "/sample/src/log.rs",
+                "id": 24,
+                "kind": "method",
+                "line": 11,
+                "name": "write",
+                "qname": "log::Stdout::write",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:26"
+              },
+              {
+                "confidence": "exact",
+                "end_line": 21,
+                "file": "/sample/src/log.rs",
+                "id": 25,
+                "kind": "method",
+                "line": 17,
+                "name": "flush",
+                "qname": "log::Stdout::flush",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:29"
+              }
+            ],
+            "end_line": 30,
+            "file": "/sample/src/main.rs",
+            "id": 5,
+            "kind": "function",
+            "line": 11,
+            "name": "main",
+            "qname": "main",
+            "repo": "sample",
+            "signature": "fn main()"
+          }
+        ]
+      },
+      "callers": {
+        "depth": 1,
+        "direction": "callers",
+        "nodes": 0,
+        "roots": [
+          {
+            "end_line": 30,
+            "file": "/sample/src/main.rs",
+            "id": 5,
+            "kind": "function",
+            "line": 11,
+            "name": "main",
+            "qname": "main",
+            "repo": "sample",
+            "signature": "fn main()"
+          }
+        ]
+      }
+    },
+    "src/main.rs:32": {
+      "callees": {
+        "depth": 1,
+        "direction": "callees",
+        "nodes": 7,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "exact",
+                "end_line": 21,
+                "file": "/sample/src/store.rs",
+                "id": 17,
+                "kind": "method",
+                "line": 18,
+                "name": "set",
+                "qname": "store::Store::set",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:34"
+              },
+              {
+                "confidence": "exact",
+                "end_line": 16,
+                "file": "/sample/src/store.rs",
+                "id": 16,
+                "kind": "method",
+                "line": 14,
+                "name": "get",
+                "qname": "store::Store::get",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:35"
+              },
+              {
+                "confidence": "exact",
+                "end_line": 2,
+                "file": "/sample/src/log.rs",
+                "id": 22,
+                "kind": "method",
+                "line": 2,
+                "name": "write",
+                "qname": "log::Sink::write",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:36",
+                "sites": 2
+              },
+              {
+                "confidence": "exact",
+                "end_line": 26,
+                "file": "/sample/src/log.rs",
+                "id": 26,
+                "kind": "function",
+                "line": 24,
+                "name": "report",
+                "qname": "log::report",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:37"
+              },
+              {
+                "confidence": "exact",
+                "end_line": 26,
+                "file": "/sample/src/store.rs",
+                "id": 18,
+                "kind": "method",
+                "line": 23,
+                "name": "delete",
+                "qname": "store::Store::delete",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:40"
+              },
+              {
+                "confidence": "exact",
+                "end_line": 30,
+                "file": "/sample/src/store.rs",
+                "id": 19,
+                "kind": "method",
+                "line": 28,
+                "name": "len",
+                "qname": "store::Store::len",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:42"
+              },
+              {
+                "external": "store.len().to_string",
+                "site": "/sample/src/main.rs:42"
+              }
+            ],
+            "end_line": 44,
+            "file": "/sample/src/main.rs",
+            "id": 6,
+            "kind": "function",
+            "line": 32,
+            "name": "run",
+            "qname": "run",
+            "repo": "sample",
+            "signature": "fn run(store: &mut Store, out: &mut dyn Sink, cmd: Command)"
+          }
+        ]
+      },
+      "callers": {
+        "depth": 1,
+        "direction": "callers",
+        "nodes": 1,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "exact",
+                "end_line": 30,
+                "file": "/sample/src/main.rs",
+                "id": 5,
+                "kind": "function",
+                "line": 11,
+                "name": "main",
+                "qname": "main",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:17"
+              }
+            ],
+            "end_line": 44,
+            "file": "/sample/src/main.rs",
+            "id": 6,
+            "kind": "function",
+            "line": 32,
+            "name": "run",
+            "qname": "run",
+            "repo": "sample",
+            "signature": "fn run(store: &mut Store, out: &mut dyn Sink, cmd: Command)"
+          }
+        ]
+      }
+    },
+    "src/parse.rs:14": {
+      "callees": {
+        "depth": 1,
+        "direction": "callees",
+        "nodes": 0,
+        "roots": [
+          {
+            "end_line": 16,
+            "file": "/sample/src/parse.rs",
+            "id": 9,
+            "kind": "method",
+            "line": 14,
+            "name": "is_fatal",
+            "qname": "parse::ParseError::is_fatal",
+            "repo": "sample",
+            "signature": "pub fn is_fatal(&self) -> bool"
+          }
+        ]
+      },
+      "callers": {
+        "depth": 1,
+        "direction": "callers",
+        "nodes": 0,
+        "roots": [
+          {
+            "end_line": 16,
+            "file": "/sample/src/parse.rs",
+            "id": 9,
+            "kind": "method",
+            "line": 14,
+            "name": "is_fatal",
+            "qname": "parse::ParseError::is_fatal",
+            "repo": "sample",
+            "signature": "pub fn is_fatal(&self) -> bool"
+          }
+        ]
+      }
+    },
+    "src/parse.rs:19": {
+      "callees": {
+        "depth": 1,
+        "direction": "callees",
+        "nodes": 8,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "exact",
+                "end_line": 32,
+                "file": "/sample/src/parse.rs",
+                "id": 11,
+                "kind": "function",
+                "line": 30,
+                "name": "tokenize",
+                "qname": "parse::tokenize",
+                "repo": "sample",
+                "site": "/sample/src/parse.rs:20"
+              },
+              {
+                "external": "words.as_slice",
+                "site": "/sample/src/parse.rs:21"
+              },
+              {
+                "external": "Command.Set",
+                "site": "/sample/src/parse.rs:22"
+              },
+              {
+                "confidence": "exact",
+                "end_line": 40,
+                "file": "/sample/src/parse.rs",
+                "id": 12,
+                "kind": "function",
+                "line": 34,
+                "name": "key",
+                "qname": "parse::key",
+                "repo": "sample",
+                "site": "/sample/src/parse.rs:22",
+                "sites": 3
+              },
+              {
+                "external": "v.to_string",
+                "site": "/sample/src/parse.rs:22"
+              },
+              {
+                "external": "Command.Get",
+                "site": "/sample/src/parse.rs:23"
+              },
+              {
+                "external": "Command.Del",
+                "site": "/sample/src/parse.rs:24"
+              },
+              {
+                "confidence": "exact",
+                "end_line": 45,
+                "file": "/sample/src/parse.rs",
+                "id": 13,
+                "kind": "function",
+                "line": 42,
+                "name": "fail",
+                "qname": "parse::fail",
+                "repo": "sample",
+                "site": "/sample/src/parse.rs:26"
+              }
+            ],
+            "end_line": 28,
+            "file": "/sample/src/parse.rs",
+            "id": 10,
+            "kind": "function",
+            "line": 19,
+            "name": "parse_line",
+            "qname": "parse::parse_line",
+            "repo": "sample",
+            "signature": "pub fn parse_line(line: &str) -> Result<Command, ParseError>"
+          }
+        ]
+      },
+      "callers": {
+        "depth": 1,
+        "direction": "callers",
+        "nodes": 1,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "likely",
+                "end_line": 30,
+                "file": "/sample/src/main.rs",
+                "id": 5,
+                "kind": "function",
+                "line": 11,
+                "name": "main",
+                "qname": "main",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:16"
+              }
+            ],
+            "end_line": 28,
+            "file": "/sample/src/parse.rs",
+            "id": 10,
+            "kind": "function",
+            "line": 19,
+            "name": "parse_line",
+            "qname": "parse::parse_line",
+            "repo": "sample",
+            "signature": "pub fn parse_line(line: &str) -> Result<Command, ParseError>"
+          }
+        ]
+      }
+    },
+    "src/parse.rs:30": {
+      "callees": {
+        "depth": 1,
+        "direction": "callees",
+        "nodes": 2,
+        "roots": [
+          {
+            "children": [
+              {
+                "external": "line.split_whitespace",
+                "site": "/sample/src/parse.rs:31"
+              },
+              {
+                "external": "line.split_whitespace().collect",
+                "site": "/sample/src/parse.rs:31"
+              }
+            ],
+            "end_line": 32,
+            "file": "/sample/src/parse.rs",
+            "id": 11,
+            "kind": "function",
+            "line": 30,
+            "name": "tokenize",
+            "qname": "parse::tokenize",
+            "repo": "sample",
+            "signature": "fn tokenize(line: &str) -> Vec<&str>"
+          }
+        ]
+      },
+      "callers": {
+        "depth": 1,
+        "direction": "callers",
+        "nodes": 1,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "exact",
+                "end_line": 28,
+                "file": "/sample/src/parse.rs",
+                "id": 10,
+                "kind": "function",
+                "line": 19,
+                "name": "parse_line",
+                "qname": "parse::parse_line",
+                "repo": "sample",
+                "site": "/sample/src/parse.rs:20"
+              }
+            ],
+            "end_line": 32,
+            "file": "/sample/src/parse.rs",
+            "id": 11,
+            "kind": "function",
+            "line": 30,
+            "name": "tokenize",
+            "qname": "parse::tokenize",
+            "repo": "sample",
+            "signature": "fn tokenize(line: &str) -> Vec<&str>"
+          }
+        ]
+      }
+    },
+    "src/parse.rs:34": {
+      "callees": {
+        "depth": 1,
+        "direction": "callees",
+        "nodes": 4,
+        "roots": [
+          {
+            "children": [
+              {
+                "external": "word.chars",
+                "site": "/sample/src/parse.rs:35"
+              },
+              {
+                "external": "word.chars().all",
+                "site": "/sample/src/parse.rs:35"
+              },
+              {
+                "external": "word.to_string",
+                "site": "/sample/src/parse.rs:36"
+              },
+              {
+                "confidence": "exact",
+                "end_line": 45,
+                "file": "/sample/src/parse.rs",
+                "id": 13,
+                "kind": "function",
+                "line": 42,
+                "name": "fail",
+                "qname": "parse::fail",
+                "repo": "sample",
+                "site": "/sample/src/parse.rs:38"
+              }
+            ],
+            "end_line": 40,
+            "file": "/sample/src/parse.rs",
+            "id": 12,
+            "kind": "function",
+            "line": 34,
+            "name": "key",
+            "qname": "parse::key",
+            "repo": "sample",
+            "signature": "fn key(word: &str) -> Result<String, ParseError>"
+          }
+        ]
+      },
+      "callers": {
+        "depth": 1,
+        "direction": "callers",
+        "nodes": 1,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "exact",
+                "end_line": 28,
+                "file": "/sample/src/parse.rs",
+                "id": 10,
+                "kind": "function",
+                "line": 19,
+                "name": "parse_line",
+                "qname": "parse::parse_line",
+                "repo": "sample",
+                "site": "/sample/src/parse.rs:22",
+                "sites": 3
+              }
+            ],
+            "end_line": 40,
+            "file": "/sample/src/parse.rs",
+            "id": 12,
+            "kind": "function",
+            "line": 34,
+            "name": "key",
+            "qname": "parse::key",
+            "repo": "sample",
+            "signature": "fn key(word: &str) -> Result<String, ParseError>"
+          }
+        ]
+      }
+    },
+    "src/parse.rs:42": {
+      "callees": {
+        "depth": 1,
+        "direction": "callees",
+        "nodes": 0,
+        "roots": [
+          {
+            "end_line": 45,
+            "file": "/sample/src/parse.rs",
+            "id": 13,
+            "kind": "function",
+            "line": 42,
+            "name": "fail",
+            "qname": "parse::fail",
+            "repo": "sample",
+            "signature": "fn fail(text: &str, unknown_verb: bool) -> ParseError"
+          }
+        ]
+      },
+      "callers": {
+        "depth": 1,
+        "direction": "callers",
+        "nodes": 2,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "exact",
+                "end_line": 28,
+                "file": "/sample/src/parse.rs",
+                "id": 10,
+                "kind": "function",
+                "line": 19,
+                "name": "parse_line",
+                "qname": "parse::parse_line",
+                "repo": "sample",
+                "site": "/sample/src/parse.rs:26"
+              },
+              {
+                "confidence": "exact",
+                "end_line": 40,
+                "file": "/sample/src/parse.rs",
+                "id": 12,
+                "kind": "function",
+                "line": 34,
+                "name": "key",
+                "qname": "parse::key",
+                "repo": "sample",
+                "site": "/sample/src/parse.rs:38"
+              }
+            ],
+            "end_line": 45,
+            "file": "/sample/src/parse.rs",
+            "id": 13,
+            "kind": "function",
+            "line": 42,
+            "name": "fail",
+            "qname": "parse::fail",
+            "repo": "sample",
+            "signature": "fn fail(text: &str, unknown_verb: bool) -> ParseError"
+          }
+        ]
+      }
+    },
+    "src/store.rs:10": {
+      "callees": {
+        "depth": 1,
+        "direction": "callees",
+        "nodes": 1,
+        "roots": [
+          {
+            "children": [
+              {
+                "external": "Self.default",
+                "site": "/sample/src/store.rs:11"
+              }
+            ],
+            "end_line": 12,
+            "file": "/sample/src/store.rs",
+            "id": 15,
+            "kind": "method",
+            "line": 10,
+            "name": "new",
+            "qname": "store::Store::new",
+            "repo": "sample",
+            "signature": "pub fn new() -> Self"
+          }
+        ]
+      },
+      "callers": {
+        "depth": 1,
+        "direction": "callers",
+        "nodes": 1,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "exact",
+                "end_line": 30,
+                "file": "/sample/src/main.rs",
+                "id": 5,
+                "kind": "function",
+                "line": 11,
+                "name": "main",
+                "qname": "main",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:12"
+              }
+            ],
+            "end_line": 12,
+            "file": "/sample/src/store.rs",
+            "id": 15,
+            "kind": "method",
+            "line": 10,
+            "name": "new",
+            "qname": "store::Store::new",
+            "repo": "sample",
+            "signature": "pub fn new() -> Self"
+          }
+        ]
+      }
+    },
+    "src/store.rs:14": {
+      "callees": {
+        "depth": 1,
+        "direction": "callees",
+        "nodes": 2,
+        "roots": [
+          {
+            "children": [
+              {
+                "external": "self.map.get",
+                "site": "/sample/src/store.rs:15"
+              },
+              {
+                "external": "self.map.get(key).map",
+                "site": "/sample/src/store.rs:15"
+              }
+            ],
+            "end_line": 16,
+            "file": "/sample/src/store.rs",
+            "id": 16,
+            "kind": "method",
+            "line": 14,
+            "name": "get",
+            "qname": "store::Store::get",
+            "repo": "sample",
+            "signature": "pub fn get(&self, key: &str) -> Option<&str>"
+          }
+        ]
+      },
+      "callers": {
+        "depth": 1,
+        "direction": "callers",
+        "nodes": 1,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "exact",
+                "end_line": 44,
+                "file": "/sample/src/main.rs",
+                "id": 6,
+                "kind": "function",
+                "line": 32,
+                "name": "run",
+                "qname": "run",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:35"
+              }
+            ],
+            "end_line": 16,
+            "file": "/sample/src/store.rs",
+            "id": 16,
+            "kind": "method",
+            "line": 14,
+            "name": "get",
+            "qname": "store::Store::get",
+            "repo": "sample",
+            "signature": "pub fn get(&self, key: &str) -> Option<&str>"
+          }
+        ]
+      }
+    },
+    "src/store.rs:18": {
+      "callees": {
+        "depth": 1,
+        "direction": "callees",
+        "nodes": 2,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "exact",
+                "end_line": 34,
+                "file": "/sample/src/store.rs",
+                "id": 20,
+                "kind": "method",
+                "line": 32,
+                "name": "bump",
+                "qname": "store::Store::bump",
+                "repo": "sample",
+                "site": "/sample/src/store.rs:19"
+              },
+              {
+                "external": "self.map.insert",
+                "site": "/sample/src/store.rs:20"
+              }
+            ],
+            "end_line": 21,
+            "file": "/sample/src/store.rs",
+            "id": 17,
+            "kind": "method",
+            "line": 18,
+            "name": "set",
+            "qname": "store::Store::set",
+            "repo": "sample",
+            "signature": "pub fn set(&mut self, key: String, value: String)"
+          }
+        ]
+      },
+      "callers": {
+        "depth": 1,
+        "direction": "callers",
+        "nodes": 1,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "exact",
+                "end_line": 44,
+                "file": "/sample/src/main.rs",
+                "id": 6,
+                "kind": "function",
+                "line": 32,
+                "name": "run",
+                "qname": "run",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:34"
+              }
+            ],
+            "end_line": 21,
+            "file": "/sample/src/store.rs",
+            "id": 17,
+            "kind": "method",
+            "line": 18,
+            "name": "set",
+            "qname": "store::Store::set",
+            "repo": "sample",
+            "signature": "pub fn set(&mut self, key: String, value: String)"
+          }
+        ]
+      }
+    },
+    "src/store.rs:23": {
+      "callees": {
+        "depth": 1,
+        "direction": "callees",
+        "nodes": 3,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "exact",
+                "end_line": 34,
+                "file": "/sample/src/store.rs",
+                "id": 20,
+                "kind": "method",
+                "line": 32,
+                "name": "bump",
+                "qname": "store::Store::bump",
+                "repo": "sample",
+                "site": "/sample/src/store.rs:24"
+              },
+              {
+                "external": "self.map.remove",
+                "site": "/sample/src/store.rs:25"
+              },
+              {
+                "external": "self.map.remove(key).is_some",
+                "site": "/sample/src/store.rs:25"
+              }
+            ],
+            "end_line": 26,
+            "file": "/sample/src/store.rs",
+            "id": 18,
+            "kind": "method",
+            "line": 23,
+            "name": "delete",
+            "qname": "store::Store::delete",
+            "repo": "sample",
+            "signature": "pub fn delete(&mut self, key: &str) -> bool"
+          }
+        ]
+      },
+      "callers": {
+        "depth": 1,
+        "direction": "callers",
+        "nodes": 1,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "exact",
+                "end_line": 44,
+                "file": "/sample/src/main.rs",
+                "id": 6,
+                "kind": "function",
+                "line": 32,
+                "name": "run",
+                "qname": "run",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:40"
+              }
+            ],
+            "end_line": 26,
+            "file": "/sample/src/store.rs",
+            "id": 18,
+            "kind": "method",
+            "line": 23,
+            "name": "delete",
+            "qname": "store::Store::delete",
+            "repo": "sample",
+            "signature": "pub fn delete(&mut self, key: &str) -> bool"
+          }
+        ]
+      }
+    },
+    "src/store.rs:28": {
+      "callees": {
+        "depth": 1,
+        "direction": "callees",
+        "nodes": 1,
+        "roots": [
+          {
+            "children": [
+              {
+                "external": "self.map.len",
+                "site": "/sample/src/store.rs:29"
+              }
+            ],
+            "end_line": 30,
+            "file": "/sample/src/store.rs",
+            "id": 19,
+            "kind": "method",
+            "line": 28,
+            "name": "len",
+            "qname": "store::Store::len",
+            "repo": "sample",
+            "signature": "pub fn len(&self) -> usize"
+          }
+        ]
+      },
+      "callers": {
+        "depth": 1,
+        "direction": "callers",
+        "nodes": 1,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "exact",
+                "end_line": 44,
+                "file": "/sample/src/main.rs",
+                "id": 6,
+                "kind": "function",
+                "line": 32,
+                "name": "run",
+                "qname": "run",
+                "repo": "sample",
+                "site": "/sample/src/main.rs:42"
+              }
+            ],
+            "end_line": 30,
+            "file": "/sample/src/store.rs",
+            "id": 19,
+            "kind": "method",
+            "line": 28,
+            "name": "len",
+            "qname": "store::Store::len",
+            "repo": "sample",
+            "signature": "pub fn len(&self) -> usize"
+          }
+        ]
+      }
+    },
+    "src/store.rs:32": {
+      "callees": {
+        "depth": 1,
+        "direction": "callees",
+        "nodes": 0,
+        "roots": [
+          {
+            "end_line": 34,
+            "file": "/sample/src/store.rs",
+            "id": 20,
+            "kind": "method",
+            "line": 32,
+            "name": "bump",
+            "qname": "store::Store::bump",
+            "repo": "sample",
+            "signature": "fn bump(&mut self)"
+          }
+        ]
+      },
+      "callers": {
+        "depth": 1,
+        "direction": "callers",
+        "nodes": 2,
+        "roots": [
+          {
+            "children": [
+              {
+                "confidence": "exact",
+                "end_line": 21,
+                "file": "/sample/src/store.rs",
+                "id": 17,
+                "kind": "method",
+                "line": 18,
+                "name": "set",
+                "qname": "store::Store::set",
+                "repo": "sample",
+                "site": "/sample/src/store.rs:19"
+              },
+              {
+                "confidence": "exact",
+                "end_line": 26,
+                "file": "/sample/src/store.rs",
+                "id": 18,
+                "kind": "method",
+                "line": 23,
+                "name": "delete",
+                "qname": "store::Store::delete",
+                "repo": "sample",
+                "site": "/sample/src/store.rs:24"
+              }
+            ],
+            "end_line": 34,
+            "file": "/sample/src/store.rs",
+            "id": 20,
+            "kind": "method",
+            "line": 32,
+            "name": "bump",
+            "qname": "store::Store::bump",
+            "repo": "sample",
+            "signature": "fn bump(&mut self)"
+          }
+        ]
+      }
+    }
+  },
+  "sample": {
+    "counts": {
+      "edges": 99,
+      "exact": 44,
+      "likely": 6,
+      "name_only": 0,
+      "resolved": 50,
+      "symbols": 26
+    },
+    "files": [
+      {
+        "path": "src/main.rs",
+        "symbols": [
+          {
+            "end_line": 30,
+            "kind": "function",
+            "line": 11,
+            "name": "main",
+            "owner": null,
+            "spec": "src/main.rs:11"
+          },
+          {
+            "end_line": 44,
+            "kind": "function",
+            "line": 32,
+            "name": "run",
+            "owner": null,
+            "spec": "src/main.rs:32"
+          }
+        ],
+        "text": "mod log;\nmod parse;\nmod store;\n\nuse log::{Sink, Stdout};\nuse parse::*;\nuse store::Store;\n\nconst SCRIPT: &str = \"set a 1\\nset b 2\\nget a\\ndel b\\nget b\\ncount\\nput c\";\n\nfn main() {\n    let mut store = Store::new();\n    let mut out = Stdout::default();\n    let mut errors = Vec::new();\n    for line in SCRIPT.lines() {\n        match parse_line(line) {\n            Ok(cmd) => run(&mut store, &mut out, cmd),\n            Err(e) => {\n                log::report(&mut out, &e.message);\n                errors.push(e);\n            }\n        }\n    }\n    for e in &errors {\n        if e.is_fatal() {\n            out.write(\"stopped\");\n        }\n    }\n    out.flush();\n}\n\nfn run(store: &mut Store, out: &mut dyn Sink, cmd: Command) {\n    match cmd {\n        Command::Set(k, v) => store.set(k, v),\n        Command::Get(k) => match store.get(&k) {\n            Some(v) => out.write(v),\n            None => log::report(out, \"missing key\"),\n        },\n        Command::Del(k) => {\n            store.delete(&k);\n        }\n        Command::Count => out.write(&store.len().to_string()),\n    }\n}\n"
+      },
+      {
+        "path": "src/parse.rs",
+        "symbols": [
+          {
+            "end_line": 16,
+            "kind": "method",
+            "line": 14,
+            "name": "ParseError::is_fatal",
+            "owner": null,
+            "spec": "src/parse.rs:14"
+          },
+          {
+            "end_line": 28,
+            "kind": "function",
+            "line": 19,
+            "name": "parse_line",
+            "owner": null,
+            "spec": "src/parse.rs:19"
+          },
+          {
+            "end_line": 32,
+            "kind": "function",
+            "line": 30,
+            "name": "tokenize",
+            "owner": null,
+            "spec": "src/parse.rs:30"
+          },
+          {
+            "end_line": 40,
+            "kind": "function",
+            "line": 34,
+            "name": "key",
+            "owner": null,
+            "spec": "src/parse.rs:34"
+          },
+          {
+            "end_line": 45,
+            "kind": "function",
+            "line": 42,
+            "name": "fail",
+            "owner": null,
+            "spec": "src/parse.rs:42"
+          }
+        ],
+        "text": "pub enum Command {\n    Set(String, String),\n    Get(String),\n    Del(String),\n    Count,\n}\n\npub struct ParseError {\n    pub message: String,\n    unknown_verb: bool,\n}\n\nimpl ParseError {\n    pub fn is_fatal(&self) -> bool {\n        !self.unknown_verb\n    }\n}\n\npub fn parse_line(line: &str) -> Result<Command, ParseError> {\n    let words = tokenize(line);\n    match words.as_slice() {\n        [\"set\", k, v] => Ok(Command::Set(key(k)?, v.to_string())),\n        [\"get\", k] => Ok(Command::Get(key(k)?)),\n        [\"del\", k] => Ok(Command::Del(key(k)?)),\n        [\"count\"] => Ok(Command::Count),\n        _ => Err(fail(line, true)),\n    }\n}\n\nfn tokenize(line: &str) -> Vec<&str> {\n    line.split_whitespace().collect()\n}\n\nfn key(word: &str) -> Result<String, ParseError> {\n    if word.chars().all(char::is_alphanumeric) {\n        Ok(word.to_string())\n    } else {\n        Err(fail(word, false))\n    }\n}\n\nfn fail(text: &str, unknown_verb: bool) -> ParseError {\n    let message = format!(\"cannot parse {text:?}\");\n    ParseError { message, unknown_verb }\n}\n"
+      },
+      {
+        "path": "src/store.rs",
+        "symbols": [
+          {
+            "end_line": 12,
+            "kind": "method",
+            "line": 10,
+            "name": "Store::new",
+            "owner": null,
+            "spec": "src/store.rs:10"
+          },
+          {
+            "end_line": 16,
+            "kind": "method",
+            "line": 14,
+            "name": "Store::get",
+            "owner": null,
+            "spec": "src/store.rs:14"
+          },
+          {
+            "end_line": 21,
+            "kind": "method",
+            "line": 18,
+            "name": "Store::set",
+            "owner": null,
+            "spec": "src/store.rs:18"
+          },
+          {
+            "end_line": 26,
+            "kind": "method",
+            "line": 23,
+            "name": "Store::delete",
+            "owner": null,
+            "spec": "src/store.rs:23"
+          },
+          {
+            "end_line": 30,
+            "kind": "method",
+            "line": 28,
+            "name": "Store::len",
+            "owner": null,
+            "spec": "src/store.rs:28"
+          },
+          {
+            "end_line": 34,
+            "kind": "method",
+            "line": 32,
+            "name": "Store::bump",
+            "owner": null,
+            "spec": "src/store.rs:32"
+          }
+        ],
+        "text": "use std::collections::BTreeMap;\n\n#[derive(Default)]\npub struct Store {\n    map: BTreeMap<String, String>,\n    writes: usize,\n}\n\nimpl Store {\n    pub fn new() -> Self {\n        Self::default()\n    }\n\n    pub fn get(&self, key: &str) -> Option<&str> {\n        self.map.get(key).map(String::as_str)\n    }\n\n    pub fn set(&mut self, key: String, value: String) {\n        self.bump();\n        self.map.insert(key, value);\n    }\n\n    pub fn delete(&mut self, key: &str) -> bool {\n        self.bump();\n        self.map.remove(key).is_some()\n    }\n\n    pub fn len(&self) -> usize {\n        self.map.len()\n    }\n\n    fn bump(&mut self) {\n        self.writes += 1;\n    }\n}\n"
+      },
+      {
+        "path": "src/log.rs",
+        "symbols": [
+          {
+            "end_line": 2,
+            "kind": "method",
+            "line": 2,
+            "name": "write",
+            "owner": "Sink",
+            "spec": "src/log.rs:2"
+          },
+          {
+            "end_line": 13,
+            "kind": "method",
+            "line": 11,
+            "name": "Stdout::write",
+            "owner": null,
+            "spec": "src/log.rs:11"
+          },
+          {
+            "end_line": 21,
+            "kind": "method",
+            "line": 17,
+            "name": "Stdout::flush",
+            "owner": null,
+            "spec": "src/log.rs:17"
+          },
+          {
+            "end_line": 26,
+            "kind": "function",
+            "line": 24,
+            "name": "report",
+            "owner": null,
+            "spec": "src/log.rs:24"
+          }
+        ],
+        "text": "pub trait Sink {\n    fn write(&mut self, line: &str);\n}\n\n#[derive(Default)]\npub struct Stdout {\n    lines: Vec<String>,\n}\n\nimpl Sink for Stdout {\n    fn write(&mut self, line: &str) {\n        self.lines.push(line.to_string());\n    }\n}\n\nimpl Stdout {\n    pub fn flush(&mut self) {\n        for line in self.lines.drain(..) {\n            println!(\"{line}\");\n        }\n    }\n}\n\npub fn report(out: &mut dyn Sink, err: &str) {\n    out.write(&format!(\"error: {err}\"));\n}\n"
+      }
+    ],
+    "root": "/sample"
+  }
+}

@@ -1,0 +1,12 @@
+# wasm32-unknown-unknown has no libc: C code sees tree-sitter's wasm headers (via
+# C_INCLUDE_PATH) wrapped by libc/include, which declares the few extra functions
+# SQLite calls; src/sys.rs defines them and SQLite's OS layer.
+[env]
+CPATH = { value = "libc/include", relative = true }
+C_INCLUDE_PATH = { value = "vendor/tree-sitter-language/wasm/include", relative = true }
+AR_wasm32_unknown_unknown = "/opt/homebrew/opt/llvm/bin/llvm-ar"
+LIBSQLITE3_FLAGS = "-DSQLITE_OS_OTHER=1 -DSQLITE_TEMP_STORE=3 -DSQLITE_OMIT_LOAD_EXTENSION=1 -DSQLITE_OMIT_LOCALTIME=1 -DSQLITE_OMIT_DEPRECATED=1 -USQLITE_ENABLE_FTS3 -USQLITE_ENABLE_FTS3_PARENTHESIS -USQLITE_ENABLE_RTREE -USQLITE_ENABLE_DBSTAT_VTAB -USQLITE_ENABLE_STAT4 -USQLITE_SOUNDEX"
+# Keeps tree-sitter's C libc from exporting memcpy, strlen...; the Rust #[no_mangle]
+# functions (src/sys.rs, tree-sitter's malloc/free forwarding) are still exported, as
+# rustc exports every one from a cdylib (check.mjs pins the list).
+CFLAGS_wasm32_unknown_unknown = "-DTS_WASM_EXPORT(name)="

@@ -1,0 +1,27 @@
+[package]
+name = "codegraph-web"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+codegraph = { path = "../..", default-features = false, features = ["graph"] }
+# On wasm32 rusqlite links libsqlite3-sys only when asked; the bundled C SQLite then
+# runs on the minimal VFS and libc in src/sys.rs (no imports).
+rusqlite = { version = "0.40.2", default-features = false, features = ["libsqlite3-sys"] }
+serde_json = "1"
+
+[workspace]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[patch.crates-io]
+tree-sitter-language = { path = "vendor/tree-sitter-language" }
