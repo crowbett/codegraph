@@ -8,6 +8,12 @@ const [file, answersFile] = process.argv.slice(2);
 const bytes = readFileSync(file);
 const imports = WebAssembly.Module.imports(new WebAssembly.Module(bytes));
 if (imports.length) throw new Error(`imports: ${JSON.stringify(imports)}`);
+// The ABI is memory + demo_*; the rest are #[no_mangle] C-facing functions rustc exports
+// from a cdylib. Pinned so a new export shows up here.
+const EXPORTS = "abort,calloc,demo_alloc,demo_call,demo_free,free,malloc,memory,qsort,realloc," +
+  "sqlite3_os_end,sqlite3_os_init,strcspn,strrchr,strspn";
+const exports = WebAssembly.Module.exports(new WebAssembly.Module(bytes)).map((e) => e.name).sort().join();
+if (exports !== EXPORTS) throw new Error(`exports changed: ${exports}`);
 const { instance } = await WebAssembly.instantiate(bytes, {});
 const x = instance.exports;
 const call = (method, params) => {

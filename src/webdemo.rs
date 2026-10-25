@@ -294,4 +294,14 @@ mod tests {
         assert!(demo.handle("callers", b"{")["error"].is_string());
         assert!(demo.handle("callees", br#"{"symbol":"src/none.rs:1"}"#)["error"].is_string());
     }
+
+    #[test]
+    fn indexing_a_root_twice_is_refused() {
+        let mut demo = Demo::new().unwrap();
+        let before = demo.store.repos().unwrap()[0].counts;
+        let files: Vec<(&str, &[u8])> = SAMPLE.iter().map(|(p, s)| (*p, s.as_bytes())).collect();
+        let err = index::index_sources(&mut demo.store, "sample", Path::new(ROOT), &files);
+        assert!(matches!(err, Err(Error::Usage(_))), "{err:?}");
+        assert_eq!(demo.store.repos().unwrap()[0].counts, before);
+    }
 }

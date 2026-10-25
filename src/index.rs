@@ -984,11 +984,22 @@ fn index_sources_inner(
     }
     store::restamp_write_started(&tx, repo_id, util::now_unix())?;
     tx.commit()?;
-    stats.parsed += rs.parsed;
-    rs.resolve = Some(resolve::resolve_and_insert(store, repo_id, root, pending)?);
-    stats.changed_repos.push(rs);
-    store.set_indexed(repo_id, util::now_unix())?;
-    Ok(())
+    // A cold index's edges exist only in `pending`, so a repo whose resolve failed could
+    // never be completed: drop it (rows cascade) and let the caller index it again.
+    let resolved = resolve::resolve_and_insert(store, repo_id, root, pending)
+        .and_then(|r| store.set_indexed(repo_id, util::now_unix()).map(|()| r));
+    match resolved {
+        Ok(r) => {
+            stats.parsed += rs.parsed;
+            rs.resolve = Some(r);
+            stats.changed_repos.push(rs);
+            Ok(())
+        }
+        Err(e) => {
+            store.delete_repo(repo_id)?;
+            Err(e)
+        }
+    }
 }
 
 /// Windows `ERROR_SHARING_VIOLATION` (32) / `ERROR_LOCK_VIOLATION` (33): another process
